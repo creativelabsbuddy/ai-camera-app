@@ -1,0 +1,29 @@
+{
+  "categories": ["Travel", "Outfit", "Festival", "Portrait", "Mood"],
+  "styles": [
+    {"id": "germany_street", "name": "Germany street", "category": "Travel", "credit_cost": 2, "pro_only": false,
+     "prompt": "Place the person naturally on a charming old-town street in Germany with colourful half-timbered houses, cobblestones and soft daylight, as a real travel photo taken there."},
+    {"id": "paris_eiffel", "name": "Paris Eiffel", "category": "Travel", "credit_cost": 2, "pro_only": false,
+     "prompt": "Place the person in Paris with the Eiffel Tower in the background on a pleasant afternoon, as a real travel photo with natural depth of field."},
+    {"id": "swiss_alps", "name": "Swiss Alps", "category": "Travel", "credit_cost": 2, "pro_only": false,
+     "prompt": "Place the person in the Swiss Alps with snowy peaks, green meadows and clear blue sky behind them, as a real travel photo with crisp mountain light."},
+    {"id": "santorini", "name": "Santorini", "category": "Travel", "credit_cost": 2, "pro_only": false,
+     "prompt": "Place the person on a terrace in Santorini with white houses, blue domes and the Aegean sea behind them in warm golden-hour light, as a real travel photo."},
+    {"id": "dubai_skyline", "name": "Dubai skyline", "category": "Travel", "credit_cost": 2, "pro_only": false,
+     "prompt": "Place the person in front of the Dubai skyline with the Burj Khalifa at dusk, city lights starting to glow, as a real travel photo."},
+    {"id": "black_suit", "name": "Black suit", "category": "Outfit", "credit_cost": 2, "pro_only": false,
+     "prompt": "Change the person's clothes to a well-fitted classic black suit with a white shirt, keeping the same pose, background and lighting."},
+    {"id": "royal_sherwani", "name": "Royal sherwani", "category": "Outfit", "credit_cost": 3, "pro_only": true,
+     "prompt": "Dress the person in an elegant royal Indian sherwani with fine embroidery and a matching stole, keeping the same pose, background and lighting."},
+    {"id": "silk_saree", "name": "Silk saree", "category": "Outfit", "credit_cost": 3, "pro_only": false,
+     "prompt": "Dress the person in an elegant traditional silk saree with a rich zari border and matching blouse, keeping the same pose, background and lighting."},
+    {"id": "diwali_lights", "name": "Diwali lights", "category": "Festival", "credit_cost": 2, "pro_only": false,
+     "prompt": "Turn the scene into a festive Diwali evening: warm diyas, string lights and soft bokeh around the person, with gentle warm light on their face."},
+    {"id": "holi_colors", "name": "Holi colours", "category": "Festival", "credit_cost": 2, "pro_only": false,
+     "prompt": "Make it a joyful Holi celebration: bright gulal colour powder in the air and light colour smudges on the clothes, keeping the face clean and recognisable."},
+    {"id": "studio_headshot", "name": "Studio headshot", "category": "Portrait", "credit_cost": 2, "pro_only": false,
+     "prompt": "Turn this into a professional studio headshot: neutral grey backdrop, soft key light, smart-casual outfit, crisp but natural skin."},
+    {"id": "rainy_mumbai", "name": "Rainy Mumbai", "category": "Mood", "credit_cost": 2, "pro_only": false,
+     "prompt": "Place the person on Mumbai's Marine Drive on a moody monsoon evening with light rain, wet reflections and glowing street lights, as a real photo."}
+  ]
+}

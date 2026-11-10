@@ -1,0 +1,132 @@
+{
+  "version": "seed-1",
+  "categories": [
+    "Travel",
+    "Outfit",
+    "Festival",
+    "Portrait",
+    "Mood"
+  ],
+  "styles": [
+    {
+      "id": "germany_street",
+      "name": "Germany street",
+      "category": "Travel",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 0,
+      "image_asset": "assets/styles/samples/germany_street.jpg",
+      "ui_category": "cities"
+    },
+    {
+      "id": "paris_eiffel",
+      "name": "Paris Eiffel",
+      "category": "Travel",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 1,
+      "image_asset": "assets/styles/samples/paris_eiffel.jpg",
+      "ui_category": "cities"
+    },
+    {
+      "id": "swiss_alps",
+      "name": "Swiss Alps",
+      "category": "Travel",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 2,
+      "image_asset": "assets/styles/samples/swiss_alps.jpg",
+      "ui_category": "cities"
+    },
+    {
+      "id": "santorini",
+      "name": "Santorini",
+      "category": "Travel",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 3,
+      "image_asset": "assets/styles/samples/santorini.jpg",
+      "ui_category": "cities"
+    },
+    {
+      "id": "dubai_skyline",
+      "name": "Dubai skyline",
+      "category": "Travel",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 4,
+      "image_asset": "assets/styles/samples/dubai_skyline.jpg",
+      "ui_category": "cities"
+    },
+    {
+      "id": "black_suit",
+      "name": "Black suit",
+      "category": "Outfit",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 5,
+      "image_asset": "assets/styles/samples/black_suit.jpg",
+      "ui_category": "appearance"
+    },
+    {
+      "id": "royal_sherwani",
+      "name": "Royal sherwani",
+      "category": "Outfit",
+      "credit_cost": 3,
+      "pro_only": true,
+      "sort_order": 6,
+      "image_asset": "assets/styles/samples/royal_sherwani.jpg",
+      "ui_category": "appearance"
+    },
+    {
+      "id": "silk_saree",
+      "name": "Silk saree",
+      "category": "Outfit",
+      "credit_cost": 3,
+      "pro_only": false,
+      "sort_order": 7,
+      "image_asset": "assets/styles/samples/silk_saree.jpg",
+      "ui_category": "appearance"
+    },
+    {
+      "id": "diwali_lights",
+      "name": "Diwali lights",
+      "category": "Festival",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 8,
+      "image_asset": "assets/styles/samples/diwali_lights.jpg",
+      "ui_category": "trending"
+    },
+    {
+      "id": "holi_colors",
+      "name": "Holi colours",
+      "category": "Festival",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 9,
+      "image_asset": "assets/styles/samples/holi_colors.jpg",
+      "ui_category": "trending"
+    },
+    {
+      "id": "studio_headshot",
+      "name": "Studio headshot",
+      "category": "Portrait",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 10,
+      "image_asset": "assets/styles/samples/studio_headshot.jpg",
+      "ui_category": "ai_photo"
+    },
+    {
+      "id": "rainy_mumbai",
+      "name": "Rainy Mumbai",
+      "category": "Mood",
+      "credit_cost": 2,
+      "pro_only": false,
+      "sort_order": 11,
+      "image_asset": "assets/styles/samples/rainy_mumbai.jpg",
+      "ui_category": "cinematic"
+    }
+  ]
+}

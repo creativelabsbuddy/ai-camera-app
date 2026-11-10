@@ -1,0 +1,11 @@
+{
+  "name": "Kyoto temple",
+  "category": "Travel",
+  "prompt": "Place the person naturally in front of a historic Kyoto temple gate in soft morning light, as a real travel photo taken there.",
+  "credit_cost": 2,
+  "enabled": true,
+  "needs_person": true,
+  "free_trial": true,
+  "thumbnail": "kyoto_sample.jpg",
+  "refs": []
+}

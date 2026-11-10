@@ -1,0 +1,36 @@
+# Pose reference photos — sources & credits
+
+Pexels License (free to use, no attribution required; attribution kept anyway). https://www.pexels.com/license/
+
+Downscaled (≤1080 px server seed, ≤720 px bundled in the app), re-encoded JPEG; no edits to content. No explicit or watermarked images.
+
+- Standing · Confident stance — Photo: Myco Libot / Pexels — https://www.pexels.com/photo/woman-standing-and-posing-17514227/ (file: pose_standing_17514227.jpg)
+- Standing · Sidewalk step — Photo: Brian Jiz / Pexels — https://www.pexels.com/photo/woman-standing-on-sidewalk-13515052/ (file: pose_standing_13515052.jpg)
+- Standing · Relaxed studio — Photo: Monstera Production / Pexels — https://www.pexels.com/photo/calm-woman-standing-in-studio-6311576/ (file: pose_standing_6311576.jpg)
+- Standing · Hands in pockets — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/man-in-casual-wear-standing-with-hands-in-pockets-7755193/ (file: pose_standing_7755193.jpg)
+- Standing · Coat & pockets — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/elegant-man-in-a-brown-coat-standing-outside-with-hands-in-pockets-20337701/ (file: pose_standing_20337701.jpg)
+- Sitting · Spiral stairs — Photo: Liza Bakay / Pexels — https://www.pexels.com/photo/a-man-sitting-on-a-staircase-14359323/ (file: pose_sitting_14359323.jpg)
+- Sitting · Stairs lean — Photo: UMUT RAW / Pexels — https://www.pexels.com/photo/man-in-shirt-sitting-on-stairs-20598318/ (file: pose_sitting_20598318.jpg)
+- Sitting · City steps — Photo: foad shariyati / Pexels — https://www.pexels.com/photo/man-sitting-on-stairs-27196698/ (file: pose_sitting_27196698.jpg)
+- Sitting · Bench cozy — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/woman-posing-on-bench-16177597/ (file: pose_sitting_16177597.jpg)
+- Sitting · Bench smile — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/young-woman-sitting-on-an-outdoor-bench-smiling-34974311/ (file: pose_sitting_34974311.jpg)
+- Couple · Lakeside hug — Photo: Ismail Suleiman / Pexels — https://www.pexels.com/photo/young-couple-posing-outdoors-by-a-lake-37339715/ (file: pose_couple_37339715.jpg)
+- Couple · Side by side — Photo: king caplis / Pexels — https://www.pexels.com/photo/smiling-couple-in-lush-greenery-outdoor-portrait-36396113/ (file: pose_couple_36396113.jpg)
+- Couple · Laughing walk — Photo: Alexander Mass / Pexels — https://www.pexels.com/photo/happy-couple-laughing-in-a-lush-field-34572487/ (file: pose_couple_34572487.jpg)
+- Couple · Traditional duo — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/traditional-indian-couple-posing-outdoors-34837459/ (file: pose_couple_34837459.jpg)
+- Couple · Festive pair — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/indian-couple-in-traditional-attire-outdoors-35036650/ (file: pose_couple_35036650.jpg)
+- Group · Three friends — Photo: César O'neill / Pexels — https://www.pexels.com/photo/group-of-friends-smiling-outdoors-on-sunny-day-31517419/ (file: pose_group_31517419.jpg)
+- Group · Studio squad — Photo: Matheus Bertelli / Pexels — https://www.pexels.com/photo/group-of-friends-posing-in-photography-studio-33827653/ (file: pose_group_33827653.jpg)
+- Group · Team line-up — Photo: Gene Samit / Pexels — https://www.pexels.com/photo/a-group-of-friends-posing-for-a-photo-16751480/ (file: pose_group_16751480.jpg)
+- Selfie · Park selfie — Photo: Helena Lopes / Pexels — https://www.pexels.com/photo/smiling-woman-photographing-herself-with-a-smart-phone-27177182/ (file: pose_selfie_27177182.jpg)
+- Selfie · Street selfie — Photo: Blue Bird / Pexels — https://www.pexels.com/photo/happy-ethnic-woman-taking-selfie-on-smartphone-in-town-7243117/ (file: pose_selfie_7243117.jpg)
+- Selfie · Group selfie — Photo: Vitaly Gariev / Pexels — https://www.pexels.com/photo/cheerful-group-of-friends-taking-a-selfie-outdoors-36729905/ (file: pose_selfie_36729905.jpg)
+- Selfie · Arm-length selfie — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/casual-outdoor-selfie-of-young-man-in-park-32064453/ (file: pose_selfie_32064453.jpg)
+- Travel · Landmark portrait — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/young-woman-posing-near-iconic-landmark-30674349/ (file: pose_travel_30674349.jpg)
+- Travel · Railing lean — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/tourist-posing-in-front-of-russian-landmark-33793239/ (file: pose_travel_33793239.jpg)
+- Travel · Valley view — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/woman-with-backpack-posing-near-valley-with-forest-14642269/ (file: pose_travel_14642269.jpg)
+- Travel · Mountain top — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/a-woman-standing-on-mountain-peak-5636603/ (file: pose_travel_5636603.jpg)
+- Casual · Wall lean — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/stylish-man-leaning-against-urban-wall-outdoors-31742300/ (file: pose_casual_31742300.jpg)
+- Casual · Graffiti wall — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/a-man-leaning-against-a-wall-wearing-a-black-t-shirt-28279189/ (file: pose_casual_28279189.jpg)
+- Casual · Rustic wall — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/casual-street-style-against-rustic-wall-34340561/ (file: pose_casual_34340561.jpg)
+- Casual · Brick corner — Photo: Pexels contributor / Pexels — https://www.pexels.com/photo/casual-portrait-of-a-man-leaning-on-brick-wall-33706502/ (file: pose_casual_33706502.jpg)

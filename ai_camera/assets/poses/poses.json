@@ -1,0 +1,275 @@
+{
+ "license": "Pexels License (free to use, no attribution required; attribution kept anyway). https://www.pexels.com/license/",
+ "poses": [
+  {
+   "id": "local_standing_17514227",
+   "name": "Confident stance",
+   "category": "Standing",
+   "credit": "Photo: Myco Libot / Pexels",
+   "source_url": "https://www.pexels.com/photo/woman-standing-and-posing-17514227/",
+   "sort_order": 0,
+   "asset": "assets/poses/pose_standing_17514227.jpg"
+  },
+  {
+   "id": "local_standing_13515052",
+   "name": "Sidewalk step",
+   "category": "Standing",
+   "credit": "Photo: Brian Jiz / Pexels",
+   "source_url": "https://www.pexels.com/photo/woman-standing-on-sidewalk-13515052/",
+   "sort_order": 1,
+   "asset": "assets/poses/pose_standing_13515052.jpg"
+  },
+  {
+   "id": "local_standing_6311576",
+   "name": "Relaxed studio",
+   "category": "Standing",
+   "credit": "Photo: Monstera Production / Pexels",
+   "source_url": "https://www.pexels.com/photo/calm-woman-standing-in-studio-6311576/",
+   "sort_order": 2,
+   "asset": "assets/poses/pose_standing_6311576.jpg"
+  },
+  {
+   "id": "local_standing_7755193",
+   "name": "Hands in pockets",
+   "category": "Standing",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/man-in-casual-wear-standing-with-hands-in-pockets-7755193/",
+   "sort_order": 3,
+   "asset": "assets/poses/pose_standing_7755193.jpg"
+  },
+  {
+   "id": "local_standing_20337701",
+   "name": "Coat & pockets",
+   "category": "Standing",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/elegant-man-in-a-brown-coat-standing-outside-with-hands-in-pockets-20337701/",
+   "sort_order": 4,
+   "asset": "assets/poses/pose_standing_20337701.jpg"
+  },
+  {
+   "id": "local_sitting_14359323",
+   "name": "Spiral stairs",
+   "category": "Sitting",
+   "credit": "Photo: Liza Bakay / Pexels",
+   "source_url": "https://www.pexels.com/photo/a-man-sitting-on-a-staircase-14359323/",
+   "sort_order": 5,
+   "asset": "assets/poses/pose_sitting_14359323.jpg"
+  },
+  {
+   "id": "local_sitting_20598318",
+   "name": "Stairs lean",
+   "category": "Sitting",
+   "credit": "Photo: UMUT RAW / Pexels",
+   "source_url": "https://www.pexels.com/photo/man-in-shirt-sitting-on-stairs-20598318/",
+   "sort_order": 6,
+   "asset": "assets/poses/pose_sitting_20598318.jpg"
+  },
+  {
+   "id": "local_sitting_27196698",
+   "name": "City steps",
+   "category": "Sitting",
+   "credit": "Photo: foad shariyati / Pexels",
+   "source_url": "https://www.pexels.com/photo/man-sitting-on-stairs-27196698/",
+   "sort_order": 7,
+   "asset": "assets/poses/pose_sitting_27196698.jpg"
+  },
+  {
+   "id": "local_sitting_16177597",
+   "name": "Bench cozy",
+   "category": "Sitting",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/woman-posing-on-bench-16177597/",
+   "sort_order": 8,
+   "asset": "assets/poses/pose_sitting_16177597.jpg"
+  },
+  {
+   "id": "local_sitting_34974311",
+   "name": "Bench smile",
+   "category": "Sitting",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/young-woman-sitting-on-an-outdoor-bench-smiling-34974311/",
+   "sort_order": 9,
+   "asset": "assets/poses/pose_sitting_34974311.jpg"
+  },
+  {
+   "id": "local_couple_37339715",
+   "name": "Lakeside hug",
+   "category": "Couple",
+   "credit": "Photo: Ismail Suleiman / Pexels",
+   "source_url": "https://www.pexels.com/photo/young-couple-posing-outdoors-by-a-lake-37339715/",
+   "sort_order": 10,
+   "asset": "assets/poses/pose_couple_37339715.jpg"
+  },
+  {
+   "id": "local_couple_36396113",
+   "name": "Side by side",
+   "category": "Couple",
+   "credit": "Photo: king caplis / Pexels",
+   "source_url": "https://www.pexels.com/photo/smiling-couple-in-lush-greenery-outdoor-portrait-36396113/",
+   "sort_order": 11,
+   "asset": "assets/poses/pose_couple_36396113.jpg"
+  },
+  {
+   "id": "local_couple_34572487",
+   "name": "Laughing walk",
+   "category": "Couple",
+   "credit": "Photo: Alexander Mass / Pexels",
+   "source_url": "https://www.pexels.com/photo/happy-couple-laughing-in-a-lush-field-34572487/",
+   "sort_order": 12,
+   "asset": "assets/poses/pose_couple_34572487.jpg"
+  },
+  {
+   "id": "local_couple_34837459",
+   "name": "Traditional duo",
+   "category": "Couple",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/traditional-indian-couple-posing-outdoors-34837459/",
+   "sort_order": 13,
+   "asset": "assets/poses/pose_couple_34837459.jpg"
+  },
+  {
+   "id": "local_couple_35036650",
+   "name": "Festive pair",
+   "category": "Couple",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/indian-couple-in-traditional-attire-outdoors-35036650/",
+   "sort_order": 14,
+   "asset": "assets/poses/pose_couple_35036650.jpg"
+  },
+  {
+   "id": "local_group_31517419",
+   "name": "Three friends",
+   "category": "Group",
+   "credit": "Photo: César O'neill / Pexels",
+   "source_url": "https://www.pexels.com/photo/group-of-friends-smiling-outdoors-on-sunny-day-31517419/",
+   "sort_order": 15,
+   "asset": "assets/poses/pose_group_31517419.jpg"
+  },
+  {
+   "id": "local_group_33827653",
+   "name": "Studio squad",
+   "category": "Group",
+   "credit": "Photo: Matheus Bertelli / Pexels",
+   "source_url": "https://www.pexels.com/photo/group-of-friends-posing-in-photography-studio-33827653/",
+   "sort_order": 16,
+   "asset": "assets/poses/pose_group_33827653.jpg"
+  },
+  {
+   "id": "local_group_16751480",
+   "name": "Team line-up",
+   "category": "Group",
+   "credit": "Photo: Gene Samit / Pexels",
+   "source_url": "https://www.pexels.com/photo/a-group-of-friends-posing-for-a-photo-16751480/",
+   "sort_order": 17,
+   "asset": "assets/poses/pose_group_16751480.jpg"
+  },
+  {
+   "id": "local_selfie_27177182",
+   "name": "Park selfie",
+   "category": "Selfie",
+   "credit": "Photo: Helena Lopes / Pexels",
+   "source_url": "https://www.pexels.com/photo/smiling-woman-photographing-herself-with-a-smart-phone-27177182/",
+   "sort_order": 18,
+   "asset": "assets/poses/pose_selfie_27177182.jpg"
+  },
+  {
+   "id": "local_selfie_7243117",
+   "name": "Street selfie",
+   "category": "Selfie",
+   "credit": "Photo: Blue Bird / Pexels",
+   "source_url": "https://www.pexels.com/photo/happy-ethnic-woman-taking-selfie-on-smartphone-in-town-7243117/",
+   "sort_order": 19,
+   "asset": "assets/poses/pose_selfie_7243117.jpg"
+  },
+  {
+   "id": "local_selfie_36729905",
+   "name": "Group selfie",
+   "category": "Selfie",
+   "credit": "Photo: Vitaly Gariev / Pexels",
+   "source_url": "https://www.pexels.com/photo/cheerful-group-of-friends-taking-a-selfie-outdoors-36729905/",
+   "sort_order": 20,
+   "asset": "assets/poses/pose_selfie_36729905.jpg"
+  },
+  {
+   "id": "local_selfie_32064453",
+   "name": "Arm-length selfie",
+   "category": "Selfie",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/casual-outdoor-selfie-of-young-man-in-park-32064453/",
+   "sort_order": 21,
+   "asset": "assets/poses/pose_selfie_32064453.jpg"
+  },
+  {
+   "id": "local_travel_30674349",
+   "name": "Landmark portrait",
+   "category": "Travel",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/young-woman-posing-near-iconic-landmark-30674349/",
+   "sort_order": 22,
+   "asset": "assets/poses/pose_travel_30674349.jpg"
+  },
+  {
+   "id": "local_travel_33793239",
+   "name": "Railing lean",
+   "category": "Travel",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/tourist-posing-in-front-of-russian-landmark-33793239/",
+   "sort_order": 23,
+   "asset": "assets/poses/pose_travel_33793239.jpg"
+  },
+  {
+   "id": "local_travel_14642269",
+   "name": "Valley view",
+   "category": "Travel",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/woman-with-backpack-posing-near-valley-with-forest-14642269/",
+   "sort_order": 24,
+   "asset": "assets/poses/pose_travel_14642269.jpg"
+  },
+  {
+   "id": "local_travel_5636603",
+   "name": "Mountain top",
+   "category": "Travel",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/a-woman-standing-on-mountain-peak-5636603/",
+   "sort_order": 25,
+   "asset": "assets/poses/pose_travel_5636603.jpg"
+  },
+  {
+   "id": "local_casual_31742300",
+   "name": "Wall lean",
+   "category": "Casual",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/stylish-man-leaning-against-urban-wall-outdoors-31742300/",
+   "sort_order": 26,
+   "asset": "assets/poses/pose_casual_31742300.jpg"
+  },
+  {
+   "id": "local_casual_28279189",
+   "name": "Graffiti wall",
+   "category": "Casual",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/a-man-leaning-against-a-wall-wearing-a-black-t-shirt-28279189/",
+   "sort_order": 27,
+   "asset": "assets/poses/pose_casual_28279189.jpg"
+  },
+  {
+   "id": "local_casual_34340561",
+   "name": "Rustic wall",
+   "category": "Casual",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/casual-street-style-against-rustic-wall-34340561/",
+   "sort_order": 28,
+   "asset": "assets/poses/pose_casual_34340561.jpg"
+  },
+  {
+   "id": "local_casual_33706502",
+   "name": "Brick corner",
+   "category": "Casual",
+   "credit": "Photo: Pexels contributor / Pexels",
+   "source_url": "https://www.pexels.com/photo/casual-portrait-of-a-man-leaning-on-brick-wall-33706502/",
+   "sort_order": 29,
+   "asset": "assets/poses/pose_casual_33706502.jpg"
+  }
+ ]
+}

@@ -1,0 +1,56 @@
+# ---- Secrets (never commit) ----
+secrets/
+**/secrets/
+.env
+.env.*
+*.env
+!.env.example
+**/admin_credentials*
+*.pem
+*.p12
+*.jks
+*.keystore
+key.properties
+**/key.properties
+local.properties
+**/local.properties
+google-services.json
+**/dart_defines*.json
+**/*.secret*
+# ---- Build artifacts / outputs ----
+apks/
+backups/
+build/
+**/build/
+.dart_tool/
+**/.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+node_modules/
+.gradle/
+**/.gradle/
+*.apk
+*.aab
+*.zip
+*.b64
+deploy-*/
+deploy-b64/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# ---- Databases (may hold keys / user data) ----
+*.sqlite
+*.sqlite3*
+*.db
+*.db-*
+# ---- Logs / local output / personal photos ----
+*.log
+tests-out/
+verification/
+shots_v1155/
+samples/
+*.bak
+.idea/
+*.iml
+.DS_Store
