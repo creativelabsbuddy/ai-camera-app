@@ -1,0 +1,59 @@
+import 'mode_prompts.dart' show isVagueDetect, sanitizeDetected;
+import 'zoom_assist.dart' show isSameSubject;
+
+/// v11.58 Microscope / Extreme / Ultra coordinated detection:
+///  1. a 1.5x photo is taken at the shutter and the OBJECT in it is named
+///     and LOCKED (e.g. "red aluminium soda can");
+///  2. at the high zoom only the PART of that locked object is detected
+///     (the locked name is never replaced);
+///  3. if the high-zoom frame does not match the 1.5x frame → "Hold steady"
+///     and the shot is retaken (up to [kMicroRetakes] times). Still no
+///     match → the photo flow without a lock (nothing invented from a
+///     wrong name).
+class MicroLock {
+  const MicroLock({
+    required this.name,
+    required this.path,
+    required this.cameraZoom,
+    required this.at,
+    this.others = const [],
+  });
+
+  /// Locked object name (colour + object + material, ≤8 words).
+  final String name;
+
+  /// Private copy of the 1.5x photo the name came from.
+  final String path;
+  final double cameraZoom;
+  final DateTime at;
+  final List<String> others;
+}
+
+/// Retakes after a mismatch (so at most 1 + 2 shots).
+const int kMicroRetakes = 2;
+
+/// A lock is reused (no new detection call) while the next 1.5x photo
+/// still shows the same thing and it is younger than this.
+const Duration kMicroLockReuse = Duration(minutes: 3);
+
+const String kMicroHoldSteady = 'Hold steady';
+
+/// Mismatch between the 1.5x photo and the high-zoom frame: the vision
+/// model says it is another place, or the pixels do not match and the
+/// model did not confirm it.
+bool microFrameMismatch({required double pixelScore, bool? inScene}) =>
+    inScene == false || (!isSameSubject(pixelScore) && inScene != true);
+
+/// The detected PART (≤8 words) or the locked object when the part is
+/// empty / vague. Never replaces the lock.
+String microPartText(String? part, String lock) {
+  final p = sanitizeDetected(part);
+  if (p.isEmpty || isVagueDetect(p)) return sanitizeDetected(lock);
+  return p;
+}
+
+/// A usable lock name (clear, not only look / colour words).
+bool isUsableLock(String? name) {
+  final n = sanitizeDetected(name);
+  return n.isNotEmpty && !isVagueDetect(n);
+}

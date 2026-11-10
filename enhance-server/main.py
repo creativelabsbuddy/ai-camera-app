@@ -106,9 +106,14 @@ SPOT_TIMEOUT = float(os.environ.get("SPOT_TIMEOUT", "6"))
 SPOT_RETRY_TIMEOUT = float(os.environ.get("SPOT_RETRY_TIMEOUT", "3.5"))
 DETECT_LONG = 768  # v11.49: was 512 (box check names the object)
 MODEL = "openai/gpt-image-2.5-flare"
+# v11.58 style models (per style, admin "Model" select; fallback = Custom/Flare).
+KLEIN_MODEL = os.environ.get("KLEIN_MODEL", "black-forest-labs/flux-3-image-klein")
+RUNWARE_URL = "https://api.runware.ai/v1"
+RUNWARE_KLEIN4B_MODEL = os.environ.get("RUNWARE_KLEIN4B_MODEL", "runware:400@4")
+RUNWARE_LONG = 1024  # FLUX.2 Klein 4B ~1 MP output
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-app = FastAPI(title="AI Camera Enhance Server", version="11.1.47")
+app = FastAPI(title="AI Camera Enhance Server", version="11.1.58")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _ledger: Optional[L.Ledger] = None
@@ -267,7 +272,7 @@ def prepare(raw: bytes, max_long: int) -> tuple[bytes, int, int]:
     if max(im.size) > max_long:
         im.thumbnail((max_long, max_long), Image.LANCZOS)
     out = io.BytesIO()
-    im.save(out, "JPEG", quality=90)
+    im.save(out, "JPEG", quality=100)  # v11.58: no lossy q90 re-encode
     return out.getvalue(), im.width, im.height
 
 
@@ -380,6 +385,94 @@ def build_payload(prompt: str, tier: str, aspect: str, image_url: Optional[str],
     if refs:
         out["input_references"] = refs
     return out
+
+
+def klein_payload(prompt: str, aspect: str, image_url: str) -> dict:
+    """v11.58 FLUX Klein (OpenRouter): the user's photo ONLY (no style
+    reference images) and no quality / resolution params (Klein supports
+    neither)."""
+    return {
+        "model": KLEIN_MODEL,
+        "prompt": prompt,
+        "aspect_ratio": aspect,
+        "n": 1,
+        "output_format": "jpeg",
+        "input_references": [{"type": "image_url", "image_url": {"url": image_url}}],
+    }
+
+
+def _runware_key() -> str:
+    return os.environ.get("RUNWARE_API_KEY", "").strip()
+
+
+def runware_size(w: int, h: int, long_side: int = RUNWARE_LONG) -> tuple[int, int]:
+    """Runware wants 128–2048 px, multiples of 16, same aspect as the photo."""
+    s = long_side / max(w, h, 1)
+    def r16(v: float) -> int:
+        return max(128, min(2048, int(round(v / 16.0)) * 16))
+    return r16(w * s), r16(h * s)
+
+
+def runware_payload(prompt: str, image_url: str, w: int, h: int) -> list:
+    import uuid
+    rw, rh = runware_size(w, h)
+    return [{
+        "taskType": "imageInference",
+        "taskUUID": str(uuid.uuid4()),
+        "model": RUNWARE_KLEIN4B_MODEL,
+        "positivePrompt": prompt,
+        "width": rw,
+        "height": rh,
+        "inputs": {"referenceImages": [image_url]},
+        "outputType": "base64Data",
+        "outputFormat": "JPG",
+        "numberResults": 1,
+        "includeCost": True,
+    }]
+
+
+async def call_runware(tasks: list) -> tuple[int, dict | str]:
+    """Runware FLUX.2 Klein 4B (monkeypatched in tests). Key from env
+    RUNWARE_API_KEY, never logged."""
+    if _flag("ENHANCE_MOCK"):
+        ref = tasks[0]["inputs"]["referenceImages"][0].split(",", 1)[1]
+        return 200, {"data": [{"imageBase64Data": ref, "cost": 0}]}
+    key = _runware_key()
+    if not key:
+        return 503, "runware not configured"
+    async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
+        resp = await client.post(RUNWARE_URL, json=tasks, headers={
+            "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    try:
+        return resp.status_code, resp.json()
+    except Exception:
+        return resp.status_code, resp.text
+
+
+async def runware_images(body: dict) -> tuple[list[bytes], float]:
+    out, cost = [], 0.0
+    for d in body.get("data") or []:
+        if not isinstance(d, dict):
+            continue
+        cost += float(d.get("cost") or 0)
+        b64 = d.get("imageBase64Data")
+        if b64:
+            out.append(base64.b64decode(b64.split(",", 1)[-1]))
+        elif d.get("imageURL"):
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.get(d["imageURL"])
+                r.raise_for_status()
+                out.append(r.content)
+    return out, cost
+
+
+def style_model_for(style) -> str:
+    """Model actually used for a style: its admin model, or "custom" when the
+    model is unknown / its provider is not configured (fallback to Custom)."""
+    m = S.normalize_style_model(getattr(style, "model", None)) if style else "custom"
+    if m == "runware_klein4b" and not (_runware_key() or _flag("ENHANCE_MOCK")):
+        return "custom"
+    return m
 
 
 def look_quality(tier: str) -> str:
@@ -687,6 +780,7 @@ async def enhance_v1(
     # hidden admin prompt is appended right after the locked enhance prompt.
     prompts_store = get_mode_prompts()
     mode_text = ""
+    portrait_text = ""
     level = None
     if mode == "macro":
         # v11.1: the level comes from the zoom at shutter time (the app also
@@ -696,8 +790,10 @@ async def enhance_v1(
                                        part=part)
         if level in ("microscope", "extreme", "ultra"):
             color_filter = None  # v11.9: no colour filter at Microscope / Extreme
-    elif mode in ("portrait", "night"):
-        mode_text = prompts_store.get(mode)
+    elif mode == "portrait":
+        # v11.58: the Portrait variant of the universal prompt REPLACES the
+        # base; Night uses the universal prompt alone (no night sentence).
+        portrait_text = prompts_store.get("portrait")
     color_text = prompts_store.get(f"filter:{color_filter}") if color_filter else ""
     is_night = mode == "night"
 
@@ -799,7 +895,7 @@ async def enhance_v1(
             prompt = P.build_prompt(
                 has_context=with_ctx, zoom=zoom, optical_limit=optical_limit, tier=quality,
                 style_prompt=filt, mode_prompt=mode_text, color_prompt=color_text,
-                context_boxed=context_boxed,
+                context_boxed=context_boxed, portrait_prompt=portrait_text,
             )
             return build_payload(prompt, quality, aspect, data_url(main_jpg), ctx_url)
 
@@ -855,10 +951,8 @@ async def enhance_v1(
                 out = CM.match_colors(out, main_jpg)
             except Exception as e:
                 log.warning("macro colour match skipped: %s", e)
-        try:
-            out = ensure_min_long_side(out, L.TIERS[quality][4])
-        except Exception as e:
-            raise ai_failure(502, "upstream", f"bad upstream image: {e}") from e
+        # v11.58: the AI image is delivered at its native size (no 1920 /
+        # tier upscale, no re-encode).
 
         # The phone gave up (Cancel / its own timeout) → don't charge.
         if request is not None and await request.is_disconnected():
@@ -978,8 +1072,10 @@ async def apply_look(
             main_jpg, w, h = prepare(raw, LOOK_INPUT_LONG)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"bad image: {e}") from e
+        style_model = style_model_for(style)
         ref_urls = []
-        for f in (style.ref_images if style else []):
+        # v11.58: Klein / Runware get only the user's photo (no references).
+        for f in (style.ref_images if style and style_model == "custom" else []):
             b = get_styles().read_file(f, private=True)
             if b:
                 ref_urls.append(data_url(prepare(b, 1024)[0]))
@@ -996,6 +1092,37 @@ async def apply_look(
         images: list[bytes] = []
         total_cost = 0.0
         failure: Optional[HTTPException] = None
+
+        async def styled_call() -> list[bytes]:
+            """v11.58 Klein (OpenRouter) or FLUX.2 Klein 4B (Runware)."""
+            nonlocal total_cost, failure
+            try:
+                if style_model == "klein":
+                    status, body = await call_openrouter(klein_payload(prompt, aspect, data_url(main_jpg)))
+                else:
+                    status, body = await call_runware(runware_payload(prompt, data_url(main_jpg), w, h))
+            except httpx.TimeoutException:
+                failure = ai_failure(504, "timeout", f"upstream timeout after {UPSTREAM_TIMEOUT:g}s")
+                return []
+            except httpx.HTTPError as e:
+                failure = ai_failure(502, "upstream", f"upstream request failed: {e}")
+                return []
+            if status != 200 or not isinstance(body, dict):
+                failure = upstream_failure(status, body)
+                return []
+            try:
+                if style_model == "klein":
+                    total_cost += float((body.get("usage") or {}).get("cost") or 0)
+                    got = await extract_images(body)
+                else:
+                    got, c = await runware_images(body)
+                    total_cost += c
+            except Exception as e:  # noqa: BLE001
+                failure = ai_failure(502, "no_image", f"bad image payload: {e}")
+                return []
+            if not got:
+                failure = upstream_failure(200, body)
+            return got[:1]
 
         async def one_call(n: int) -> list[bytes]:
             nonlocal total_cost, failure
@@ -1016,7 +1143,21 @@ async def apply_look(
                 failure = upstream_failure(200, body)
             return got
 
-        images = await one_call(variations)
+        used_model = MODEL
+        if style_model in ("klein", "runware_klein4b"):
+            images = await styled_call()
+            if images and variations > 1:  # Klein returns one image per call
+                for extra in await asyncio.gather(*[styled_call() for _ in range(variations - 1)]):
+                    images += extra[:1]
+            if images:
+                used_model = KLEIN_MODEL if style_model == "klein" else RUNWARE_KLEIN4B_MODEL
+            else:  # v11.58: the style's model failed → fall back to Custom (Flare)
+                log.info("style %s: %s failed (%s) — falling back to Custom", style.id, style_model,
+                         getattr(failure, "detail", failure))
+                failure = None
+                images = await one_call(variations)
+        else:
+            images = await one_call(variations)
         # Providers that return fewer than n → top up with single calls IN
         # PARALLEL (only when variations > 1; a single look is one request).
         missing = variations - len(images)
@@ -1049,7 +1190,7 @@ async def apply_look(
         "trials_used": list(charged.trials),
         "account": L.state_header(state),
         "cost": total_cost,
-        "model": MODEL,
+        "model": used_model,
         "style_id": style.id if style else None,
         "references_used": len(ref_urls),
     })

@@ -82,9 +82,9 @@ void main() {
       (bodies.single['prompt'] as String),
       contains('Use the second image only to understand the scene'),
     );
-    // Output resampled to the HD target (≥1024 long side).
+    // v11.58: delivered at the model's native size (no 1920 / tier upscale).
     final out = img.decodeImage(r.file!.readAsBytesSync())!;
-    expect(out.height, greaterThanOrEqualTo(1000));
+    expect(out.height, lessThan(1000));
     expect((await AccountService.instance.ledger.load()).freeDaily, 1);
   });
 

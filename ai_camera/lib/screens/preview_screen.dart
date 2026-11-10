@@ -187,6 +187,11 @@ class _PreviewScreenState extends State<PreviewScreen> {
   /// A paid Macro AI result is on screen ("Try again · 🪙N" offered).
   bool _macroDone = false;
 
+  /// v11.58: a bad Microscope / Extreme / Ultra result can be refunded
+  /// once (local test-key charge; same credit buckets given back).
+  EnhanceDecision? _refundable;
+  bool _refunding = false;
+
   /// v11 Pro Night guard hit on the last AI run (AI result not used).
   AiFailureKind? _guard;
 
@@ -433,6 +438,31 @@ class _PreviewScreenState extends State<PreviewScreen> {
   bool get _isMicroscope =>
       _isMacro && (widget.macroLevel?.isMicroscopic ?? false);
 
+  /// v11.58: give back the credits of a bad Microscope result (once) and
+  /// show the photo as taken again.
+  Future<void> _refundBadResult() async {
+    final d = _refundable;
+    if (d == null || _refunding) return;
+    setState(() => _refunding = true);
+    try {
+      await AccountService.instance.refundLocal(d);
+      if (!mounted) return;
+      setState(() {
+        _refundable = null;
+        _current = _original;
+        _aiBase = null;
+        _compare = false;
+        _status = 'Credits refunded ($kCreditGlyph${d.credits}). Photo kept as taken.';
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not refund. Please try again.')));
+      }
+    } finally {
+      if (mounted) setState(() => _refunding = false);
+    }
+  }
+
   /// v11.1 Macro "Try again · 🪙N": a normal paid run (full tier credits).
   /// Only technical failures are free; there is no refund check in Macro.
   Future<void> _retryMacro() async {
@@ -612,6 +642,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
       if (r.usedAi) {
         _aiBase = r.file;
         _macroDone = _isMacro;
+        final lc = r.localCharge;
+        _refundable = _isMicroscope && lc != null && lc.credits > 0 ? lc : null;
         if (_isMacro) _compare = true;
         _trialsUsed.addAll(r.trialsUsed);
         final cost = r.trialsUsed.isNotEmpty
@@ -928,6 +960,16 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 kAiImaginedLabel,
                 key: ValueKey('ai_imagined_label'),
                 style: TextStyle(color: AppColors.proGold, fontSize: 12),
+              ),
+            ),
+          if (_macroDone && _refundable != null && !_busy)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: TextButton.icon(
+                key: const ValueKey('micro_refund'),
+                onPressed: _refunding ? null : _refundBadResult,
+                icon: const Icon(Icons.undo_rounded, size: 18),
+                label: CreditText('Bad result? Refund $kCreditGlyph${_refundable!.credits}'),
               ),
             ),
           if (_macroDone && !_busy)

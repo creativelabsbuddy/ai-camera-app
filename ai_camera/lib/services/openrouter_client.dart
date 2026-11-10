@@ -24,7 +24,7 @@ import 'mode_prompts.dart'
 import 'upload_prep.dart';
 
 export 'upload_prep.dart'
-    show PreparedImage, prepareUpload, ensureMinLongSide, UploadPrep;
+    show PreparedImage, prepareUpload, UploadPrep;
 
 class OpenRouterEnhanceException implements Exception {
   OpenRouterEnhanceException(this.message, {this.statusCode});
@@ -144,11 +144,13 @@ Map<String, dynamic> buildLookPayload({
   required String imageDataUrl,
   List<String> referenceDataUrls = const [],
   int n = 1,
+  String? model,
 }) => {
-  'model': AiConfig.model,
+  'model': model ?? AiConfig.model,
   'prompt': prompt,
-  'quality': lookQualityFor(tier),
-  'resolution': tier == QualityTier.hd ? '1K' : '1.5K',
+  // v11.58: FLUX Klein takes neither quality nor resolution.
+  if (model != AiConfig.kleinModel) 'quality': lookQualityFor(tier),
+  if (model != AiConfig.kleinModel) 'resolution': tier == QualityTier.hd ? '1K' : '1.5K',
   'aspect_ratio': aspectRatio,
   'n': n,
   'output_format': 'jpeg',
@@ -582,9 +584,10 @@ class OpenRouterClient {
     final usage = body['usage'];
     final cost = usage is Map ? (usage['cost'] as num?)?.toDouble() : null;
     cancel?.throwIfCancelled();
-    final sized = await ensureMinLongSide(bytes, tier.minLongSide);
+    // v11.58: the AI image is delivered as it came (no 1920 / tier upscale,
+    // no re-encode).
     return AiImageResult(
-      bytes: sized,
+      bytes: bytes,
       contextUsed: withContext,
       fellBackToSingleImage: fellBack,
       costUsd: cost,
@@ -604,10 +607,13 @@ class OpenRouterClient {
     List<Uint8List> references = const [],
     int n = 1,
     AiCancelToken? cancel,
+    String? model,
   }) async {
     if (!isConfigured) {
       throw OpenRouterEnhanceException('OpenRouter API key not configured');
     }
+    // v11.58: Klein gets only the user's photo (no reference images).
+    if (model == AiConfig.kleinModel) references = const [];
     final main = await prepareUpload(
       await image.readAsBytes(),
       maxLong: kLookInputLongSide,
@@ -633,6 +639,7 @@ class OpenRouterClient {
               imageDataUrl: main.dataUrl,
               referenceDataUrls: refs,
               n: count,
+              model: model,
             ),
           ),
           cancel,

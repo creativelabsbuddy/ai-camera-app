@@ -39,6 +39,7 @@ import '../services/context_snapshot.dart';
 import '../config/ai_config.dart';
 import '../services/macro.dart';
 import '../services/macro_box.dart';
+import '../services/micro_lock.dart';
 import '../services/mode_prompts.dart' show kMacroGeneralSubject, isVagueDetect;
 import '../widgets/credit_icon.dart';
 import '../widgets/styles_quick_panel.dart';
@@ -308,6 +309,12 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// v11.40 Macro / Close / Extreme / Ultra: wider context photos taken at
   /// the shutter (lower zoom steps), sent as extra references.
   List<ContextSnapshot> _macroCtx = const [];
+
+  /// v11.58 Microscope levels: the 1.5x photo taken at the shutter, the
+  /// object locked from it, and the camera zoom of the last macro still.
+  ContextSnapshot? _microOneHalf;
+  MicroLock? _microLock;
+  double _macroShotCamera = 1;
   final Set<MacroLevel> _levelTipsShown = {};
   int _zoomAnimGen = 0;
   String? _boxDbg; // key-build debug line (last shutter detection)
@@ -1786,7 +1793,20 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (hdr) {
         shotPath = await _takeHdr(c, (note) => captureNote = note);
       } else if (macro) {
-        final (path, note, crop) = await _takeMacro(c);
+        var (path, note, crop) = await _takeMacro(c);
+        String? lockName;
+        String? lockPart;
+        if (level != null && level.isMicroscopic) {
+          // v11.58: lock the object at 1.5x, detect only its part at the
+          // high zoom; mismatch → "Hold steady" + retake.
+          final co = await _coordinatedMicro(c, path, note, crop);
+          path = co.path;
+          note = co.note;
+          crop = co.crop;
+          lockName = co.lock;
+          lockPart = co.part;
+          if (!mounted) return;
+        }
         shotPath = path;
         captureNote = note;
         // The still was taken at the optical limit: crop the user's region
@@ -1796,7 +1816,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         // cloud subject detection. Extreme / Ultra try ONE detection on the
         // box area; v11.40: unclear → no refusal, the zoomed view (+ context
         // photos) is sent instead of the spot text.
-        if (level != null && level.isMicroscopic) {
+        if (level != null && level.isMicroscopic && lockName != null && lockPart != null) {
+          // v11.58: locked object + its part → material-aware text prompt.
+          microSpot = lockPart;
+          subject = lockName;
+        } else if (level != null && level.isMicroscopic) {
           // v11.47/49: Microscope, Extreme, Ultra — sharpest of final + step
           // photos (tie → final) + the widest step photo as an overview →
           // ONE name detection. A clear, non-vague name → text-only;
@@ -2725,6 +2749,119 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     }
   }
 
+  void _dropMicroLock() {
+    final l = _microLock;
+    _microLock = null;
+    if (l != null) unawaited(File(l.path).delete().then((_) {}, onError: (_) {}));
+  }
+
+  /// v11.58: name + LOCK the object in the 1.5x photo. A recent lock is
+  /// reused (no new call) while the 1.5x photo still shows the same thing.
+  Future<String?> _lockMicroObject(ContextSnapshot half) async {
+    final prev = _microLock;
+    if (prev != null &&
+        DateTime.now().difference(prev.at) < kMicroLockReuse &&
+        File(prev.path).existsSync()) {
+      try {
+        final s = await checkpointMatch(prev.path, prev.cameraZoom, half.path, half.cameraZoom);
+        if (isSameSubject(s)) return prev.name;
+      } catch (_) {}
+    }
+    if (mounted) setState(() => _nightStage = 'Checking…');
+    try {
+      final name = await _detector.detectSubjectTimed(File(half.path));
+      if (!isUsableLock(name)) return null;
+      final copy = '${half.path}_lock.jpg';
+      await File(half.path).copy(copy);
+      _dropMicroLock();
+      _microLock = MicroLock(
+        name: name!,
+        path: copy,
+        cameraZoom: half.cameraZoom,
+        at: DateTime.now(),
+        others: _detector.lastOthers,
+      );
+      return name;
+    } catch (e) {
+      debugPrint('Microscope lock failed: $e');
+      return null;
+    } finally {
+      if (mounted) setState(() => _nightStage = null);
+    }
+  }
+
+  /// v11.58 coordinated Microscope / Extreme / Ultra detection: lock at
+  /// 1.5x → part only at the high zoom → frames must match, otherwise
+  /// "Hold steady" and retake (max [kMicroRetakes]). No lock / still no
+  /// match → lock null (the older photo / box flow runs; never a wrong
+  /// name).
+  Future<({String path, String note, double crop, String? lock, String? part})>
+  _coordinatedMicro(CameraController c, String path, String note, double crop) async {
+    for (var attempt = 0; ; attempt++) {
+      final half = _microOneHalf;
+      if (half == null || !File(half.path).existsSync()) {
+        return (path: path, note: note, crop: crop, lock: null, part: null);
+      }
+      final lock = await _lockMicroObject(half);
+      if (lock == null) {
+        _boxDbg = 'lock - (${_detector.lastReason})';
+        return (path: path, note: note, crop: crop, lock: null, part: null);
+      }
+      var score = 1.0;
+      try {
+        score = await checkpointMatch(half.path, half.cameraZoom, path, _macroShotCamera);
+      } catch (_) {}
+      PartResult? pr;
+      String? boxed;
+      if (mounted) setState(() => _nightStage = 'Checking…');
+      try {
+        boxed = await writeZoomBoxed(path, crop);
+        pr = await _detector.detectPart(
+          File(half.path),
+          File(boxed),
+          lock,
+          others: _microLock?.others ?? const [],
+        );
+      } catch (e) {
+        debugPrint('Microscope part check failed: $e');
+      } finally {
+        if (boxed != null && boxed != path) {
+          unawaited(File(boxed).delete().then((_) {}, onError: (_) {}));
+        }
+        if (mounted) setState(() => _nightStage = null);
+      }
+      final mismatch = microFrameMismatch(pixelScore: score, inScene: pr?.sameSubject);
+      _boxDbg =
+          'lock $lock · part ${pr?.part ?? '-'} · match ${score.toStringAsFixed(2)}'
+          '${mismatch ? ' · retake ${attempt + 1}' : ''}';
+      debugPrint('Microscope: $_boxDbg');
+      if (!mismatch) {
+        return (
+          path: path,
+          note: '$note · locked: $lock',
+          crop: crop,
+          lock: lock,
+          part: microPartText(pr?.part, lock),
+        );
+      }
+      if (attempt >= kMicroRetakes || !mounted || !identical(c, _controller)) {
+        return (path: path, note: '$note · frames did not match', crop: crop, lock: null, part: null);
+      }
+      // Frames do not match → "Hold steady" and retake.
+      _showToast(kMicroHoldSteady);
+      setState(() {
+        _holdSteady = true;
+        _nightStage = kMicroHoldSteady;
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      unawaited(File(path).delete().then((_) {}, onError: (_) {}));
+      final r = await _takeMacro(c);
+      path = r.$1;
+      note = r.$2;
+      crop = r.$3;
+    }
+  }
+
   /// v11.27: X on the result → fresh Macro start at 1x (no level).
   Future<void> _freshMacroStart() async {
     _resetMacroFlow();
@@ -2734,6 +2871,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   void _resetMacroFlow() {
     _detector.cancelInFlight();
+    _dropMicroLock();
     _macroLevel = null;
     _boxCheck.reset();
     _dropMicroHint();
@@ -2741,6 +2879,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   }
 
   void _dropMacroCtx() {
+    final half = _microOneHalf;
+    _microOneHalf = null;
+    if (half != null) {
+      unawaited(File(half.path).delete().then((_) {}, onError: (_) {}));
+    }
     final old = _macroCtx;
     _macroCtx = const [];
     for (final s in old) {
@@ -3076,14 +3219,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     }
   }
 
-  bool get _macroLowEnd => isLowEndCamera(
-    previewLongSide: (() {
-      final ps = _controller?.value.previewSize;
-      return ps == null ? 0 : math.max(ps.width, ps.height).round();
-    })(),
-    backCameras: ZoomInfoService.cached?.backCameras.length ?? 1,
-    hardwareMax: _range.hardwareMax,
-  );
+  /// v11.58: ONE phone class everywhere. The flows (zoom ladder, merge,
+  /// zoom AF, macro burst) used the old preview-size heuristic while the
+  /// debug overlay showed [classifyCamera] — a flagship with a <1600 px
+  /// preview stream (e.g. S24 Ultra) was treated as a cheap phone.
+  bool get _macroLowEnd => _cameraClass.lowEnd;
 
   /// v11.8 shutter: camera to the optical limit (real pixels) → settle →
   /// centre AF → sharpest of 4 (7 on low-end) → restore the preview zoom.
@@ -3110,6 +3250,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final lowEnd = _macroLowEnd;
     final n = macroBurstCount(lowEnd: lowEnd);
     final crop = moved ? cap.crop : _digitalZoom;
+    _macroShotCamera = moved ? cap.camera : previewCam;
     final ourAf = await _preCapture(); // centre AF unless tapped
     try {
       final (path, note) = await _burstSharpest(c, n, crop, merge: lowEnd);
@@ -3125,6 +3266,19 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           ctxTaken = _macroCtx.isNotEmpty;
         } catch (e) {
           debugPrint('Macro context photos skipped: $e');
+        }
+        // v11.58: Microscope levels also take a 1.5x photo (object lock).
+        if (_macroLevel!.isMicroscopic && identical(c, _controller)) {
+          try {
+            final cam = planZoom(requested: kMacroDetectZoom, range: _range).cameraZoom;
+            await c.setZoomLevel(cam);
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            final shot = await c.takePicture();
+            _microOneHalf = ContextSnapshot(path: shot.path, cameraZoom: cam, at: DateTime.now());
+            ctxTaken = true;
+          } catch (e) {
+            debugPrint('Microscope 1.5x photo skipped: $e');
+          }
         }
       }
       if (ctxTaken && !moved && identical(c, _controller)) {

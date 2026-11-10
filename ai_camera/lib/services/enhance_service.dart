@@ -215,14 +215,14 @@ class EnhanceJob {
     String? modePrompt;
     String? colorPrompt;
     if (AiConfig.kHasEmbeddedKey) {
+      // v11.58: Portrait = the universal prompt's Portrait variant; Night =
+      // the universal prompt alone (no night sentence).
       modePrompt = switch (aiMode) {
-        'portrait' => kPortraitPrompt,
         'macro' => macroPrompt(
           subject,
           level: macroLevel ?? 'macro',
           part: part,
         ),
-        'night' => kNightPrompt,
         _ => null,
       };
       final cf = colorFilterId;
@@ -238,6 +238,7 @@ class EnhanceJob {
       modePrompt: modePrompt,
       colorPrompt: colorPrompt,
       contextBoxed: contextBoxed,
+      portrait: aiMode == 'portrait',
     );
   }
 }
@@ -262,7 +263,12 @@ class EnhanceResult {
     this.guard,
     this.structure,
     this.rejectedFile,
+    this.localCharge,
   });
+
+  /// v11.58: what a local (test-key) run charged — lets the user get the
+  /// credits back for a bad Microscope result. Null for server runs.
+  final EnhanceDecision? localCharge;
 
   /// v11.42 test builds: the AI result a check rejected (still refunded),
   /// viewable from the preview ("Rejected: framing 0.26 — tap to view").
@@ -493,15 +499,16 @@ class EnhanceService {
         }
         final file = await _writeBytes(bytes, 'flare');
         // Charge only now that the AI result is in hand.
-        await _account.commitLocal(spec);
+        final charged = await _account.commitLocal(spec);
         if (r.fellBackToSingleImage) {
           debugPrint('Enhance: context image unsupported, used crop only');
         }
         return EnhanceResult(
           file: file,
           backend: EnhanceBackend.openRouter,
-          creditsCharged: decision.credits,
-          trialsUsed: decision.trials,
+          creditsCharged: charged.allowed ? charged.credits : decision.credits,
+          trialsUsed: charged.allowed ? charged.trials : decision.trials,
+          localCharge: charged.allowed ? charged : null,
           contextUsed: r.contextUsed,
           structure: structure,
         );

@@ -1,4 +1,3 @@
-import 'filter_catalog.dart';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -15,7 +14,9 @@ import 'ai_call.dart';
 import 'entitlements.dart';
 import 'local_style_prompts.dart';
 import 'openrouter_client.dart';
+import 'filter_catalog.dart';
 import 'prompt_builder.dart';
+import 'runware_client.dart';
 import 'server_api_client.dart';
 
 /// Library styles always render at Full HD params (Flare `medium`); the cost
@@ -118,6 +119,16 @@ String? localSeedStylePrompt(String id) {
   return null;
 }
 
+/// v11.58: the model that actually renders [style] in a key TEST build.
+/// Custom changes and unknown models use the Custom model (Flare); Runware
+/// without a key falls back to Custom too.
+String styleModelFor(AiStyle? style, {required bool runwareReady}) {
+  if (style == null) return kStyleModelCustom;
+  final m = normalizeStyleModel(style.model);
+  if (m == kStyleModelRunware && !runwareReady) return kStyleModelCustom;
+  return m;
+}
+
 /// Gating → AI → charge on success (never on failure).
 class LookService {
   LookService({
@@ -126,14 +137,17 @@ class LookService {
     AccountService? account,
     Future<Directory> Function()? tempDir,
     String? Function(String styleId)? localPromptFor,
+    RunwareClient? runware,
   }) : _server = server ?? ServerApiClient(),
        _openRouter = openRouter ?? OpenRouterClient(),
+       _runware = runware ?? RunwareClient(),
        _accountOverride = account,
        _tempDir = tempDir ?? getTemporaryDirectory,
        _localPromptFor = localPromptFor ?? localSeedStylePrompt;
 
   final ServerApiClient _server;
   final OpenRouterClient _openRouter;
+  final RunwareClient _runware;
   final AccountService? _accountOverride;
   final Future<Directory> Function() _tempDir;
   final String? Function(String styleId) _localPromptFor;
@@ -217,17 +231,45 @@ class LookService {
           );
         }
       }
+      final prompt = buildLookPrompt(
+        stylePrompt: stylePrompt,
+        customPrompt: job.isStyle ? null : job.customPrompt,
+      );
+      Future<({List<Uint8List> images, double cost})> custom() => _openRouter.generateLook(
+        image: job.image,
+        prompt: prompt,
+        tier: job.effectiveTier,
+        n: 1,
+        cancel: cancel,
+      );
       try {
-        final r = await _openRouter.generateLook(
-          image: job.image,
-          prompt: buildLookPrompt(
-            stylePrompt: stylePrompt,
-            customPrompt: job.isStyle ? null : job.customPrompt,
-          ),
-          tier: job.effectiveTier,
-          n: 1,
-          cancel: cancel,
-        );
+        ({List<Uint8List> images, double cost})? r;
+        // v11.58: per-style model; on failure fall back to Custom (Flare).
+        final model = styleModelFor(job.style, runwareReady: _runware.isConfigured);
+        if (model != kStyleModelCustom) {
+          try {
+            if (model == kStyleModelRunware) {
+              final x = await _runware.generate(image: job.image, prompt: prompt, cancel: cancel);
+              r = (images: [x.image], cost: x.cost);
+            } else {
+              r = await _openRouter.generateLook(
+                image: job.image,
+                prompt: prompt,
+                tier: job.effectiveTier,
+                n: 1,
+                cancel: cancel,
+                model: AiConfig.kleinModel,
+              );
+            }
+          } on AiCancelledException {
+            rethrow;
+          } catch (e) {
+            if (cancel?.isCancelled ?? false) rethrow;
+            debugPrint('Style model $model failed ($e) — falling back to Custom');
+            r = null;
+          }
+        }
+        r ??= await custom();
         if (cancel?.isCancelled ?? false) throw const AiCancelledException();
         // One image; charged only now (success).
         final charged = await _account.commitLocalLook(job.spec);

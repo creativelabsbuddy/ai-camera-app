@@ -134,8 +134,15 @@ class AccountService {
     }
   }
 
-  Future<void> commitLocal(EnhanceSpec spec) async {
-    state.value = await ledger.commit(spec);
+  Future<EnhanceDecision> commitLocal(EnhanceSpec spec) async {
+    final (s, d) = await ledger.commitEnhance(spec);
+    state.value = s;
+    return d;
+  }
+
+  /// v11.58: refund a local (test-key) charge — bad Microscope result.
+  Future<void> refundLocal(EnhanceDecision d) async {
+    state.value = await ledger.refund(d);
   }
 
   /// Client-side look check (style apply / custom change), same rules as

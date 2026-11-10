@@ -18,8 +18,8 @@ void main() {
   test('locked prompt unchanged and always first', () {
     expect(
       kLockedEnhancePrompt,
-      startsWith('Enhance this real photo and keep it the same photo'),
-    ); // v11.39
+      startsWith('Enhance this photo so it looks like it was shot on a professional DSLR'),
+    ); // v11.58 universal DSLR prompt
     final v6Locked = kLockedEnhancePrompt;
     expect(buildEnhancePrompt(), v6Locked);
     expect(

@@ -16,7 +16,9 @@ const int kMacroContextLongSide = 1024;
 int contextLongSideFor(String path) =>
     path.endsWith('_boxed.jpg') ? kMacroContextLongSide : kContextLongSide;
 const int kReferenceLongSide = 1024; // style reference images
-const int kUploadJpegQuality = 90;
+/// v11.58: no lossy q90 re-encode any more. Upright JPEGs that already fit
+/// go out byte-for-byte; a resize / EXIF bake is written at q100.
+const int kUploadJpegQuality = 100;
 
 /// Upload-ready image: upright pixels, ≤ maxLong long side, JPEG.
 class PreparedImage {
@@ -39,7 +41,7 @@ class UploadPrep {
   static String lastPath = '';
 }
 
-/// Bakes EXIF orientation and limits the long side to [maxLong] (JPEG q90).
+/// Bakes EXIF orientation and limits the long side to [maxLong] (JPEG q100).
 /// Small upright JPEGs are passed through untouched.
 Future<PreparedImage> prepareUpload(
   Uint8List bytes, {

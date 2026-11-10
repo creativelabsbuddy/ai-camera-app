@@ -203,7 +203,8 @@ void main() {
 
     test('portrait prompt (test-key copy) is bokeh only, keeps identity', () {
       expect(kPortraitPrompt.toLowerCase(), contains('bokeh'));
-      expect(kPortraitPrompt.toLowerCase(), contains('identity'));
+      expect(kPortraitPrompt.toLowerCase(), contains('keep the same people and faces exactly'));
+      expect(kPortraitPrompt.toLowerCase(), contains('100% sharp'));
     });
   });
 

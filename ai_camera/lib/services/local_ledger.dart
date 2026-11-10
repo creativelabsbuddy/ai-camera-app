@@ -48,11 +48,21 @@ class LocalLedger {
 
   /// Commit after a SUCCESSFUL AI result only. Re-decides against the latest
   /// state so a concurrent change can never overdraw.
-  Future<CreditState> commit(EnhanceSpec spec) async {
+  Future<CreditState> commit(EnhanceSpec spec) async => (await commitEnhance(spec)).$1;
+
+  /// v11.58: [commit] + what was actually charged (for a later refund).
+  Future<(CreditState, EnhanceDecision)> commitEnhance(EnhanceSpec spec) async {
     final s = await load();
     final d = decideEnhance(s, spec, now);
-    if (!d.allowed) return s;
+    if (!d.allowed) return (s, d);
     final next = applyDecision(s, d);
+    await _save(await SharedPreferences.getInstance(), next);
+    return (next, d);
+  }
+
+  /// v11.58: gives back what [d] charged (bad Microscope result).
+  Future<CreditState> refund(EnhanceDecision d) async {
+    final next = refundDecision(await load(), d);
     await _save(await SharedPreferences.getInstance(), next);
     return next;
   }

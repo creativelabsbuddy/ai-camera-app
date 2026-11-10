@@ -117,8 +117,8 @@ void main() {
   test('zoom prompt + wiring', () {
     expect(
       kZoomCleanPrompt,
-      startsWith('Keep this zoomed photo exactly as it is'),
-    ); // v11.39
+      kUniversalEnhancePrompt,
+    ); // v11.58
     expect(kZoomLadderPrompt.startsWith(kZoomCleanPrompt), isTrue);
     final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
     expect(h, contains('zoomClean: zoomFlow != ZoomFlow.normal'));
