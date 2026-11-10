@@ -261,12 +261,14 @@ void main() {
     await t.tap(find.byKey(const ValueKey('video_tab_custom')));
     await t.pumpAndSettle();
     expect(find.byWidgetPredicate((w) => isCreditText(w, '580p · 🪙4')), findsOneWidget);
-    expect(find.byKey(const ValueKey('minimax_label')), findsNothing);
+    expect(find.byKey(const ValueKey('video_wait_note')), findsNothing);
     await t.tap(find.byKey(const ValueKey('video_len_10')));
     await t.pump();
     expect(find.byWidgetPredicate((w) => isCreditText(w, '768p · 🪙13')), findsOneWidget);
     expect(find.byWidgetPredicate((w) => isCreditText(w, '580p · 🪙4')), findsNothing);
-    expect(find.byKey(const ValueKey('minimax_label')), findsOneWidget);
+    // v11.58: no model chip; MiniMax lengths show the 15–20 min note.
+    expect(find.byKey(const ValueKey('minimax_label')), findsNothing);
+    expect(find.text(kLongVideoWaitNote), findsOneWidget);
     VideoService.resetForTest(VideoService());
   });
 
@@ -288,7 +290,8 @@ void main() {
     VideoService.resetForTest(s);
     await t.pumpWidget(const MaterialApp(home: VideoScreen()));
     await t.pump();
-    expect(find.byKey(const ValueKey('minimax_label')), findsOneWidget);
+    expect(find.byKey(const ValueKey('ai_generated_label')), findsOneWidget); // v11.58
+    expect(find.text('AI-generated'), findsOneWidget);
     expect(find.byWidgetPredicate((w) => isCreditText(w, '🪙7 used')), findsOneWidget);
     await t.tap(find.byKey(const ValueKey('video_save')));
     await t.pump();

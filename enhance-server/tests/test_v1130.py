@@ -75,6 +75,6 @@ def test_zoom_ladder_flag_ignored_without_steps_or_in_macro(env):
 
 
 def test_ladder_prompt_simple_and_version():
-    assert P.ZOOM_LADDER_PROMPT.startswith("Keep this zoomed photo exactly as it is")  # v11.39
+    assert P.ZOOM_LADDER_PROMPT.startswith(P.UNIVERSAL_ENHANCE_PROMPT)  # v11.58
     assert P.zoom_ladder_prompt(None, None) == P.ZOOM_LADDER_PROMPT
     assert tuple(map(int, main.app.version.split("."))) >= (11, 1, 25)

@@ -25,7 +25,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 import prompts as P
 from mode_prompts import ModePromptStore
 from poses import CATEGORIES as POSE_CATEGORIES, Pose, PoseStore, clean_source_url
-from styles import MAX_REFERENCES, Style, StyleStore, normalize_ui_category, ui_categories_for
+from styles import (MAX_REFERENCES, STYLE_MODELS, Style, StyleStore, normalize_style_model, normalize_ui_category,
+                    ui_categories_for)
 
 COOKIE = "admin_session"
 SESSION_SECONDS = 12 * 3600
@@ -172,7 +173,7 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
         for s in get_store().list(include_disabled=True, media_type=media):
             img = f'<img class="t" src="/media/styles/{_esc(s.display_image)}">' if s.display_image else '<div class="t"></div>'
             rows.append(f"""<tr class="{'' if s.enabled else 'off'}"><td>{img}</td>
-<td><b>{_esc(s.name)}</b><div class="muted">{_esc(s.id)} · {_esc(s.category)} · app: {_esc(normalize_ui_category(s.ui_category, s.media_type))}</div></td>
+<td><b>{_esc(s.name)}</b><div class="muted">{_esc(s.id)} · {_esc(s.category)} · app: {_esc(normalize_ui_category(s.ui_category, s.media_type))}{'' if s.media_type == 'video' else ' · model: ' + _esc(normalize_style_model(s.model))}</div></td>
 <td>⚡{s.credit_cost}</td>
 <td>{'<span class="pill">Pro only</span>' if s.pro_only else ''} {'' if s.enabled else '<span class="pill">disabled</span>'}
 {f'<span class="pill">{len(s.ref_images)} ref</span>' if s.ref_images else ''}
@@ -206,6 +207,15 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
         cur = normalize_ui_category(s.ui_category, s.media_type)
         ui_opts = "".join(f'<option value="{k}" {"selected" if k == cur else ""}>{_esc(lbl)}</option>'
                           for k, lbl in ui_categories_for(s.media_type))
+        cur_model = normalize_style_model(s.model)
+        model_opts = "".join(f'<option value="{k}" {"selected" if k == cur_model else ""}>{_esc(lbl)}</option>'
+                             for k, lbl in STYLE_MODELS)
+        model_html = "" if s.media_type == "video" else (
+            '<label>Model (which AI renders this style)</label><select name="model" '
+            f'style="padding:9px;border-radius:8px;background:#0c0e13;color:#eceff4">{model_opts}</select>'
+            '<div class="muted">FLUX Klein gets only the user\'s photo (no reference images). Use Runware '
+            'FLUX.2 Klein 4B for violent / bloody looks. If the chosen model fails or is not set up, the '
+            'style falls back to the Custom model.</div>')
         def _sample(field: str, label: str, url: Optional[str]) -> str:
             cur_img = (f'<img class="t" src="{_esc(url)}"> <label style="display:inline;font-weight:400">'
                        f'<input type="checkbox" name="remove_{field}" value="1"> remove</label><br>') if url else ""
@@ -221,6 +231,7 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
 <label>Name</label><input type="text" name="name" value="{_esc(s.name)}" required maxlength="40">
 <label>Category</label><input type="text" name="category" value="{_esc(s.category)}" list="cats" required maxlength="30"><datalist id="cats">{opts}</datalist>
 <label>App category (chip in the app's Styles sheet)</label><select name="ui_category" style="padding:9px;border-radius:8px;background:#0c0e13;color:#eceff4">{ui_opts}</select>
+{model_html}
 <label>Display / sample image</label>{disp}<input type="file" name="display_image" accept="image/*">
 {sample_html}
 <label>Reference images (optional, up to {MAX_REFERENCES}; sent to the AI with the user's photo)</label>
@@ -291,7 +302,7 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
         pro_only: Optional[str] = Form(None), enabled: Optional[str] = Form(None),
         needs_person: Optional[str] = Form(None), free_trial: Optional[str] = Form(None),
         as_filter: Optional[str] = Form(None), media_type: str = Form("photo"),
-        ui_category: str = Form("new"),
+        ui_category: str = Form("new"), model: str = Form(""),
         display_image: Optional[UploadFile] = File(None),
         ref_images: list[UploadFile] = File(default=[]),
         sample_before: Optional[UploadFile] = File(None),
@@ -306,6 +317,7 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
                   free_trial=bool(free_trial), kind="filter" if as_filter else "style",
                   media_type="video" if media_type == "video" else "photo")
         s.ui_category = normalize_ui_category(ui_category, s.media_type)
+        s.model = normalize_style_model(model) if model else ("custom" if s.kind == "filter" else "klein")
         await _save(store, s, display_image, ref_images, [],
                     {"sample_before_url": sample_before, "sample_after_url": sample_after})
         return RedirectResponse("/admin?tab=video" if s.media_type == "video" else "/admin", status_code=303)
@@ -318,7 +330,7 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
         pro_only: Optional[str] = Form(None), enabled: Optional[str] = Form(None),
         needs_person: Optional[str] = Form(None), free_trial: Optional[str] = Form(None),
         as_filter: Optional[str] = Form(None), media_type: str = Form("photo"),
-        ui_category: str = Form("new"),
+        ui_category: str = Form("new"), model: str = Form(""),
         display_image: Optional[UploadFile] = File(None),
         ref_images: list[UploadFile] = File(default=[]),
         remove_refs: list[str] = Form(default=[]),
@@ -339,6 +351,8 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
         s.free_trial = bool(free_trial)
         s.kind = "filter" if as_filter else "style"
         s.ui_category = normalize_ui_category(ui_category, s.media_type)
+        if model:
+            s.model = normalize_style_model(model)
         rm = tuple(k for k, v in (("sample_before_url", remove_sample_before),
                                   ("sample_after_url", remove_sample_after)) if v)
         await _save(store, s, display_image, ref_images, remove_refs,
@@ -403,7 +417,7 @@ def api_guard(request: Request) -> None:
 
 _API_FIELDS = {"name": str, "category": str, "prompt": str, "credit_cost": int, "pro_only": bool,
                "enabled": bool, "sort_order": int, "needs_person": bool, "free_trial": bool,
-               "media_type": str, "kind": str, "ui_category": str}
+               "media_type": str, "kind": str, "ui_category": str, "model": str}
 
 
 def _apply_fields(s: Style, data: dict) -> Style:
@@ -421,6 +435,7 @@ def _apply_fields(s: Style, data: dict) -> Style:
     if not s.name or not s.category or not s.prompt:
         raise HTTPException(status_code=422, detail="name, category and prompt are required")
     s.ui_category = normalize_ui_category(s.ui_category, s.media_type)
+    s.model = normalize_style_model(s.model)
     return s
 
 

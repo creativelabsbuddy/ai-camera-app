@@ -8,9 +8,17 @@ import json
 import re
 from typing import Optional
 
-LOCKED_ENHANCE_PROMPT = (
-    'Enhance this real photo and keep it the same photo: same framing, same people and faces, same objects and same scene, with nothing added. Make it clean and naturally sharp, with balanced light, true natural colours and real skin and surface texture.'
+# v11.58: ONE universal DSLR enhance prompt for every normal, zoom and
+# low-light photo (replaces the old base + zoom emphasis / HIGH_ZOOM_CLARITY /
+# ZOOM_CLEAN / night sentences). Mirrors kUniversalEnhancePrompt in Dart.
+UNIVERSAL_ENHANCE_PROMPT = (
+    'Enhance this photo so it looks like it was shot on a professional DSLR camera with a high-quality lens. Recover and sharpen all the real detail present in the photo, making everything crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give it a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.'
 )
+# v11.58 Portrait variant (used INSTEAD of the universal prompt).
+PORTRAIT_ENHANCE_PROMPT = (
+    'Enhance this photo so it looks like a portrait shot on a professional DSLR camera with a fast prime lens at a wide aperture. Recover and sharpen all the real detail of the main subject, making it crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the main subject 100% sharp, including hair strands, fingers, fabric edges and outlines, and blur only the background with smooth, natural, depth-graded lens bokeh, with out-of-focus lights as soft round bokeh. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give the subject a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.'
+)
+LOCKED_ENHANCE_PROMPT = UNIVERSAL_ENHANCE_PROMPT  # legacy name
 
 CONTEXT_IMAGE_SENTENCE = (
     "Use the second image only to understand the scene; enhance and upscale "
@@ -61,16 +69,7 @@ NIGHT_PROMPT = (  # v11.48: general, no scene-specific words
     "A natural night photograph of the last image: gently reduce noise, recover shadow detail and keep the real lighting and mood. Keep every object, light and colour as in the photo and do not add anything new. Photorealistic."
 )
 
-PORTRAIT_PROMPT = (
-    "Turn this into a natural portrait-mode photo with DSLR-like background blur. First "
-    "identify the main in-focus subject (a person, hand, pet, object, product or food). Keep "
-    "the subject 100% sharp and unchanged, including fine edges such as hair strands, fingers, "
-    "fabric edges and object outlines; do not blur any part of the subject and do not leave "
-    "pieces of the background sharp. Blur the background with depth-graded lens blur, farther "
-    "areas blurrier than nearer ones, and render out-of-focus lights as soft, natural, round "
-    "lens bokeh. Do not add, remove, move or alter anything; keep the same framing, colors, "
-    "lighting and identity."
-)
+PORTRAIT_PROMPT = PORTRAIT_ENHANCE_PROMPT  # v11.58: admin key 'portrait' = the variant
 
 # v11.6 Macro + AI Microscope (two images). The app sends the FIRST image =
 # a sharp crop, at real pixels, of the small region the user zoomed into
@@ -100,11 +99,18 @@ MACRO_PROMPT = (
 MACRO_CLOSE_PROMPT = (
     "A real close-up macro photograph of this photo: keep the same framing and the same subject shape. Make it clearly sharp and crisp, remove blur and noise, and bring out the fine natural texture and tiny detail that is already there. Keep the subject's own natural colours and soft natural light. Photorealistic."
 )
+# v11.58 Microscope / Extreme / Ultra: material-aware (never hardcoded
+# "cells"); {spot} = the PART detected at the shutter, {on_object} = " on the
+# <object locked at 1.5x>" (empty when the part already names it).
 # v11.47 Microscope: detect first, then TEXT ONLY at 100x (admin key
 # macro_microscope). No spot → the photo prompt below (fallback).
 MACRO_MICROSCOPE_PROMPT = (
-    "A tiny area of {spot} under a light microscope at 100x magnification, microscopic "
-    "cells and structure filling the frame. One single full-frame image, no text or "
+    "A tiny area of {spot}{on_object} under a light microscope at 100x magnification, filling "
+    "the frame. Show only the real fine structure of its own material up close, for example: "
+    "painted metal shows paint grains, printing dots and light scratches; plastic shows fine "
+    "moulding marks; fabric shows woven threads and fibres; paper shows pressed fibres; a "
+    "leaf shows veins and tiny plant structure; skin shows pores and fine lines. Do not add "
+    "anything this material would not really have. One single full-frame image, no text or "
     "labels. Photorealistic."
 )
 # v11.47: the old photo-based Microscope prompt, used only when no spot.
@@ -117,14 +123,20 @@ MACRO_MICROSCOPE_PHOTO_PROMPT = (
 # (fallback: the label). No framing / truth / colour rules, no colour match.
 # v11.18: Extreme is ONLY this line (no prefix / suffix / hint line).
 MACRO_EXTREME_PROMPT = (
-    "A tiny area of {spot} under a light microscope at 1000x magnification, microscopic "
-    "cells and structure filling the frame. One single full-frame image, no text or "
-    "labels. Photorealistic."
+    "A tiny area of {spot}{on_object} under a light microscope at 1000x magnification, "
+    "filling the frame. Show the very fine structure its own material would really have at "
+    "this magnification, for example: painted metal shows paint pigment grains, printing dots "
+    "and tiny scratches in the metal; plastic shows its fine surface grain; fabric shows "
+    "single fibres; a leaf shows tiny plant structure. Do not add anything this material "
+    "would not really have. One single full-frame image, no text or labels. Photorealistic."
 )
 # v11.20 Ultra (30x): electron microscope (may come out greyscale — intended).
 MACRO_ULTRA_PROMPT = (
-    "Close-up of {spot} under a scanning electron microscope at 2000x magnification. "
-    "Show how it looks. One single full-frame image, no text or labels. Photorealistic."
+    "Close-up of {spot}{on_object} under a scanning electron microscope at 2000x "
+    "magnification. Show the true surface structure of its own material, for example: painted "
+    "metal shows paint grains, coating cracks and fine scratches; plastic shows its moulded "
+    "surface; fabric shows single fibres. Do not add anything this material would not really "
+    "have. One single full-frame image, no text or labels. Photorealistic."
 )
 
 _DESC_FALLBACK = {
@@ -301,7 +313,18 @@ def deep_prompt(template: str, subject: Optional[str] = None,
     if template.lstrip().startswith("{spot}"):  # v11.28: capital only at the start
         spot = spot[0].upper() + spot[1:]
     t = template.replace("{subject}", subj or "this")
+    t = t.replace("{on_object}", on_object_text(subj, spot))
     return t.replace("{spot}", spot).strip()
+
+
+def on_object_text(obj: Optional[str], spot: Optional[str]) -> str:
+    """v11.58: " on the <locked object>" after the part, or "" when there is
+    no object, it is the general "close-up" or the part already names it."""
+    o = sanitize_detected(obj)
+    sp = sanitize_detected(spot)
+    if not o or o in ("the subject", "close-up", "this") or o == sp or o in sp:
+        return ""
+    return f" on the {o}"
 
 
 def macro_prompt(template: str, subject: Optional[str] = None, level: str = "macro",
@@ -316,7 +339,7 @@ def macro_prompt(template: str, subject: Optional[str] = None, level: str = "mac
         if macro_text_only(level, subject, part):
             if "{spot}" not in (template or ""):
                 template = MACRO_MICROSCOPE_PROMPT  # old saved photo prompt
-            return deep_prompt(template, None, part)
+            return deep_prompt(template, subject, part)  # v11.58: + locked object
         template = MACRO_MICROSCOPE_PHOTO_PROMPT
     name = MACRO_LEVELS.get(level, MACRO_LEVELS["macro"])[1]
     desc = sanitize_detected(subject)  # v11.33: the box description as is
@@ -658,21 +681,20 @@ def build_prompt(
     mode_prompt: Optional[str] = None,
     color_prompt: Optional[str] = None,
     context_boxed: bool = False,
+    portrait_prompt: Optional[str] = None,
 ) -> str:
-    """Locked base + mode sentence (night / portrait / macro; v11 text comes
-    from the admin store, ``night=True`` without one uses the default) +
-    context, zoom, quality, AI-filter style, color look, user request."""
-    parts = [LOCKED_ENHANCE_PROMPT]
-    mp = (mode_prompt or "").strip() or (NIGHT_PROMPT if night else "")
+    """v11.58: universal DSLR prompt (or the Portrait variant given as
+    ``portrait_prompt``, used INSTEAD of the base) + optional mode sentence
+    (Macro levels) + context, quality, AI-filter style, colour look, user
+    request. ``zoom`` / ``optical_limit`` / ``night`` no longer change the
+    text (one prompt for normal, zoom and low-light photos)."""
+    pp = (portrait_prompt or "").strip()
+    parts = [pp or UNIVERSAL_ENHANCE_PROMPT]
+    mp = (mode_prompt or "").strip()
     if mp:
         parts.append(mp)
     if has_context:
         parts.append(CONTEXT_BOXED_SENTENCE if context_boxed else CONTEXT_IMAGE_SENTENCE)
-    zs = zoom_sentence(zoom, optical_limit)
-    if zs:
-        parts.append(zs)
-    if high_zoom_clarity(zoom, optical_limit):
-        parts.append(HIGH_ZOOM_CLARITY)
     qs = QUALITY_SENTENCES.get(tier, "")
     if qs:
         parts.append(qs)
@@ -761,9 +783,7 @@ MACRO_CONTEXT_LINE = (
 # v11.30 100x zoom ladder (cheap phones): boxed lower-zoom reference photos
 # first, the final photo (to enhance) last. Hidden; the app sends only a flag.
 # v11.34 high zoom (2x+, all phones): keep the photo, raise its own detail.
-ZOOM_CLEAN_PROMPT = (
-    'Keep this zoomed photo exactly as it is: same subject, shapes, framing, colours and light. Make the detail that is already there clearer, gently clean light noise, and keep natural fine texture and a real camera-photo look.'
-)
+ZOOM_CLEAN_PROMPT = UNIVERSAL_ENHANCE_PROMPT  # v11.58: zoom uses the universal prompt
 # Cheap phones with matching checkpoint photos: final photo first, then refs.
 ZOOM_LADDER_REFS_LINE = (
     "The other images are clearer close-up views of the same area; use them for detail."

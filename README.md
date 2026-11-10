@@ -268,6 +268,15 @@ in Pro AI). See enhance-server/README.md for the API.
 - Credits icon: gold lightning bolt PNG `assets/icons/credit_bolt.png` (+2.0x/3.0x); `CreditText` renders the `🪙` token in labels as the bolt. Credit values unchanged.
 - Screens rendered offscreen: `flutter test tool_shots/v1154_shots_test.dart --update-goldens` → `tool_shots/out/`.
 
+## v11.58 (1.11.58+71) — Coordinated microscope, background video, DSLR enhance, per-style models
+- Microscope / Extreme / Ultra: the object is locked from a 1.5x shot (`lib/services/micro_lock.dart`, reused for 3 min while the frame still matches); higher zooms detect only a PART of that object ("{part} on the {object}"). Frame mismatch → "Hold steady" + automatic retake (up to 2). Prompts are material-aware (no hardcoded "cells"). Bad result → "Bad result? Refund ⚡N" on the preview (local-ledger builds).
+- Video: ≤5 s → 8scale Wan, >5 s → Phosor MiniMax H3 Turbo (unchanged routing). Jobs run in the background with a system notification when done/failed; long jobs show "Usually ready in 15–20 min"; 30-min timeout cancels at the provider ("Your credits were refunded" — nothing is charged before delivery). Phosor result HTTP 202 = still running. "AI-generated" label replaces the MiniMax chip. Video style cards read credit_cost + samples.
+- Enhance: one universal DSLR prompt for all modes (+ Portrait bokeh variant). Upload JPEG q100, no 1920 upscale (app + server).
+- Camera class: macro low-end flag now comes from the camera classifier (`_cameraClass.lowEnd`).
+- Styles model routing: `styles.model` (Supabase column, default 'klein'; filters 'custom'; anon grant). `klein` = FLUX Klein (user photo only), `runware_klein4b` = Runware FLUX.2 Klein 4B (for violent/bloody looks; env/dart-define `RUNWARE_API_KEY`), `custom` = the Custom model. Any failure / missing key → falls back to Custom. Admin style editor has a "Model" select; API field `model`.
+- Vercel env added: VIDEO_API_KEY, PHOSOR_API_KEY, RUNWARE_API_KEY (sensitive). Admin redeployed (Vercel `ai-camera-admin`, bundle `deploy-v1158.zip`).
+- Test APK: `--dart-define-from-file` (OPENROUTER_API_KEY, RUNWARE_API_KEY, VIDEO_API_KEY, PHOSOR_API_KEY) from a temp file deleted after the build; keys never committed.
+
 ## v11.57 (1.11.57+70) — No Free styles; video cards = last photo → Generate
 - Free labels and the free-first library-style trial are gone. Every photo/video style card shows ⚡N (admin credit_cost). Apply button is always "Apply · ⚡N". Backend `decide_look` charges the style cost on every apply.
 - Video style cards are image-to-video only: tap uses the last captured photo and opens the confirm sheet (9:16 preview, 480/580/720p default 480p, "Generate · ⚡N"). No Take photo / gallery / Take video. No photo → "Take a photo first". Text-to-video stays in Custom only.

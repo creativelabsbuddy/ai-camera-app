@@ -226,7 +226,8 @@ def test_pose_media_rejects_traversal(env):
 
 # == hidden prompts ==========================================================
 def test_default_prompts_content():
-    assert P.LOCKED_ENHANCE_PROMPT.startswith("Enhance this real photo and keep it the same photo")  # v11.39
+    assert P.LOCKED_ENHANCE_PROMPT.startswith("Enhance this photo so it looks like it was shot on a professional DSLR")  # v11.58
+    assert "cells" not in P.LOCKED_ENHANCE_PROMPT
     port = P.PORTRAIT_PROMPT.lower()
     for k in ["subject", "sharp", "hair", "finger", "bokeh", "do not add"]:
         assert k in port, k
@@ -273,8 +274,9 @@ def test_prompt_admin_edit_and_reset(env):
     # The edited prompt is what the AI receives.
     r = enhance(c, photo_jpeg(), mode="portrait")
     assert r.status_code == 200, r.text
-    assert up.calls[-1]["prompt"].startswith(P.LOCKED_ENHANCE_PROMPT)
-    assert "Blur only the background." in up.calls[-1]["prompt"]
+    # v11.58: the (edited) Portrait variant REPLACES the universal base.
+    assert up.calls[-1]["prompt"].startswith("Blur only the background.")
+    assert P.UNIVERSAL_ENHANCE_PROMPT not in up.calls[-1]["prompt"]
     c.post("/admin/prompts/reset", data={"key": "portrait"})
     assert store.get("portrait") == P.PORTRAIT_PROMPT
     assert c.post("/admin/prompts/reset", data={"key": "bad"}).status_code == 400
@@ -289,7 +291,7 @@ def test_portrait_mode_charges_tier_credits(env):
     assert r.status_code == 200, r.text
     assert r.headers["x-mode"] == "portrait" and r.headers["x-night"] == "0"
     p = up.calls[-1]["prompt"]
-    assert p.startswith(P.LOCKED_ENHANCE_PROMPT) and P.PORTRAIT_PROMPT in p
+    assert p.startswith(P.PORTRAIT_ENHANCE_PROMPT) and P.UNIVERSAL_ENHANCE_PROMPT not in p  # v11.58
     assert "x-structure" not in r.headers
     assert r.headers["x-credits-charged"] == "2"  # Pro AI tier credits (Full HD = 2)
     assert before - account(c, "dev_v11")["total"] == 2
@@ -374,7 +376,7 @@ def test_pro_night_good_result_is_charged(env):
     assert float(r.headers["x-structure"]) >= G.STRUCTURE_MIN
     assert r.headers["x-credits-charged"] == "1" or r.headers["x-trials-used"]
     p = up.calls[-1]["prompt"]
-    assert p.startswith(P.LOCKED_ENHANCE_PROMPT + " " + P.NIGHT_PROMPT)
+    assert p.startswith(P.UNIVERSAL_ENHANCE_PROMPT) and P.NIGHT_PROMPT not in p  # v11.58
 
 
 # == v11.1 Macro + AI Microscope ===========================================
@@ -476,10 +478,11 @@ def test_v119_clarity_and_boxed_context():
     p = P.build_prompt(has_context=True, zoom=30, optical_limit=3, tier="full_hd",
                        context_boxed=True)
     assert p.startswith(P.LOCKED_ENHANCE_PROMPT)
-    assert P.CONTEXT_BOXED_SENTENCE in p and P.HIGH_ZOOM_CLARITY in p
-    assert "exactly as it is" in p  # v11.39
+    # v11.58: one universal prompt — no zoom clarity / emphasis sentences.
+    assert P.CONTEXT_BOXED_SENTENCE in p and P.HIGH_ZOOM_CLARITY not in p
     low = P.build_prompt(has_context=True, zoom=2, optical_limit=2)
     assert P.HIGH_ZOOM_CLARITY not in low and P.CONTEXT_IMAGE_SENTENCE in low
+    assert P.build_prompt(zoom=30, optical_limit=3) == P.build_prompt(zoom=1, optical_limit=3)
 
 
 
@@ -510,11 +513,11 @@ def test_v1112_one_call_steps_first_crop_last(env):
         assert r.headers["x-macro-level"] == level
         pl = up.calls[-1]
         if level == "extreme":
-            assert pl["prompt"] == T1129_EXT.replace("{spot}", "pores and hairs")
+            assert pl["prompt"] == _fill(T1129_EXT, "pores and hairs", "skin")
         elif level == "ultra":
-            assert pl["prompt"] == T1129_ULT.replace("{spot}", "pores and hairs")
-        elif level == "microscope":  # v11.47: spot → 100x text-only
-            assert pl["prompt"] == P.MACRO_MICROSCOPE_PROMPT.replace("{spot}", "pores and hairs")
+            assert pl["prompt"] == _fill(T1129_ULT, "pores and hairs", "skin")
+        elif level == "microscope":  # v11.47: spot → 100x text-only (v11.58 + object)
+            assert pl["prompt"] == _fill(P.MACRO_MICROSCOPE_PROMPT, "pores and hairs", "skin")
         else:
             base = P.DEFAULT_MODE_PROMPTS[key].replace("{subject}", "skin")
             if level != "microscope":  # v11.40 context line with the extra photos
@@ -585,13 +588,15 @@ def test_v1115_detect_failure_is_empty(env, monkeypatch):
 
 def test_v1120_extreme_ultra_prompts():
     E, U = P.MACRO_EXTREME_PROMPT, P.MACRO_ULTRA_PROMPT
-    assert E == T1129_EXT and U == T1129_ULT  # v11.29 texts
-    # spot wins; the broad subject is NOT added
+    for t in (E, U, P.MACRO_MICROSCOPE_PROMPT):  # v11.58: material-aware, no "cells"
+        assert "cells" not in t and "{spot}" in t and "{on_object}" in t and "material" in t
+    assert "painted metal" in P.MACRO_MICROSCOPE_PROMPT and "printing dots" in P.MACRO_MICROSCOPE_PROMPT
+    # v11.58: part first, then the object locked at 1.5x
     assert P.macro_prompt(E, "human face", "extreme", 21, part="brown iris near pupil") == (
-        T1129_EXT.replace("{spot}", "brown iris near pupil"))
+        _fill(T1129_EXT, "brown iris near pupil", "human face"))
     assert P.macro_prompt(U, "white styrofoam", "ultra", 30) == (
-        T1129_ULT.replace("{spot}", "white styrofoam"))
-    assert P.macro_prompt(E, None, "extreme", 21) == T1129_EXT.replace("{spot}", "this")
+        _fill(T1129_ULT, "white styrofoam"))
+    assert P.macro_prompt(E, None, "extreme", 21) == _fill(T1129_EXT, "this")
     assert "Detected" not in P.macro_prompt(U, "a", "ultra", part="b")
     assert P.DEFAULT_MODE_PROMPTS["macro_ultra"] == U
     assert P.MACRO_LEVELS["ultra"][0] == "macro_ultra"
@@ -708,8 +713,10 @@ def test_v1122_objects_and_device_rule(env, monkeypatch):
     assert not up.calls
 
 
-T1129_EXT = ("A tiny area of {spot} under a light microscope at 1000x magnification, microscopic "
-             "cells and structure filling the frame. One single full-frame image, no text or "
-             "labels. Photorealistic.")
-T1129_ULT = ("Close-up of {spot} under a scanning electron microscope at 2000x magnification. "
-             "Show how it looks. One single full-frame image, no text or labels. Photorealistic.")
+# v11.58: material-aware texts ({spot} = part, {on_object} = locked object).
+T1129_EXT = P.MACRO_EXTREME_PROMPT
+T1129_ULT = P.MACRO_ULTRA_PROMPT
+
+
+def _fill(t, spot, obj=""):
+    return t.replace("{on_object}", f" on the {obj}" if obj else "").replace("{spot}", spot)

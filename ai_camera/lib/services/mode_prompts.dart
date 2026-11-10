@@ -10,17 +10,9 @@ import 'zoom_range.dart' show formatZoom;
 // copy. Mirrors enhance-server/prompts.py (parity test in test_server.py).
 // Release builds (no key) never call these (guarded by AiConfig).
 
+// v11.58: the Portrait variant of the universal DSLR prompt (= kPortraitEnhancePrompt).
 const String kPortraitPrompt =
-    'Turn this into a natural portrait-mode photo with DSLR-like '
-    'background blur. First identify the main in-focus subject (a '
-    'person, hand, pet, object, product or food). Keep the subject 100% '
-    'sharp and unchanged, including fine edges such as hair strands, '
-    'fingers, fabric edges and object outlines; do not blur any part of '
-    'the subject and do not leave pieces of the background sharp. Blur '
-    'the background with depth-graded lens blur, farther areas blurrier '
-    'than nearer ones, and render out-of-focus lights as soft, natural, '
-    'round lens bokeh. Do not add, remove, move or alter anything; keep '
-    'the same framing, colors, lighting and identity.';
+    'Enhance this photo so it looks like a portrait shot on a professional DSLR camera with a fast prime lens at a wide aperture. Recover and sharpen all the real detail of the main subject, making it crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the main subject 100% sharp, including hair strands, fingers, fabric edges and outlines, and blur only the background with smooth, natural, depth-graded lens bokeh, with out-of-focus lights as soft round bokeh. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give the subject a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.';
 
 /// v11.12 Macro level prompts (sent alone, one image call: the boxed
 /// 2x / 3x / 4x step photos first, the zoomed crop last).
@@ -40,11 +32,18 @@ const String kMacroPrompt =
 const String kMacroClosePrompt =
     'A real close-up macro photograph of this photo: keep the same framing and the same subject shape. Make it clearly sharp and crisp, remove blur and noise, and bring out the fine natural texture and tiny detail that is already there. Keep the subject\'s own natural colours and soft natural light. Photorealistic.';
 
+/// v11.58 Microscope / Extreme / Ultra: material-aware (no hardcoded
+/// "cells"). {spot} = the PART found at the shutter, {on_object} =
+/// " on the <object locked at 1.5x>" (see [onObjectText]).
 /// v11.47 Microscope: detect first, then TEXT ONLY at 100x ({spot}).
 const String kMacroMicroscopePrompt =
-    'A tiny area of {spot} under a light microscope at 100x magnification, '
-    'microscopic cells and structure filling the frame. One single full-frame '
-    'image, no text or labels. Photorealistic.';
+    'A tiny area of {spot}{on_object} under a light microscope at 100x magnification, filling '
+    'the frame. Show only the real fine structure of its own material up close, for example: '
+    'painted metal shows paint grains, printing dots and light scratches; plastic shows fine '
+    'moulding marks; fabric shows woven threads and fibres; paper shows pressed fibres; a '
+    'leaf shows veins and tiny plant structure; skin shows pores and fine lines. Do not add '
+    'anything this material would not really have. One single full-frame image, no text or '
+    'labels. Photorealistic.';
 
 /// v11.47: the old photo-based Microscope prompt (no spot detected).
 const String kMacroMicroscopePhotoPrompt =
@@ -52,15 +51,20 @@ const String kMacroMicroscopePhotoPrompt =
 
 /// v11.18 Extreme: this line ALONE (no prefix / suffix / hint line).
 const String kMacroExtremePrompt =
-    'A tiny area of {spot} under a light microscope at 1000x '
-    'magnification, microscopic cells and structure filling the frame. '
-    'One single full-frame image, no text or labels. Photorealistic.';
+    'A tiny area of {spot}{on_object} under a light microscope at 1000x magnification, '
+    'filling the frame. Show the very fine structure its own material would really have at '
+    'this magnification, for example: painted metal shows paint pigment grains, printing dots '
+    'and tiny scratches in the metal; plastic shows its fine surface grain; fabric shows '
+    'single fibres; a leaf shows tiny plant structure. Do not add anything this material '
+    'would not really have. One single full-frame image, no text or labels. Photorealistic.';
 
 /// v11.20 Ultra (30x): electron microscope, whole prompt, crop only.
 const String kMacroUltraPrompt =
-    'Close-up of {spot} under a scanning electron microscope at 2000x '
-    'magnification. Show how it looks. One single full-frame image, no '
-    'text or labels. Photorealistic.';
+    'Close-up of {spot}{on_object} under a scanning electron microscope at 2000x '
+    'magnification. Show the true surface structure of its own material, for example: painted '
+    'metal shows paint grains, coating cracks and fine scratches; plastic shows its moulded '
+    'surface; fabric shows single fibres. Do not add anything this material would not really '
+    'have. One single full-frame image, no text or labels. Photorealistic.';
 
 const String kColorFilterTail =
     'Change only color and tone; keep faces, skin texture, shapes, '
@@ -295,7 +299,7 @@ String macroPrompt(
   if (level == 'microscope') {
     // v11.47: spot → 100x text prompt; none → the photo prompt.
     if (macroTextOnly(level, subject, part)) {
-      return deepPrompt(kMacroMicroscopePrompt, null, part);
+      return deepPrompt(kMacroMicroscopePrompt, subject, part); // v11.58 + object
     }
   }
   final (t, name) = switch (level) {
@@ -555,8 +559,21 @@ String deepPrompt(String template, String? subject, String? part) {
   }
   return template
       .replaceAll('{subject}', subj.isEmpty ? 'this' : subj)
+      .replaceAll('{on_object}', onObjectText(subj, spot))
       .replaceAll('{spot}', spot)
       .trim();
+}
+
+/// v11.58 (same as prompts.on_object_text): " on the locked object" after
+/// the part, or '' when there is no object, it is the general "close-up" or
+/// the part already names it.
+String onObjectText(String? object, String? spot) {
+  final o = sanitizeDetected(object);
+  final sp = sanitizeDetected(spot);
+  if (o.isEmpty || o == 'the subject' || o == kMacroGeneralSubject || o == 'this' || o == sp || sp.contains(o)) {
+    return '';
+  }
+  return ' on the $o';
 }
 
 // ---------------------------------------------------------------------------

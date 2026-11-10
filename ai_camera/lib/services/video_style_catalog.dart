@@ -119,7 +119,8 @@ class VideoStyleCatalog {
     try {
       final u = Uri.parse('${_url.replaceAll(RegExp(r'/+$'), '')}/rest/v1/styles').replace(
         queryParameters: {
-          'select': 'id,name,category,ui_category,prompt,sort_order,display_image',
+          'select': 'id,name,category,ui_category,prompt,sort_order,display_image,credit_cost,'
+              'sample_before_url,sample_after_url',
           'media_type': 'eq.video',
           'enabled': 'eq.true',
           'order': 'sort_order.asc,name.asc',

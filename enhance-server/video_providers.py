@@ -304,9 +304,15 @@ async def status(provider: str, rid: str, transport=None) -> dict:
             url = _find_url(js)
             if not url and provider == MINIMAX:
                 rr = await c.get(f"{PHOSOR_BASE}/inference/result/{rid}", headers=_headers(MINIMAX))
+                # v11.58: 202 = result not published yet (status may say
+                # "completed" a moment early) → still running, keep polling.
+                if rr.status_code == 202:
+                    return {"status": "running", "progress": prog}
                 if rr.status_code >= 400:
                     return {"status": "failed", "error": f"result failed (HTTP {rr.status_code}): {error_text(rr)}"}
                 url = _find_url(rr.json() or {})
+                if not url:
+                    return {"status": "running", "progress": prog}
         except httpx.HTTPError as e:
             raise VideoError(f"provider unreachable: {type(e).__name__}") from e
     if not url:

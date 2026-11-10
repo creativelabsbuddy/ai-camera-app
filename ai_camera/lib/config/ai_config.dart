@@ -68,6 +68,19 @@ class AiConfig {
 
   static const String model = 'openai/gpt-image-2.5-flare';
 
+  /// v11.58 style models (per style, admin "Model"; fallback = Custom/Flare).
+  /// FLUX Klein on OpenRouter: the user's photo only, no quality/resolution.
+  static const String kleinModel = 'black-forest-labs/flux-3-image-klein';
+
+  /// FLUX.2 Klein 4B on Runware (violent / bloody looks). Key TEST builds
+  /// only (dart-define RUNWARE_API_KEY); server builds keep it on the server.
+  static const String runwareApiKey = String.fromEnvironment(
+    'RUNWARE_API_KEY',
+    defaultValue: '',
+  );
+  static const String runwareUrl = 'https://api.runware.ai/v1';
+  static const String runwareKlein4bModel = 'runware:400@4';
+
   /// v11.15 Macro subject detection (cheap vision chat call, no credits).
   static const String openRouterChatUrl =
       'https://openrouter.ai/api/v1/chat/completions';

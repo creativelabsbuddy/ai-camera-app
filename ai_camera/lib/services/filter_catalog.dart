@@ -25,6 +25,7 @@ const AiStyle kVividFilter = AiStyle(
   imageAsset: 'assets/styles/samples/vivid_filter.jpg',
   needsPerson: false,
   kind: 'filter',
+  model: kStyleModelCustom,
   prompt: kVividFilterPrompt,
 );
 
@@ -87,6 +88,8 @@ class FilterCatalog {
         AiStyle.fromJson({
           ...m,
           'kind': 'filter',
+          // v11.58: filters keep the Custom (Flare) model unless the DB says otherwise.
+          'model': m['model'] ?? kStyleModelCustom,
           'image_url': img is String && img.isNotEmpty
               ? '${_media.replaceAll(RegExp(r'/+$'), '')}/$img'
               : null,
@@ -106,7 +109,7 @@ class FilterCatalog {
             queryParameters: {
               'select':
                   'id,name,category,prompt,credit_cost,pro_only,sort_order,'
-                  'display_image,needs_person,kind',
+                  'display_image,needs_person,kind,model',
               'kind': 'eq.filter',
               'enabled': 'eq.true',
               'order': 'sort_order.asc,name.asc',

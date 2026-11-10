@@ -5,13 +5,22 @@ import 'entitlements.dart' show kMaxCustomPromptChars;
 import 'mode_prompts.dart' show kColorFilterTail;
 import 'zoom_range.dart' show formatZoom;
 
-/// v11.39 enhance prompt (short, positive, faithful; approved by Ankush). Everything
-/// else is appended as separate sentences. Mirrored verbatim in
-/// enhance-server/prompts.py.
-const String kLockedEnhancePrompt =
-    'Enhance this real photo and keep it the same photo: same framing, same people and faces, same objects and same scene, with nothing added. Make it clean and naturally sharp, with balanced light, true natural colours and real skin and surface texture.';
+/// v11.58 ONE universal enhance prompt (Ankush, 7 Nov): every normal, zoom
+/// and low-light photo looks shot on a professional DSLR. Replaces the old
+/// base + zoom-emphasis / high-zoom-clarity / zoom-clean / night sentences.
+/// Mirrored verbatim in enhance-server/prompts.py (UNIVERSAL_ENHANCE_PROMPT).
+const String kUniversalEnhancePrompt =
+    'Enhance this photo so it looks like it was shot on a professional DSLR camera with a high-quality lens. Recover and sharpen all the real detail present in the photo, making everything crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give it a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.';
 
-/// Sent when a second (context) image is attached.
+/// v11.58 Portrait variant of the universal prompt (Pro AI Portrait): same
+/// DSLR look + real lens bokeh on the background only. Used INSTEAD of the
+/// universal prompt (not appended). = prompts.PORTRAIT_ENHANCE_PROMPT.
+const String kPortraitEnhancePrompt =
+    'Enhance this photo so it looks like a portrait shot on a professional DSLR camera with a fast prime lens at a wide aperture. Recover and sharpen all the real detail of the main subject, making it crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the main subject 100% sharp, including hair strands, fingers, fabric edges and outlines, and blur only the background with smooth, natural, depth-graded lens bokeh, with out-of-focus lights as soft round bokeh. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give the subject a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.';
+
+/// Legacy name: the base of every enhance (now the universal prompt).
+const String kLockedEnhancePrompt = kUniversalEnhancePrompt;
+
 const String kContextBoxedSentence =
     'The second image is a sharp, lower-zoom photo of the same '
     'scene taken just before; the red box marks exactly where the '
@@ -26,8 +35,8 @@ const String kHighZoomClarity =
 /// first, the photo to enhance last. Mirrors the server's hidden prompt
 /// (key builds only).
 /// v11.34 high zoom (2x+, all phones): keep the photo, raise its detail.
-const String kZoomCleanPrompt =
-    'Keep this zoomed photo exactly as it is: same subject, shapes, framing, colours and light. Make the detail that is already there clearer, gently clean light noise, and keep natural fine texture and a real camera-photo look.';
+/// v11.58: zoom photos use the universal prompt too.
+const String kZoomCleanPrompt = kUniversalEnhancePrompt;
 const String kZoomLadderRefsLine =
     'The other images are clearer close-up views of the same area; use them '
     'for detail.';
@@ -133,20 +142,19 @@ String buildEnhancePrompt({
   String? modePrompt,
   String? colorPrompt,
   bool contextBoxed = false,
+  bool portrait = false,
 }) {
-  final parts = <String>[kLockedEnhancePrompt];
+  // v11.58: ONE universal DSLR prompt for normal, zoom and night photos (no
+  // zoom-emphasis / clarity / night sentences); Portrait uses its variant
+  // instead of the base. [zoom], [opticalLimit] and [night] are kept for
+  // callers but no longer change the text. A [modePrompt] (Macro levels)
+  // is still appended.
+  final parts = <String>[portrait ? kPortraitEnhancePrompt : kUniversalEnhancePrompt];
   final mp = modePrompt?.trim() ?? '';
-  if (mp.isNotEmpty) {
-    parts.add(mp);
-  } else if (night) {
-    parts.add(kNightPrompt);
-  }
+  if (mp.isNotEmpty) parts.add(mp);
   if (hasContextImage) {
     parts.add(contextBoxed ? kContextBoxedSentence : kContextImageSentence);
   }
-  final zs = zoomSentence(zoom: zoom, opticalLimit: opticalLimit);
-  if (zs.isNotEmpty) parts.add(zs);
-  if (highZoomClarity(zoom, opticalLimit)) parts.add(kHighZoomClarity);
   final qs = qualitySentence(tier);
   if (qs.isNotEmpty) parts.add(qs);
   final st = stylePrompt?.trim() ?? '';

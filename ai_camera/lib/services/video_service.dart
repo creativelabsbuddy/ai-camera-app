@@ -12,6 +12,7 @@ import '../config/ai_config.dart';
 import 'account_service.dart';
 import 'entitlements.dart';
 import 'server_api_client.dart' show decodeAccountBlob;
+import 'video_notifier.dart';
 
 /// v11.53 AI video: 8scale Wan 2.2 14B for ≤5 s, Phosor MiniMax H3 Turbo for
 /// longer clips. Key TEST builds call the providers directly (like the image
@@ -27,6 +28,18 @@ const kWanResolutions = ['480p', '580p', '720p'];
 const kMiniMaxResolutions = ['480p', '768p'];
 const kVideoAspects = ['9:16', '16:9'];
 const kMiniMaxLabel = 'MiniMax H3';
+
+/// v11.58: the user-facing chip on AI videos (replaces the model chip).
+const kAiGeneratedLabel = 'AI-generated';
+
+/// v11.58: a video that is not ready after this long is given up and its
+/// credits refunded (nothing is charged before delivery).
+const kVideoTimeout = Duration(minutes: 30);
+const kVideoTimeoutMessage =
+    'No video after 30 min. Your credits were refunded. Please try again later.';
+
+/// v11.58: wait note shown while a longer (MiniMax) video is made.
+const kLongVideoWaitNote = 'Usually ready in 15–20 min';
 
 // Provider cost (₹, $1 = ₹95) → PROVISIONAL credits =
 // ceil(cost × 1.5 / ₹0.99). Same numbers as the server; admin can override.
@@ -297,8 +310,12 @@ class DirectVideoBackend implements VideoBackend {
       final rr = await _http
           .get(Uri.parse('${AiConfig.phosorBaseUrl}/inference/result/$rid'), headers: _h(p))
           .timeout(_t);
+      // v11.58: Phosor answers 202 while the result is not published yet
+      // (status can say "completed" a moment before) → keep polling.
+      if (rr.statusCode == 202) return const VideoStatus('running');
       if (rr.statusCode >= 400) throw _fail('Result', rr);
       u = findVideoUrl(jsonDecode(rr.body));
+      if (u == null) return const VideoStatus('running');
     }
     return u == null
         ? const VideoStatus('failed', error: 'The video service returned no video')
@@ -406,7 +423,7 @@ class VideoService {
     Future<VideoBackend?> Function(VideoProvider p)? backend,
     Future<File> Function(String url)? download,
     this.pollEvery = const Duration(seconds: 4),
-    this.maxWait = const Duration(minutes: 12),
+    this.maxWait = kVideoTimeout,
   }) : _backendFor = backend ?? _defaultBackend,
        _download = download ?? _defaultDownload;
 
@@ -484,6 +501,7 @@ class VideoService {
     final be = await _backendFor(r.provider);
     if (be == null) throw VideoException('AI video is not set up in this build');
     _cancelled = false;
+    unawaited(VideoNotifier.instance.requestPermission());
     job.value = VideoJob(
       request: r,
       phase: VideoPhase.submitting,
@@ -503,12 +521,14 @@ class VideoService {
       }
       job.value = j = j.copy(phase: VideoPhase.queued, jobId: id);
       await _savePending(j);
-      final deadline = DateTime.now().add(maxWait);
+      // v11.58: 30 min from the start (also across an app restart).
+      final deadline = j.started.add(maxWait);
       while (true) {
         await Future<void>.delayed(pollEvery);
         if (_cancelled) return;
         if (DateTime.now().isAfter(deadline)) {
-          throw VideoException('The video is taking too long — try again later (no credits used)');
+          await be.cancel(id);
+          throw VideoException(kVideoTimeoutMessage);
         }
         VideoStatus st;
         try {
@@ -540,12 +560,18 @@ class VideoService {
         if (_cancelled) return;
         job.value = j.copy(phase: VideoPhase.done, file: f, creditsCharged: charged);
         await _clearPending();
+        unawaited(VideoNotifier.instance.show('Your AI video is ready', 'Tap to open AI Camera and watch it.'));
         return;
       }
     } catch (e) {
       if (_cancelled) return;
-      job.value = j.copy(phase: VideoPhase.failed, error: e is VideoException ? e.message : _redact('$e'));
+      final msg = e is VideoException ? e.message : _redact('$e');
+      job.value = j.copy(phase: VideoPhase.failed, error: msg);
       await _clearPending();
+      unawaited(VideoNotifier.instance.show(
+        'Your AI video could not be made',
+        msg == kVideoTimeoutMessage ? msg : 'No credits were used. Please try again.',
+      ));
     }
   }
 
@@ -600,7 +626,8 @@ class VideoService {
       if (raw == null) return;
       final m = (jsonDecode(raw) as Map).cast<String, Object?>();
       final started = DateTime.parse('${m['started']}');
-      if (DateTime.now().difference(started) > const Duration(hours: 2)) {
+      // v11.58: past the 30 min window → given up, nothing was charged.
+      if (DateTime.now().difference(started) > maxWait) {
         await _clearPending();
         return;
       }

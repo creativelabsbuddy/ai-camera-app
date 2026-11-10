@@ -89,31 +89,18 @@ void main() {
     expect(macroFlowGuide(chip: 5, stage: 5, detecting: false), kGuideDone);
   });
 
-  test('Extreme / Ultra: spot only (not the broad subject)', () {
+  test('Extreme / Ultra: part first, then the locked object (v11.58)', () {
+    String fill(String t, String spot, [String obj = '']) =>
+        t.replaceAll('{on_object}', obj.isEmpty ? '' : ' on the $obj').replaceAll('{spot}', spot);
     expect(
-      kMacroExtremePrompt,
-      'A tiny area of {spot} under a light microscope at 1000x magnification, microscopic cells and structure filling the frame. One single full-frame image, no text or labels. Photorealistic.',
-    );
-    expect(
-      kMacroUltraPrompt,
-      'Close-up of {spot} under a scanning electron microscope at 2000x magnification. Show how it looks. One single full-frame image, no text or labels. Photorealistic.',
-    );
-    expect(
-      macroPrompt(
-        'human face',
-        level: 'extreme',
-        part: 'brown iris near pupil',
-      ),
-      'A tiny area of brown iris near pupil under a light microscope at 1000x magnification, microscopic cells and structure filling the frame. One single full-frame image, no text or labels. Photorealistic.',
+      macroPrompt('human face', level: 'extreme', part: 'brown iris near pupil'),
+      fill(kMacroExtremePrompt, 'brown iris near pupil', 'human face'),
     );
     expect(
       macroPrompt('white styrofoam', level: 'ultra'),
-      'Close-up of white styrofoam under a scanning electron microscope at 2000x magnification. Show how it looks. One single full-frame image, no text or labels. Photorealistic.',
+      fill(kMacroUltraPrompt, 'white styrofoam'),
     );
-    expect(
-      macroPrompt(null, level: 'extreme'),
-      'A tiny area of this under a light microscope at 1000x magnification, microscopic cells and structure filling the frame. One single full-frame image, no text or labels. Photorealistic.',
-    );
+    expect(macroPrompt(null, level: 'extreme'), fill(kMacroExtremePrompt, 'this'));
   });
 
   test('Microscope 400x; detection prompts ask for colour', () {
