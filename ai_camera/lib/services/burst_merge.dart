@@ -33,9 +33,21 @@ const int kBurstMaxFrames = 4;
 const int kBurstBudgetMs = 1800;
 const int kBurstSlowCaptureMs = 700;
 
-/// Merge only regions up to this many pixels (memory / time on weak
-/// phones); larger regions → single shot.
+/// Regions up to this many pixels merge in ONE band (fast path).
 const int kBurstMaxRegionPixels = 3000000;
+
+/// v11.60 fix: larger regions (cheap phones at 2x … the camera's own max:
+/// the region is the whole ratio crop) merge BAND BY BAND (native region
+/// decode per band, fixed memory) up to this many pixels; beyond → single
+/// shot.
+const int kBurstMaxBandedPixels = 16000000;
+
+/// Output rows per band ≈ this many pixels (memory bound per band).
+const int kBurstBandPixels = 1500000;
+
+/// Banded merges get this wall-clock budget (over → the anchor's own
+/// full photo, never a half-merged image).
+const int kBurstBandedBudgetMs = 15000;
 
 /// Region decode margin (alignment slack each side, fraction of size).
 const double kBurstMargin = 0.075;
@@ -78,19 +90,23 @@ bool burstWantsMore({
   return elapsedMs + lastCaptureMs <= kBurstBudgetMs;
 }
 
-/// Should this zoom shot use the burst? Small zoomed region (digital crop
-/// on top of the camera's zoom) and a plain single photo. Pure.
+/// Should this zoom shot use the burst? A plain single photo on a cheap
+/// phone that is either digitally zoomed (digital > 1.2) or, v11.60 fix,
+/// a Pro AI Zoom-mode shot at 2x … the camera's own max ([nativeZoom],
+/// the v11.9 merge coverage) — region within [kBurstMaxBandedPixels].
+/// Pure.
 bool shouldBurstZoom({
   required bool lowEnd,
   required double digital,
   required int regionPixels,
   required bool plainPhoto,
+  bool nativeZoom = false,
 }) =>
     lowEnd &&
     plainPhoto &&
-    digital > 1.2 &&
+    (digital > 1.2 || nativeZoom) &&
     regionPixels > 0 &&
-    regionPixels <= kBurstMaxRegionPixels;
+    regionPixels <= kBurstMaxBandedPixels;
 
 /// Packed RGB frame (upright region + margin).
 class RgbFrame {
@@ -114,7 +130,7 @@ class BurstFrameNote {
 
 class BurstMergeResult {
   const BurstMergeResult({
-    required this.image,
+    this.image,
     required this.used,
     required this.anchor,
     required this.notes,
@@ -122,7 +138,9 @@ class BurstMergeResult {
     required this.ghostTiles,
     this.timedOut = false,
   });
-  final RgbFrame image;
+
+  /// The merged region (null from the file job: written as JPEG).
+  final RgbFrame? image;
   final int used;
   final int anchor;
   final List<BurstFrameNote> notes;
@@ -182,14 +200,16 @@ double estimateNoise(RgbFrame f) {
   return (1.4826 * mad / 1.118).clamp(1.0, 25.0);
 }
 
-/// Full-res affine (anchor px → frame px) from a proxy-space similarity.
-List<double> _fullAffine(Similarity t, int pw, int ph, int k) {
+/// Full-res affine (anchor px → frame px, region coordinates) from a
+/// proxy-space similarity; proxy = region scaled by (pw/W, ph/H).
+List<double> fullAffine(Similarity t, int pw, int ph, int w, int h) {
+  final kx = w / pw, ky = h / ph;
   (double, double) map(double X, double Y) {
-    final px = (X + 0.5) / k - 0.5, py = (Y + 0.5) / k - 0.5;
+    final px = (X + 0.5) / kx - 0.5, py = (Y + 0.5) / ky - 0.5;
     final (u, v) = toNorm(px, py, pw, ph);
     final (u2, v2) = t.apply(u, v);
     final (qx, qy) = toPixel(u2, v2, pw, ph);
-    return ((qx + 0.5) * k - 0.5, (qy + 0.5) * k - 0.5);
+    return ((qx + 0.5) * kx - 0.5, (qy + 0.5) * ky - 0.5);
   }
 
   final (ox, oy) = map(0, 0);
@@ -198,44 +218,45 @@ List<double> _fullAffine(Similarity t, int pw, int ph, int k) {
   return [xx - ox, yx - ox, ox, xy - oy, yy - oy, oy];
 }
 
-/// The merge (pure; tests call it directly). [inner] = the output region
-/// (x, y, w, h) inside every frame (the rest is alignment margin).
-BurstMergeResult mergeBurst(
-  List<RgbFrame> frames, {
-  required (int, int, int, int) inner,
-  int budgetMs = kBurstMergeBudgetMs,
-}) {
-  final sw = Stopwatch()..start();
-  final (ix, iy, iw, ih) = inner;
-  final proxies = <(GreyImage, int)>[for (final f in frames) burstProxy(f)];
-  // Sharpness at half proxy resolution (pixel noise does not pose as
-  // detail).
-  final sharp = <double>[
-    for (final p in proxies) p.$1.half().laplacianVariance(),
-  ];
+/// Who merges and how: anchor (sharpest), per-frame full-res affine
+/// (null = left out) and notes. Registration runs ONCE on proxies.
+class BurstPlan {
+  const BurstPlan(this.anchor, this.affines, this.notes);
+  final int anchor;
+  final List<List<double>?> affines;
+  final List<BurstFrameNote> notes;
+  Iterable<int> get merging sync* {
+    for (var i = 0; i < affines.length; i++) {
+      if (i != anchor && affines[i] != null) yield i;
+    }
+  }
+}
+
+/// [proxies] = grey proxies of each frame's region (same size), [sharp] =
+/// sharpness per frame, region size [w]×[h]. Pure.
+BurstPlan planBurst(List<GreyImage> proxies, List<double> sharp, int w, int h) {
   var anchor = 0;
-  for (var i = 1; i < frames.length; i++) {
+  for (var i = 1; i < proxies.length; i++) {
     if (sharp[i] > sharp[anchor]) anchor = i;
   }
-  final a = frames[anchor];
-  final (ap, ak) = proxies[anchor];
+  final ap = proxies[anchor];
   final aMean = ap.mean();
-  // Tile verdicts at half proxy resolution (noise σ halves).
   final apHalf = ap.half();
-  final notes = List<BurstFrameNote?>.filled(frames.length, null);
-  notes[anchor] = BurstFrameNote(anchor, sharp[anchor], 1, 'anchor');
-  final affines = <int, List<double>>{};
-  for (var i = 0; i < frames.length; i++) {
-    if (i == anchor) continue;
-    final f = frames[i];
-    final (fp, _) = proxies[i];
-    if (f.width != a.width || f.height != a.height) {
-      notes[i] = BurstFrameNote(i, sharp[i], -1, 'size');
+  final notes = <BurstFrameNote>[];
+  final affines = List<List<double>?>.filled(proxies.length, null);
+  for (var i = 0; i < proxies.length; i++) {
+    if (i == anchor) {
+      notes.add(BurstFrameNote(i, sharp[i], 1, 'anchor'));
+      continue;
+    }
+    final fp = proxies[i];
+    if (fp.width != ap.width || fp.height != ap.height) {
+      notes.add(BurstFrameNote(i, sharp[i], -1, 'size'));
       continue;
     }
     final ratio = aMean <= 1 ? 1.0 : fp.mean() / aMean;
     if ((ratio - 1).abs() > kBurstExposureTol) {
-      notes[i] = BurstFrameNote(i, sharp[i], -1, 'exposure');
+      notes.add(BurstFrameNote(i, sharp[i], -1, 'exposure'));
       continue;
     }
     final r = registerSimilarity(
@@ -245,71 +266,77 @@ BurstMergeResult mergeBurst(
       radius: 3,
       iterations: 5,
     );
-    // Robust verdict: median tile NCC (a local mover does not reject the
-    // whole frame — its tiles are handled by the ghost test below).
+    // Robust verdict: median tile NCC at half proxy resolution (a local
+    // mover does not reject the frame — the ghost tiles handle it).
     final robust = r.score <= -1
         ? -1.0
         : tileMedianNcc(apHalf, fp.half(), r.transform);
     if (robust < kBurstMinScore || r.transform.angle.abs() > 0.05) {
-      notes[i] = BurstFrameNote(i, sharp[i], robust, 'unaligned');
+      notes.add(BurstFrameNote(i, sharp[i], robust, 'unaligned'));
       continue;
     }
-    affines[i] = _fullAffine(r.transform, ap.width, ap.height, ak);
-    notes[i] = BurstFrameNote(i, sharp[i], robust, 'merged');
+    affines[i] = fullAffine(r.transform, ap.width, ap.height, w, h);
+    notes.add(BurstFrameNote(i, sharp[i], robust, 'merged'));
   }
-  final sigma = estimateNoise(a);
-  final out = Uint8List(iw * ih * 3);
-  // Anchor-only copy first (fallback + base).
+  return BurstPlan(anchor, affines, notes);
+}
+
+/// A decoded piece of one frame: [f] holds region pixels starting at
+/// region coordinates ([ox], [oy]).
+class BandPiece {
+  const BandPiece(this.f, this.ox, this.oy);
+  final RgbFrame f;
+  final int ox, oy;
+}
+
+class BandStats {
+  int tiles = 0, ghost = 0, allGhostBands = 0;
+  final Set<int> used = {};
+}
+
+/// Merges the output rect [out] (x, y, w, h in region coords) from the
+/// anchor piece and the other pieces (index → piece, affine from [plan]).
+/// Returns packed RGB of [out]. Tiles are aligned to region coordinates.
+Uint8List mergeBand({
+  required BandPiece anchor,
+  required Map<int, BandPiece> others,
+  required BurstPlan plan,
+  required (int, int, int, int) out,
+  required double sigma,
+  required BandStats stats,
+}) {
+  final (ix, iy, iw, ih) = out;
+  final a = anchor.f;
+  final res = Uint8List(iw * ih * 3);
   for (var y = 0; y < ih; y++) {
-    final src = ((iy + y) * a.width + ix) * 3;
-    out.setRange(y * iw * 3, (y + 1) * iw * 3, a.rgb, src);
+    final src = ((iy - anchor.oy + y) * a.width + ix - anchor.ox) * 3;
+    res.setRange(y * iw * 3, (y + 1) * iw * 3, a.rgb, src);
   }
-  if (affines.isEmpty) {
-    return BurstMergeResult(
-      image: RgbFrame(iw, ih, out),
-      used: 1,
-      anchor: anchor,
-      notes: notes.cast<BurstFrameNote>(),
-      sigma: sigma,
-      ghostTiles: 0,
-    );
-  }
+  if (others.isEmpty) return res;
   final acc = Float32List(iw * ih * 3);
-  final wsum = Float32List(iw * ih);
-  for (var j = 0; j < iw * ih; j++) {
-    wsum[j] = 1;
+  final wsum = Float32List(iw * ih)..fillRange(0, iw * ih, 1);
+  for (var j = 0; j < iw * ih * 3; j++) {
+    acc[j] = res[j].toDouble();
   }
-  for (var y = 0; y < ih; y++) {
-    for (var x = 0; x < iw; x++) {
-      final s = ((iy + y) * a.width + ix + x) * 3, d = (y * iw + x) * 3;
-      acc[d] = a.rgb[s].toDouble();
-      acc[d + 1] = a.rgb[s + 1].toDouble();
-      acc[d + 2] = a.rgb[s + 2].toDouble();
-    }
-  }
-  final usedFrames = <int>{anchor};
-  var tilesTotal = 0, tilesGhost = 0;
   final lo = kBurstPixLow * sigma, hi = kBurstPixHigh * sigma;
   final ghostTol = kBurstGhostSigma * sigma + 1.0;
-  var timedOut = false;
   final px = Float32List(3);
-  for (final e in affines.entries) {
-    if (sw.elapsedMilliseconds > budgetMs) {
-      timedOut = true;
-      break;
-    }
-    final f = frames[e.key];
-    final m = e.value;
-    var anyUsed = false;
+  var any = false;
+  for (final e in others.entries) {
+    final m = plan.affines[e.key]!;
+    final f = e.value.f;
+    final fox = e.value.ox, foy = e.value.oy;
+    var usedHere = false;
     bool warp(int x, int y) {
       final X = (ix + x).toDouble(), Y = (iy + y).toDouble();
-      final sx = m[0] * X + m[1] * Y + m[2], sy = m[3] * X + m[4] * Y + m[5];
+      final sx = m[0] * X + m[1] * Y + m[2] - fox;
+      final sy = m[3] * X + m[4] * Y + m[5] - foy;
       if (sx < 0 || sy < 0 || sx > f.width - 1 || sy > f.height - 1) {
         return false;
       }
       final x0 = sx.floor(), y0 = sy.floor();
-      final x1 = math.min(x0 + 1, f.width - 1),
-          y1 = math.min(y0 + 1, f.height - 1);
+      final x1 = math.min(x0 + 1, f.width - 1);
+      final y1 = math.min(y0 + 1, f.height - 1);
       final fx = sx - x0, fy = sy - y0;
       final i00 = (y0 * f.width + x0) * 3, i10 = (y0 * f.width + x1) * 3;
       final i01 = (y1 * f.width + x0) * 3, i11 = (y1 * f.width + x1) * 3;
@@ -321,37 +348,40 @@ BurstMergeResult mergeBurst(
       return true;
     }
 
-    for (var ty = 0; ty < ih; ty += kBurstTile) {
-      for (var tx = 0; tx < iw; tx += kBurstTile) {
-        final tw = math.min(kBurstTile, iw - tx),
-            th = math.min(kBurstTile, ih - ty);
-        // Tile ghost test (moving subject / parallax): mean |Δluma|.
+    // Tile grid in REGION coordinates (bands agree on tiles).
+    final ty0 = iy - iy % kBurstTile, tx0 = ix - ix % kBurstTile;
+    for (var gy = ty0; gy < iy + ih; gy += kBurstTile) {
+      for (var gx = tx0; gx < ix + iw; gx += kBurstTile) {
+        final yA = math.max(gy, iy) - iy,
+            yB = math.min(gy + kBurstTile, iy + ih) - iy;
+        final xA = math.max(gx, ix) - ix,
+            xB = math.min(gx + kBurstTile, ix + iw) - ix;
         var diff = 0.0;
         var n = 0;
         var outside = false;
-        for (var y = ty; y < ty + th && !outside; y += 2) {
-          for (var x = tx; x < tx + tw; x += 2) {
+        for (var y = yA; y < yB && !outside; y += 2) {
+          for (var x = xA; x < xB; x += 2) {
             if (!warp(x, y)) {
               outside = true;
               break;
             }
             final d = (y * iw + x) * 3;
-            final la = 0.299 * out[d] + 0.587 * out[d + 1] + 0.114 * out[d + 2];
+            final la = 0.299 * res[d] + 0.587 * res[d + 1] + 0.114 * res[d + 2];
             final lf = 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2];
             diff += (lf - la).abs();
             n++;
           }
         }
-        tilesTotal++;
+        stats.tiles++;
         if (outside || n == 0 || diff / n > ghostTol) {
-          tilesGhost++;
+          stats.ghost++;
           continue;
         }
-        for (var y = ty; y < ty + th; y++) {
-          for (var x = tx; x < tx + tw; x++) {
+        for (var y = yA; y < yB; y++) {
+          for (var x = xA; x < xB; x++) {
             if (!warp(x, y)) continue;
             final j = y * iw + x, d = j * 3;
-            final la = 0.299 * out[d] + 0.587 * out[d + 1] + 0.114 * out[d + 2];
+            final la = 0.299 * res[d] + 0.587 * res[d + 1] + 0.114 * res[d + 2];
             final lf = 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2];
             final dd = (lf - la).abs();
             final w = dd <= lo ? 1.0 : (dd >= hi ? 0.0 : (hi - dd) / (hi - lo));
@@ -360,55 +390,115 @@ BurstMergeResult mergeBurst(
             acc[d + 1] += w * px[1];
             acc[d + 2] += w * px[2];
             wsum[j] += w;
-            anyUsed = true;
+            usedHere = true;
           }
         }
       }
     }
-    if (anyUsed) {
-      usedFrames.add(e.key);
-    } else {
-      notes[e.key] = BurstFrameNote(
-        e.key,
-        sharp[e.key],
-        notes[e.key]!.score,
-        'ghost',
-      );
+    if (usedHere) {
+      stats.used.add(e.key);
+      any = true;
     }
   }
-  if (usedFrames.length < 2) {
-    return BurstMergeResult(
-      image: RgbFrame(iw, ih, out),
-      used: 1,
-      anchor: anchor,
-      notes: notes.cast<BurstFrameNote>(),
-      sigma: sigma,
-      ghostTiles: tilesTotal == 0 ? 0 : tilesGhost / tilesTotal,
-      timedOut: timedOut,
-    );
-  }
-  // Normalise in place (no second full-size float buffer).
+  // Sharpened whenever a merge was planned (also a band where every tile
+  // fell back to the anchor) → bands never differ in treatment.
+  if (!any) stats.allGhostBands++;
   for (var j = 0; j < iw * ih; j++) {
     final ws = wsum[j];
     acc[j * 3] /= ws;
     acc[j * 3 + 1] /= ws;
     acc[j * 3 + 2] /= ws;
   }
-  _sharpenClamped(acc, iw, ih, out, kBurstSharpen);
-  for (final n in notes) {
-    if (n != null && n.status == 'merged' && !usedFrames.contains(n.index)) {
-      notes[n.index] = BurstFrameNote(n.index, n.sharpness, n.score, 'ghost');
-    }
-  }
+  _sharpenClamped(acc, iw, ih, res, kBurstSharpen);
+  return res;
+}
+
+BurstMergeResult _result(
+  BurstPlan plan,
+  BandStats st,
+  double sigma, {
+  RgbFrame? image,
+  bool timedOut = false,
+}) {
+  final used = timedOut ? 1 : st.used.length + 1;
   return BurstMergeResult(
-    image: RgbFrame(iw, ih, out),
-    used: usedFrames.length,
-    anchor: anchor,
-    notes: notes.cast<BurstFrameNote>(),
+    image: image,
+    used: used,
+    anchor: plan.anchor,
+    notes: [
+      for (final n in plan.notes)
+        n.status == 'merged' && (timedOut || !st.used.contains(n.index))
+            ? BurstFrameNote(
+                n.index,
+                n.sharpness,
+                n.score,
+                timedOut ? 'time' : 'ghost',
+              )
+            : n,
+    ],
     sigma: sigma,
-    ghostTiles: tilesTotal == 0 ? 0 : tilesGhost / tilesTotal,
+    ghostTiles: st.tiles == 0 ? 0 : st.ghost / st.tiles,
     timedOut: timedOut,
   );
+}
+
+/// In-memory merge (one band; tests call it directly). [inner] = the
+/// output region (x, y, w, h) inside every frame (the rest is margin).
+BurstMergeResult mergeBurst(
+  List<RgbFrame> frames, {
+  required (int, int, int, int) inner,
+  int budgetMs = kBurstMergeBudgetMs,
+}) {
+  final sw = Stopwatch()..start();
+  final (ix, iy, iw, ih) = inner;
+  final w = frames.first.width, h = frames.first.height;
+  final proxies = <GreyImage>[];
+  final sharp = <double>[];
+  for (final f in frames) {
+    final (p, _) = burstProxy(f);
+    proxies.add(p);
+    // Sharpness at half proxy resolution (noise does not pose as detail).
+    sharp.add(p.half().laplacianVariance());
+  }
+  final plan = planBurst(proxies, sharp, w, h);
+  // Different-size frames cannot be warped here.
+  for (var i = 0; i < frames.length; i++) {
+    if (frames[i].width != w || frames[i].height != h) {
+      plan.affines[i] = null;
+    }
+  }
+  final a = frames[plan.anchor];
+  final sigma = estimateNoise(a);
+  final st = BandStats();
+  if (sw.elapsedMilliseconds > budgetMs) {
+    return _result(
+      plan,
+      st,
+      sigma,
+      image: RgbFrame(
+        iw,
+        ih,
+        mergeBand(
+          anchor: BandPiece(a, 0, 0),
+          others: const {},
+          plan: plan,
+          out: inner,
+          sigma: sigma,
+          stats: st,
+        ),
+      ),
+      timedOut: true,
+    );
+  }
+  final rgb = mergeBand(
+    anchor: BandPiece(a, 0, 0),
+    others: {for (final i in plan.merging) i: BandPiece(frames[i], 0, 0)},
+    plan: plan,
+    out: (ix, iy, iw, ih),
+    sigma: sigma,
+    stats: st,
+  );
+  return _result(plan, st, sigma, image: RgbFrame(iw, ih, rgb));
 }
 
 /// Unsharp mask (3×3 box) whose result is clamped to the 3×3 min/max of
@@ -440,6 +530,159 @@ void _sharpenClamped(Float32List m, int w, int h, Uint8List out, double k) {
   }
 }
 
+// ---- Banded file merge ------------------------------------------------------
+
+/// Reads an upright pixel rect of a still, [sample] = power-of-2 downscale.
+typedef RegionReader =
+    Future<RgbFrame> Function(
+      String path,
+      (int, int, int, int) rect,
+      int sample,
+    );
+
+/// Output band rows for a region [w] wide (multiple of the tile size).
+int bandRows(int w) {
+  final r = (kBurstBandPixels / math.max(1, w)).floor();
+  return math.max(kBurstTile, r - r % kBurstTile);
+}
+
+/// Bounding box (region coords) of [rect] under affine [m], padded,
+/// clipped to [w]×[h].
+(int, int, int, int) mappedBox(
+  List<double> m,
+  (int, int, int, int) rect,
+  int w,
+  int h, {
+  int pad = 3,
+}) {
+  final (x, y, rw, rh) = rect;
+  final xs = <double>[], ys = <double>[];
+  for (final (X, Y) in [(x, y), (x + rw, y), (x, y + rh), (x + rw, y + rh)]) {
+    xs.add(m[0] * X + m[1] * Y + m[2]);
+    ys.add(m[3] * X + m[4] * Y + m[5]);
+  }
+  final l = math.max(0, xs.reduce(math.min).floor() - pad);
+  final t = math.max(0, ys.reduce(math.min).floor() - pad);
+  final r = math.min(w, xs.reduce(math.max).ceil() + pad + 1);
+  final b = math.min(h, ys.reduce(math.max).ceil() + pad + 1);
+  return (l, t, math.max(1, r - l), math.max(1, b - t));
+}
+
+/// The banded merge of [paths] over the still rect [region] (x, y, w, h;
+/// region = inner + margin), output rect [inner] (region coords).
+/// Registration once on sampled proxies, anchor by a full-resolution
+/// centre crop, then band by band (fixed memory). Returns the merged
+/// RGB of [inner] and the result, or a timed-out result (no image).
+Future<(Uint8List?, BurstMergeResult)> mergeBurstBanded({
+  required List<String> paths,
+  required (int, int, int, int) region,
+  required (int, int, int, int) inner,
+  required RegionReader read,
+  int budgetMs = kBurstBandedBudgetMs,
+  int? rows,
+}) async {
+  final sw = Stopwatch()..start();
+  final (rx, ry, rw, rh) = region;
+  (int, int, int, int) still((int, int, int, int) r) =>
+      (r.$1 + rx, r.$2 + ry, r.$3, r.$4);
+  // 1. Proxies (sampled decode of the whole region).
+  var sample = 1;
+  while (math.max(rw, rh) / (sample * 2) >= kBurstProxyLong) {
+    sample *= 2;
+  }
+  final proxies = <GreyImage>[];
+  for (final p in paths) {
+    final f = await read(p, region, sample);
+    proxies.add(burstProxy(f).$1);
+  }
+  final pw = proxies.map((e) => e.width).reduce(math.min);
+  final ph = proxies.map((e) => e.height).reduce(math.min);
+  final same = [
+    for (final g in proxies)
+      g.width == pw && g.height == ph ? g : _cropGrey(g, pw, ph),
+  ];
+  // 2. Sharpness + noise from a full-resolution centre crop.
+  final cs = math.min(384, math.min(rw, rh));
+  final crop = ((rw - cs) ~/ 2, (rh - cs) ~/ 2, cs, cs);
+  final sharp = <double>[];
+  final centres = <RgbFrame>[];
+  for (final p in paths) {
+    final f = await read(p, still(crop), 1);
+    centres.add(f);
+    sharp.add(lumaGrey(f).half().laplacianVariance());
+  }
+  final plan = planBurst(same, sharp, rw, rh);
+  final sigma = estimateNoise(centres[plan.anchor]);
+  final st = BandStats();
+  final (ix, iy, iw, ih) = inner;
+  final out = Uint8List(iw * ih * 3);
+  final step = rows ?? bandRows(iw);
+  const t = kBurstTile;
+  int down(int v) => v - v % t;
+  int up(int v) => down(v + t - 1);
+  for (var y0 = iy; y0 < iy + ih;) {
+    if (sw.elapsedMilliseconds > budgetMs) {
+      return (null, _result(plan, st, sigma, timedOut: true));
+    }
+    // Band ends on the region tile grid: every tile verdict is the same as
+    // in a single-band merge (no seams).
+    final y1 = math.min(iy + ih, math.max(up(y0 + 1), down(y0 + step)));
+    // Whole tiles + ≥ 1 extra row each side (sharpen neighbourhood);
+    // clipped to the inner rect like the single-band merge.
+    final eTop = math.max(iy, down(y0 - 1));
+    final eBot = math.min(iy + ih, up(y1 + 1));
+    final ext = (ix, eTop, iw, eBot - eTop);
+    final aRect = ext;
+    final aPiece = BandPiece(
+      await read(paths[plan.anchor], still(aRect), 1),
+      aRect.$1,
+      aRect.$2,
+    );
+    final others = <int, BandPiece>{};
+    for (final i in plan.merging) {
+      final box = mappedBox(plan.affines[i]!, ext, rw, rh);
+      others[i] = BandPiece(
+        await read(paths[i], still(box), 1),
+        box.$1,
+        box.$2,
+      );
+    }
+    final rgb = mergeBand(
+      anchor: aPiece,
+      others: others,
+      plan: plan,
+      out: ext,
+      sigma: sigma,
+      stats: st,
+    );
+    // Copy the band rows (drop the extra rows).
+    for (var y = y0; y < y1; y++) {
+      final src = ((y - eTop) * iw) * 3;
+      out.setRange(((y - iy) * iw) * 3, ((y - iy) * iw + iw) * 3, rgb, src);
+    }
+    y0 = y1;
+  }
+  return (out, _result(plan, st, sigma));
+}
+
+GreyImage _cropGrey(GreyImage g, int w, int h) {
+  final d = Float32List(w * h);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      d[y * w + x] = g.data[y * g.width + x];
+    }
+  }
+  return GreyImage(w, h, d);
+}
+
+GreyImage lumaGrey(RgbFrame f) {
+  final d = Float32List(f.width * f.height);
+  for (var i = 0; i < d.length; i++) {
+    d[i] = f.lumaAt(i);
+  }
+  return GreyImage(f.width, f.height, d);
+}
+
 // ---- Files / platform ------------------------------------------------------
 
 const MethodChannel _region = MethodChannel('ai_camera/region');
@@ -460,55 +703,95 @@ Future<(int, int)> uprightSize(String path) async {
   });
 }
 
-/// Decodes the upright pixel rect of [path] into a packed RGB file.
-/// Returns (rgbPath, width, height).
+/// Native region decode (upright rect, [sample] power of 2) into RGB.
+Future<RgbFrame> nativeRegion(
+  String path,
+  (int, int, int, int) rect,
+  int sample,
+) async {
+  final (x, y, w, h) = rect;
+  final r = await _region.invokeMapMethod<String, Object?>('decodeBytes', {
+    'path': path,
+    'x': x,
+    'y': y,
+    'w': w,
+    'h': h,
+    'sample': sample,
+  });
+  if (r == null) throw StateError('region decode');
+  return RgbFrame(r['width'] as int, r['height'] as int, r['rgb'] as Uint8List);
+}
+
+/// Dart fallback reader: decodes each still once (cached) — only for
+/// stills up to [maxPixels] (larger: too slow / big → caller falls back).
+RegionReader dartRegionReader({int maxPixels = 6000000}) {
+  final cache = <String, img.Image>{};
+  return (path, rect, sample) async {
+    final im = cache[path] ??= () {
+      final raw = img.decodeImage(File(path).readAsBytesSync());
+      if (raw == null) throw const FormatException('undecodable');
+      final u = img.bakeOrientation(raw);
+      if (u.width * u.height > maxPixels) {
+        throw StateError('still too large for the Dart fallback');
+      }
+      return u;
+    }();
+    final (x, y, w, h) = rect;
+    var c = img.copyCrop(im, x: x, y: y, width: w, height: h);
+    if (sample > 1) {
+      c = img.copyResize(
+        c,
+        width: math.max(1, w ~/ sample),
+        height: math.max(1, h ~/ sample),
+        interpolation: img.Interpolation.average,
+      );
+    }
+    return RgbFrame(c.width, c.height, c.getBytes(order: img.ChannelOrder.rgb));
+  };
+}
+
+/// Decodes the upright pixel rect of [path] into a packed RGB file (used
+/// by the tracked-source crops). Returns (rgbPath, width, height).
 Future<(String, int, int)> decodeRegion(
   String path,
   (int, int, int, int) rect,
   String outPath,
 ) async {
-  final (x, y, w, h) = rect;
+  RgbFrame f;
   try {
-    final r = await _region.invokeMapMethod<String, Object?>('decode', {
-      'path': path,
-      'x': x,
-      'y': y,
-      'w': w,
-      'h': h,
-      'out': outPath,
-    });
-    if (r != null) return (outPath, r['width'] as int, r['height'] as int);
-  } catch (_) {}
-  return Isolate.run(() {
-    final raw = img.decodeImage(File(path).readAsBytesSync());
-    if (raw == null) throw const FormatException('undecodable');
-    final u = img.bakeOrientation(raw);
-    final c = img.copyCrop(u, x: x, y: y, width: w, height: h);
-    File(
-      outPath,
-    ).writeAsBytesSync(c.getBytes(order: img.ChannelOrder.rgb), flush: true);
-    return (outPath, c.width, c.height);
-  });
+    f = await nativeRegion(path, rect, 1);
+  } catch (_) {
+    f = await Isolate.run(() => dartRegionReader()(path, rect, 1));
+  }
+  File(outPath).writeAsBytesSync(f.rgb, flush: true);
+  return (outPath, f.width, f.height);
 }
 
-/// Cancellable background merge: kill() stops the isolate at once.
+/// Cancellable background banded merge: cancel() kills the isolate at
+/// once. Native region decode from the isolate (background platform
+/// channel), Dart fallback for small stills.
 class BurstJob {
   BurstJob._(this._iso, this.result);
   final Isolate _iso;
   final Future<BurstMergeResult?> result;
   void cancel() => _iso.kill(priority: Isolate.immediate);
 
-  /// Merges the RGB region files and writes the JPEG [outJpeg].
   static Future<BurstJob> start({
-    required List<(String, int, int)> frames,
+    required List<String> paths,
+    required (int, int, int, int) region,
     required (int, int, int, int) inner,
     required String outJpeg,
+    int budgetMs = kBurstBandedBudgetMs,
+
+    /// false = Dart decode only (host tests: no platform channel).
+    bool native = true,
   }) async {
     final port = ReceivePort();
     final done = Completer<BurstMergeResult?>();
+    final token = native ? RootIsolateToken.instance : null;
     final iso = await Isolate.spawn(
       _entry,
-      (port.sendPort, frames, inner, outJpeg),
+      (port.sendPort, token, paths, region, inner, outJpeg, budgetMs),
       onExit: port.sendPort,
       errorsAreFatal: true,
     );
@@ -519,26 +802,58 @@ class BurstJob {
     return BurstJob._(iso, done.future);
   }
 
-  static void _entry(
-    (SendPort, List<(String, int, int)>, (int, int, int, int), String) a,
-  ) {
-    final (send, files, inner, outJpeg) = a;
+  static Future<void> _entry(
+    (
+      SendPort,
+      RootIsolateToken?,
+      List<String>,
+      (int, int, int, int),
+      (int, int, int, int),
+      String,
+      int,
+    )
+    a,
+  ) async {
+    final (send, token, paths, region, inner, outJpeg, budget) = a;
     try {
-      final fr = <RgbFrame>[
-        for (final (p, w, h) in files)
-          RgbFrame(w, h, File(p).readAsBytesSync()),
-      ];
-      final r = mergeBurst(fr, inner: inner);
-      final im = img.Image.fromBytes(
-        width: r.image.width,
-        height: r.image.height,
-        bytes: r.image.rgb.buffer,
-        numChannels: 3,
+      var nativeOk = false;
+      if (token != null) {
+        try {
+          BackgroundIsolateBinaryMessenger.ensureInitialized(token);
+          nativeOk = true;
+        } catch (_) {}
+      }
+      final dart = dartRegionReader();
+      Future<RgbFrame> read(String p, (int, int, int, int) r, int s) async {
+        if (nativeOk) {
+          try {
+            return await nativeRegion(p, r, s);
+          } catch (_) {
+            nativeOk = false;
+          }
+        }
+        return dart(p, r, s);
+      }
+
+      final (rgb, res) = await mergeBurstBanded(
+        paths: paths,
+        region: region,
+        inner: inner,
+        read: read,
+        budgetMs: budget,
       );
-      File(
-        outJpeg,
-      ).writeAsBytesSync(img.encodeJpg(im, quality: 95), flush: true);
-      send.send(r);
+      if (rgb != null) {
+        final im = img.Image.fromBytes(
+          width: inner.$3,
+          height: inner.$4,
+          bytes: rgb.buffer,
+          numChannels: 3,
+        );
+        File(
+          outJpeg,
+        ).writeAsBytesSync(img.encodeJpg(im, quality: 95), flush: true);
+      }
+      send.send(res);
     } catch (_) {
       send.send(null);
     }

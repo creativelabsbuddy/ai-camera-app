@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -61,6 +62,7 @@ import '../services/image_register.dart' show GreyImage, Similarity;
 import '../services/tracked_source.dart';
 import '../services/zoom_preview_policy.dart';
 import '../services/zoom_tracker.dart';
+import '../services/zoom_tracker_worker.dart';
 import '../services/zoom_source.dart';
 import '../services/network_check.dart';
 import '../services/zoom_assist.dart';
@@ -347,7 +349,18 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   bool _ladderBusy = false;
 
   // v11.60 wide→close tracking + live-preview policies (cheap phones).
-  final ZoomTracker _tracker = ZoomTracker();
+  // Tracker runs in a worker isolate (one update in flight, stale frames
+  // dropped); [_track] = its latest reply.
+  TrackerWorker? _trackWorker;
+  bool _trackWorkerStarting = false;
+  bool _trackRebaseNext = false;
+  GreyImage? _lastTrackGrey;
+  DeviceOrientation? _trackOrient; // device orientation of the chain
+  DateTime? _trackSettleUntil; // after a rotation / lens reset
+  int? _trackRot; // still = analysis rotated cw by k·90 (verified)
+  String? _trackLensId; // physical camera id of the chain
+  DateTime? _lensPolledAt;
+  bool _lensPollBusy = false;
   DateTime? _zoomChangedAt;
   DateTime? _lastAfNudge;
   Timer? _afReleaseTimer;
@@ -748,6 +761,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _zoomAfTimer?.cancel();
     _afReleaseTimer?.cancel();
     _burstJob?.cancel();
+    _trackWorker?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _ladderTimer?.cancel();
     _lensTimer?.cancel();
@@ -1465,7 +1479,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           '${_latchMeterPoint == null ? '' : ' · meter (${_latchMeterPoint!.dx.toStringAsFixed(2)}, ${_latchMeterPoint!.dy.toStringAsFixed(2)})'}',
       '${formatZoom(_zoom)}x = camera ${_cameraZoom.toStringAsFixed(2)}x × crop ${_digitalZoom.toStringAsFixed(2)}x',
       _activeLensText,
-      '${_tracker.debugText} · ladder ${ln == null ? 'none' : (ln.shots.isEmpty ? 'empty' : ln.shots.map((e) => '${formatZoom(e.checkpoint)}${ln.isClear(e) ? '✓' : '✗'}').join(','))}',
+      '${_track.debugText} · ladder ${ln == null ? 'none' : (ln.shots.isEmpty ? 'empty' : ln.shots.map((e) => '${formatZoom(e.checkpoint)}${ln.isClear(e) ? '✓' : '✗'}').join(','))}',
       'chain ${_ladderDbg ?? '–'} · last zoom ${_zoomSendDbg ?? '–'}',
     ];
   }
@@ -1865,10 +1879,24 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         ? zoomFlowFor(ai: snap.ai, lowEnd: _macroLowEnd, zoom: snap.zoom)
         : ZoomFlow.normal;
     if (flow == ZoomFlow.ladder) await _awaitLadderShot();
+    // v11.9 coverage kept: Pro AI Zoom mode at ≥ 2x on cheap phones.
+    final nativeZoomMerge =
+        snap.ai &&
+        _zoomModeActive &&
+        shouldMergeZoom(
+          lowEnd: _macroLowEnd,
+          zoom: snap.zoom,
+          opticalLimit: snap.optical.opticalLimit,
+        );
     // v11.60: the tracked view at the shutter (fresh + valid only).
-    final trackAtShutter = flow == ZoomFlow.ladder && _trackFresh
-        ? _tracker.rootToCur
-        : null;
+    // Same device orientation + a verified still rotation required.
+    final trackOk =
+        flow == ZoomFlow.ladder &&
+        _trackFresh &&
+        _trackRot != null &&
+        _controller?.value.deviceOrientation == _trackOrient;
+    final trackAtShutter = trackOk ? _track.rootToCur : null;
+    final trackRot = _trackRot ?? 0;
     // v11.35 debug note on all phones (key builds): bright / EV / tap /
     // camera × crop / lens, read at the shutter.
     final zoomDbg =
@@ -1928,11 +1956,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           (!_aiMode || _zoomModeActive) &&
           _macroLowEnd &&
           _lens == CameraLensDirection.back &&
-          snap.digital > 1.2) {
-        // v11.60 cheap phones, digitally zoomed: Normal (offline too) and
-        // Pro AI in Zoom mode (v11.36 gate kept). Short adaptive burst,
-        // region-only decode, aligned robust multi-frame denoise merge.
-        final b = await _zoomBurst(c, snap);
+          (snap.digital > 1.2 || nativeZoomMerge)) {
+        // v11.60 cheap phones: digitally zoomed (Normal, offline too) or a
+        // Pro AI Zoom-mode shot at 2x … native max (v11.9 merge coverage,
+        // now banded). Short adaptive burst, aligned robust denoise merge.
+        final b = await _zoomBurst(c, snap, nativeZoom: nativeZoomMerge);
         shotPath = b.path;
         captureNote = b.note;
         if (b.frac != null) {
@@ -1968,6 +1996,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       macroLevel: level,
       zoomFlow: flow,
       trackAtShutter: trackAtShutter,
+      trackRot: trackRot,
       finalFrac: finalFrac,
     );
   }
@@ -1994,6 +2023,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     CaptureMode? modeOverride,
     ZoomFlow zoomFlow = ZoomFlow.normal,
     Similarity? trackAtShutter,
+    int trackRot = 0,
     (double, double)? finalFrac,
   }) async {
     setState(() {
@@ -2122,7 +2152,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       // needed.
       final frac = finalFrac ?? _finalFrac(crop);
       TrackedCandidates? tc;
-      final aspect = _tracker.rootAspect;
+      final aspect = _track.rootAspect;
       if (trackAtShutter != null &&
           aspect != null &&
           frac != null &&
@@ -2133,6 +2163,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
             rootToCur: trackAtShutter,
             trackAspect: aspect,
             finalFrac: frac,
+            shutterRot: trackRot,
             outDir: (await getTemporaryDirectory()).path,
           );
         } catch (e) {
@@ -2146,7 +2177,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (tc != null) deleteQuietly(tc.files);
       if (d.ok) zoomSource = File(d.path!);
       final trackTxt = trackAtShutter == null
-          ? _tracker.debugText
+          ? _track.debugText
           : 'tracked ${tc?.notes.join(', ') ?? 'none'}';
       final failClosed =
           !d.ok && need && d.reason != ZoomSourceReason.finalSharp;
@@ -2270,8 +2301,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// merged, the first full still (frac null). Temporary files removed.
   Future<({String path, String? note, (double, double)? frac})> _zoomBurst(
     CameraController c,
-    _ShotSnap snap,
-  ) async {
+    _ShotSnap snap, {
+    bool nativeZoom = false,
+  }) async {
     final ourAf = await _preCapture();
     final paths = <String>[];
     final sw = Stopwatch()..start();
@@ -2311,6 +2343,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
             digital: snap.digital,
             regionPixels: r.width * r.height,
             plainPhoto: true,
+            nativeZoom: nativeZoom,
           )) {
             break; // region too large for a safe merge → single shot
           }
@@ -2339,21 +2372,13 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final oh = math.min(ih, r.y + r.height + my) - oy;
     final dir = (await getTemporaryDirectory()).path;
     final stamp = DateTime.now().millisecondsSinceEpoch;
-    final rgbs = <(String, int, int)>[];
     final out = '$dir/zoomburst_$stamp.jpg';
     try {
-      for (var i = 0; i < paths.length; i++) {
-        final f = '$dir/burst_${stamp}_$i.rgb';
-        final (pth, w, h) = await decodeRegion(paths[i], (ox, oy, ow, oh), f);
-        if (w == ow && h == oh) {
-          rgbs.add((pth, w, h));
-        } else {
-          deleteQuietly([pth]);
-        }
-      }
-      if (rgbs.length < 2) throw StateError('region decode');
+      // Banded merge in a killable isolate (native region decode per band:
+      // memory stays bounded for full 2x … native-max frames).
       final job = await BurstJob.start(
-        frames: rgbs,
+        paths: paths,
+        region: (ox, oy, ow, oh),
         inner: (r.x - ox, r.y - oy, r.width, r.height),
         outJpeg: out,
       );
@@ -2365,8 +2390,21 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         deleteQuietly([out, ...paths]);
         return (path: paths.first, note: null, frac: null);
       }
-      _deletePaths(paths);
       final n = paths.length;
+      if (res.timedOut || !File(out).existsSync()) {
+        // Over budget: the sharpest frame's own full photo (no half merge).
+        final keep = paths[res.anchor];
+        _deletePaths([for (final p in paths) if (p != keep) p]);
+        deleteQuietly([out]);
+        return (
+          path: keep,
+          note: AiConfig.hasEmbeddedApiKey
+              ? 'Zoom burst $n frames ${ms}ms · merge over time → sharpest'
+              : 'Sharpest of $n',
+          frac: null,
+        );
+      }
+      _deletePaths(paths);
       final note = AiConfig.hasEmbeddedApiKey
           ? 'Zoom burst $n frames ${ms}ms · ${res.debugText}'
           : res.used >= 2
@@ -2379,8 +2417,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       deleteQuietly([out]);
       _deletePaths(paths.skip(1).toList());
       return (path: paths.first, note: 'Single frame', frac: null);
-    } finally {
-      deleteQuietly([for (final f in rgbs) f.$1]);
     }
   }
 
@@ -3166,9 +3202,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _ladderDbg = null;
     _zoomSendDbg = null;
     // v11.60: a new chain starts from a fresh tracker.
-    _tracker.reset();
-    _prevTrack = null;
-    _trackMotion = 1;
+    _resetTracking();
     _deletePaths(old);
   }
 
@@ -3202,56 +3236,122 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     );
   }
 
+  TrackSnapshot get _track => _trackWorker?.snapshot ?? TrackSnapshot.idle;
+
   /// The tracker's latest frame is recent (the chain describes NOW).
   bool get _trackFresh {
-    final at = _tracker.curAt;
+    final at = _track.curAt;
     return at != null &&
         DateTime.now().difference(at) < const Duration(milliseconds: 900);
   }
 
-  /// v11.60: every analysed frame (ladder mode) → tracker. A lost chain
-  /// invalidates the references (a shot needing a sharp source then fails
-  /// closed); with nothing to protect the tracker simply re-roots.
+  /// Fresh chain: tracker reset, rotation / lens identity forgotten. After
+  /// a rotation or lens switch the first root waits [kTrackSettle] and a
+  /// steady phone (a clear new reference, not a mid-turn blur).
+  void _resetTracking({bool settle = false}) {
+    _trackWorker?.reset();
+    _trackRebaseNext = false;
+    _prevTrack = null;
+    _trackMotion = 1;
+    _trackRot = null;
+    _trackOrient = null;
+    _trackLensId = null;
+    _trackSettleUntil = settle ? DateTime.now().add(kTrackSettle) : null;
+  }
+
+  void _invalidateTracking(String why) {
+    final l = _ladder;
+    if (l != null && l.shots.isNotEmpty) _dropTrackedRefs(why);
+    _resetTracking(settle: true);
+    _ladderDbg = 'track reset ($why)';
+  }
+
+  /// v11.60: every analysed frame (ladder mode) → tracker worker. A lost
+  /// chain invalidates the references (a shot needing a sharp source then
+  /// fails closed); with nothing to protect the tracker simply re-roots.
+  /// Device rotation or a physical-lens switch → reset + fresh reference.
   void _feedTracker(FrameStats s) {
     final tl = s.trackLuma;
     if (!_ladderMode || tl == null || _processingCapture) return;
     final c = _controller;
-    final upright =
-        c != null && c.value.deviceOrientation == DeviceOrientation.portraitUp;
-    final l = _ladder;
-    final hasRefs = l != null && l.shots.any((e) => e.rootToRef != null);
-    if (!upright) {
-      // Stills follow the device orientation, analysis frames do not:
-      // unsupported → no tracking, no tracked references.
-      if (_tracker.state != TrackState.unsupported) {
-        _tracker.disable('orientation');
-        if (hasRefs) _dropTrackedRefs('orientation');
+    if (c == null) return;
+    final w = _trackWorker;
+    if (w == null) {
+      if (!_trackWorkerStarting) {
+        _trackWorkerStarting = true;
+        TrackerWorker.start().then(
+          (w) {
+            if (!mounted) return w.dispose();
+            w.onUpdate = _onTrackUpdate;
+            _trackWorker = w;
+          },
+          onError: (Object e) {
+            _trackWorkerStarting = false;
+            debugPrint('Tracker worker failed: $e');
+          },
+        );
       }
       return;
     }
-    if (_tracker.state == TrackState.unsupported) _tracker.reset();
-    final f = TrackFrame(
-      GreyImage.fromBytes(s.trackWidth, s.trackHeight, tl),
-      _cameraZoom,
-      DateTime.now(),
-    );
-    if (_tracker.state == TrackState.lost) {
-      if (hasRefs) _dropTrackedRefs(_tracker.lostReason ?? 'lost');
-      _tracker.rebase(f);
+    final now = DateTime.now();
+    final o = c.value.deviceOrientation;
+    if (_trackOrient != null && o != _trackOrient) {
+      _invalidateTracking('rotation');
+    }
+    _pollTrackLens(now);
+    final settle = _trackSettleUntil;
+    if (settle != null) {
+      if (now.isBefore(settle) || _steady.moving) return;
+      _trackSettleUntil = null;
+    }
+    _trackOrient ??= o;
+    final g = GreyImage.fromBytes(s.trackWidth, s.trackHeight, tl);
+    _lastTrackGrey = g;
+    w.submit(TrackFrame(g, _cameraZoom, now), rebase: _trackRebaseNext);
+    _trackRebaseNext = false;
+  }
+
+  /// Worker reply (current epoch only).
+  void _onTrackUpdate(TrackSnapshot t) {
+    if (!mounted || !_ladderMode) return;
+    if (t.state == TrackState.lost) {
+      final l = _ladder;
+      if (l != null && l.shots.any((e) => e.rootToRef != null)) {
+        _dropTrackedRefs(t.lostReason ?? 'lost');
+      }
+      _trackRot = null;
+      _trackRebaseNext = true;
       _prevTrack = null;
       _trackMotion = 1;
       return;
     }
-    _tracker.update(f);
-    if (_tracker.state == TrackState.lost) {
-      if (hasRefs) _dropTrackedRefs(_tracker.lostReason ?? 'lost');
-      return;
-    }
-    final cur = _tracker.rootToCur;
+    final cur = t.rootToCur;
     final prev = _prevTrack;
     _trackMotion = cur == null || prev == null ? 1 : transformDelta(prev, cur);
     _prevTrack = cur;
     _maybeCaptureRef();
+  }
+
+  /// Physical camera identity (~1 s): a switch → the chain is invalid.
+  void _pollTrackLens(DateTime now) {
+    final at = _lensPolledAt;
+    if (_lensPollBusy ||
+        (at != null && now.difference(at) < const Duration(seconds: 1))) {
+      return;
+    }
+    _lensPollBusy = true;
+    _lensPolledAt = now;
+    CameraExtras.info()
+        .then((info) {
+          final id = info['activePhysicalId'] as String?;
+          if (!mounted || !_ladderMode || id == null) return;
+          final old = _trackLensId;
+          if (old != null && id != old) {
+            _invalidateTracking('lens switch');
+          }
+          _trackLensId = id;
+        }, onError: (_) {})
+        .whenComplete(() => _lensPollBusy = false);
   }
 
   /// The chain broke: references no longer map to the view (hint shown).
@@ -3277,7 +3377,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       now: DateTime.now(),
       zoomChangedAt: _zoomChangedAt,
       gyroSteady: !_steady.moving,
-      tracked: _tracker.rootToCur != null && _trackFresh,
+      tracked: _track.rootToCur != null && _trackFresh,
       motion: _trackMotion,
       busy:
           _ladderBusy ||
@@ -3298,22 +3398,52 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final l = _ladder;
     if (c == null || l == null || !c.value.isInitialized || !mounted) return;
     if (!_ladderMode || _ladderBusy) return;
-    final before = _tracker.rootToCur;
-    if (before == null) return;
+    final before = _track.rootToCur;
+    final ana = _lastTrackGrey;
+    final orient = _trackOrient;
+    if (before == null || ana == null || orient == null) return;
     _ladderBusy = true;
     final cam = _cameraZoom;
     final cp = (_zoom * 10).round() / 10;
+    final epoch = _trackWorker?.epoch;
     try {
       final shot = await c.takePicture();
       final sharp = await photoSharpness(shot.path);
-      final after = _tracker.rootToCur;
+      // Which way the still is turned vs the analysis view: device
+      // orientation (portrait / landscape) + image check, off the UI isolate.
+      StillRotation? rot;
+      try {
+        final proxy = await stillProxy(shot.path);
+        final landscape =
+            orient == DeviceOrientation.landscapeLeft ||
+            orient == DeviceOrientation.landscapeRight;
+        rot = await Isolate.run(
+          () => detectStillRotation(ana, proxy, landscape: landscape),
+        );
+      } catch (e) {
+        debugPrint('Ref rotation check failed: $e');
+      }
+      final after = _track.rootToCur;
       final moved =
-          after == null || transformDelta(before, after) > kRefMaxMotion * 2;
-      if (!identical(l, _ladder) || (_cameraZoom - cam).abs() > 0.01 || moved) {
+          after == null ||
+          _trackWorker?.epoch != epoch ||
+          transformDelta(before, after) > kRefMaxMotion * 2;
+      final rotBad =
+          rot == null || !rot.ok || (_trackRot != null && rot.k != _trackRot);
+      if (!identical(l, _ladder) ||
+          (_cameraZoom - cam).abs() > 0.01 ||
+          moved ||
+          rotBad ||
+          _controller?.value.deviceOrientation != orient) {
         _deletePaths([shot.path]);
         _ladderDbg =
-            'ref ${formatZoom(cp)} discarded (${moved ? 'moved / lost' : 'zoom changed'})';
+            'ref ${formatZoom(cp)} discarded (${moved
+                ? 'moved / lost'
+                : rotBad
+                ? 'rotation unverified ${rot == null ? 'n/a' : '${rot.score.toStringAsFixed(2)}/${rot.margin.toStringAsFixed(2)}'}'
+                : 'zoom / orientation changed'})';
       } else {
+        _trackRot ??= rot.k;
         // A blurry reference is kept for the clear-limit record only (never
         // a source); the tracking chain is not affected by it.
         final clear = l.shots.isEmpty || isClearPhoto(sharp, l.refSharpness);
@@ -3324,11 +3454,12 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
             cameraZoom: cam,
             sharpness: sharp,
             rootToRef: before,
+            stillRot: rot.k!,
           ),
         );
         _noteClearLimit(l);
         _ladderDbg =
-            'ref ${formatZoom(cp)} ${clear ? 'clear' : 'blurry'} · ${_tracker.debugText}';
+            'ref ${formatZoom(cp)} ${clear ? 'clear' : 'blurry'} · ${_track.debugText}';
         if (mounted) setState(() {});
         debugPrint(
           'Ladder ref ${cp}x @ cam ${cam.toStringAsFixed(2)}x '

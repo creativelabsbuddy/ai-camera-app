@@ -103,18 +103,18 @@ class MainActivity : FlutterActivity() {
                     return@setMethodCallHandler
                 }
                 when (call.method) {
-                    "info", "decode" -> Thread {
+                    "info", "decodeBytes" -> Thread {
                         try {
                             val r = if (call.method == "info") {
                                 RegionDecode.info(path)
                             } else {
-                                RegionDecode.decode(
+                                RegionDecode.decodeBytes(
                                     path,
                                     call.argument<Int>("x")!!,
                                     call.argument<Int>("y")!!,
                                     call.argument<Int>("w")!!,
                                     call.argument<Int>("h")!!,
-                                    call.argument<String>("out")!!,
+                                    call.argument<Int>("sample") ?: 1,
                                 )
                             }
                             runOnUiThread { result.success(r) }

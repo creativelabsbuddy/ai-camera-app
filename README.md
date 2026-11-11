@@ -334,18 +334,36 @@ bound or a synthetic-test result, not a measured clarity gain on any phone.
   root→key→current; blurry frames never become keyframes and never reset the chain; 8 misses,
   implausible motion (scale ±35 % vs zoom, rotation > 8°), leaving the reference or a different
   subject → lost → references dropped (hint) → a shot needing a source fails closed (no AI
-  call, nothing charged). Orientation ≠ portraitUp or aspect change → tracking off. Each
+  call, nothing charged). Registration runs in a worker isolate (`zoom_tracker_worker.dart`):
+  one update in flight, a newer frame replaces a pending one (stale frames dropped), an epoch
+  makes replies from before a reset count for nothing. Device rotation or a physical-lens switch
+  (`activePhysicalId`, polled ~1 s) → references dropped, tracker reset, a new root only after
+  0.6 s + a steady phone. Stills follow the device orientation while analysis frames do not: each
+  reference records k (still = analysis view turned k·90° clockwise) — portrait/landscape from
+  `deviceOrientation`, the exact k (incl. upside-down) by matching the still against the live
+  analysis frame (score ≥ 0.80, margin ≥ 0.10 over the other candidate), else the reference is
+  discarded. Aspect change → tracking off. Each
   reference stores its tracked view; at the shutter the final region is mapped cur→root→ref,
   cut at ×1.3 (native region decode) and must still pass the strict v11.59 `pickZoomSource`
   match + sharper check. No whole-frame-similarity fallback.
-- **Zoom burst (`burst_merge.dart`):** digitally zoomed shots (digital > 1.2, region ≤ 3 MP) on
-  cheap phones, Normal (offline too) and Pro AI in Zoom mode: 2–4 sequential stills within
-  1.8 s (a capture > 0.7 s ends it), only the region + 7.5 % decoded (Android
-  BitmapRegionDecoder + EXIF rotation; Dart fallback), merged in a killable isolate (6 s
-  budget): anchor = sharpest; frames with other exposure (±10 %) or that do not register
+- **Zoom burst (`burst_merge.dart`):** cheap phones, digitally zoomed shots (digital > 1.2;
+  Normal, offline too) AND — the v11.9 coverage kept — Pro AI Zoom-mode shots at 2x … the
+  camera's native max (`shouldMergeZoom`), region ≤ 16 MP: 2–4 sequential stills within 1.8 s
+  (a capture > 0.7 s ends it), merged in a killable isolate in row BANDS of ≤ 1.5 MP output
+  (native sampled BitmapRegionDecoder reads per band + EXIF rotation; Dart fallback): memory
+  stays at a few band-sized buffers even for full 12 MP frames. Bands end on the tile grid so
+  the result equals a single-band merge (tested). 15 s budget; over it → the sharpest frame's
+  own full photo (never a half merge). Anchor = sharpest; frames with other exposure (±10 %) or that do not register
   (median tile NCC < 0.85) left out; similarity warp; 16-px ghost tiles (anchor only); robust
   per-pixel weights from the anchor's noise σ; mild halo-clamped sharpen only after a real
   merge. An aligned multi-frame DENOISE merge, not super-resolution. Temp files deleted.
 - The merged region / tracked source feed the existing v11.59 payload (source first, final
   framing only) for both the direct key and the server; no server change, same model/prompts.
-- Tests: `test/v1160_test.dart` (synthetic scenes with known transforms).
+- Tests: `test/v1160_test.dart`, `test/v1160_rotation_worker_test.dart` (synthetic scenes with
+  known transforms; portrait / landscape both ways / upside-down ROI mapping + crop content;
+  worker single-in-flight / drop / epoch).
+- **Limits:** no device run yet. The rotation check relies on the still and the analysis frame
+  seeing the same view (same aspect); a 16:9 still vs a 4:3 analysis stream → references
+  rejected (fails closed, reported 'rotation unverified'). Lens identity needs the camera to
+  report `activePhysicalId`; phones that do not → no lens-switch reset (the tracker's own
+  scale/score checks still apply). Band timings on real cheap phones are unmeasured.

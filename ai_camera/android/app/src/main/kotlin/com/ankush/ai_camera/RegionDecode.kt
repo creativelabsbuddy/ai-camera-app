@@ -6,9 +6,6 @@ import android.graphics.BitmapRegionDecoder
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.media.ExifInterface
-import java.io.BufferedOutputStream
-import java.io.File
-import java.io.FileOutputStream
 
 /**
  * v11.60 burst merge: decode ONLY the zoomed region of a full-resolution
@@ -43,10 +40,10 @@ object RegionDecode {
         }
 
     /**
-     * Upright pixel rect (x, y, w, h) → RGB file at [outPath]. Returns the
-     * decoded upright size (may differ by a pixel from rounding).
+     * Upright pixel rect (x, y, w, h), downscaled by [sample] (power of 2,
+     * BitmapFactory inSampleSize), → packed RGB bytes + size.
      */
-    fun decode(path: String, x: Int, y: Int, w: Int, h: Int, outPath: String): Map<String, Any> {
+    fun decodeBytes(path: String, x: Int, y: Int, w: Int, h: Int, sample: Int): Map<String, Any> {
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(path, o)
         val rw = o.outWidth
@@ -68,7 +65,10 @@ object RegionDecode {
         @Suppress("DEPRECATION")
         val dec = BitmapRegionDecoder.newInstance(path, false)
             ?: throw IllegalStateException("no region decoder")
-        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        val opts = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inSampleSize = sample.coerceIn(1, 64)
+        }
         var bmp = try {
             dec.decodeRegion(raw, opts)
         } finally {
@@ -83,20 +83,17 @@ object RegionDecode {
         val ow = bmp.width
         val oh = bmp.height
         val row = IntArray(ow)
-        val bytes = ByteArray(ow * 3)
-        BufferedOutputStream(FileOutputStream(File(outPath)), 1 shl 16).use { out ->
-            for (yy in 0 until oh) {
-                bmp.getPixels(row, 0, ow, 0, yy, ow, 1)
-                var j = 0
-                for (p in row) {
-                    bytes[j++] = (p shr 16 and 0xff).toByte()
-                    bytes[j++] = (p shr 8 and 0xff).toByte()
-                    bytes[j++] = (p and 0xff).toByte()
-                }
-                out.write(bytes)
+        val bytes = ByteArray(ow * oh * 3)
+        var j = 0
+        for (yy in 0 until oh) {
+            bmp.getPixels(row, 0, ow, 0, yy, ow, 1)
+            for (p in row) {
+                bytes[j++] = (p shr 16 and 0xff).toByte()
+                bytes[j++] = (p shr 8 and 0xff).toByte()
+                bytes[j++] = (p and 0xff).toByte()
             }
         }
         bmp.recycle()
-        return mapOf("width" to ow, "height" to oh, "path" to outPath)
+        return mapOf("width" to ow, "height" to oh, "rgb" to bytes)
     }
 }

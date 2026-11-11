@@ -582,6 +582,41 @@ void main() {
       expect(kBurstMaxRegionPixels, lessThanOrEqualTo(3000000));
     });
 
+    test('shouldBurstZoom: native zoom (Pro AI Zoom 2x…max) kept', () {
+      expect(
+        shouldBurstZoom(
+          lowEnd: true,
+          digital: 1.0,
+          regionPixels: 12000000,
+          plainPhoto: true,
+          nativeZoom: true,
+        ),
+        isTrue,
+        reason: 'v11.9 coverage: full-res native-zoom frames, banded',
+      );
+      expect(
+        shouldBurstZoom(
+          lowEnd: true,
+          digital: 1.0,
+          regionPixels: 12000000,
+          plainPhoto: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldBurstZoom(
+          lowEnd: false,
+          digital: 1.0,
+          regionPixels: 12000000,
+          plainPhoto: true,
+          nativeZoom: true,
+        ),
+        isFalse,
+      );
+      expect(kBurstMaxBandedPixels, lessThanOrEqualTo(16000000));
+      expect(kBurstBandPixels, lessThanOrEqualTo(1500000));
+    });
+
     test('shouldBurstZoom: small digitally zoomed regions only', () {
       bool b(double d, int px, {bool low = true, bool plain = true}) =>
           shouldBurstZoom(
@@ -592,7 +627,8 @@ void main() {
           );
       expect(b(2, 2000000), isTrue);
       expect(b(1.1, 2000000), isFalse);
-      expect(b(2, 5000000), isFalse, reason: 'memory / time bound');
+      expect(b(2, 5000000), isTrue, reason: 'banded: big regions merge');
+      expect(b(2, 20000000), isFalse, reason: 'memory / time bound');
       expect(b(2, 2000000, low: false), isFalse);
       expect(b(2, 2000000, plain: false), isFalse);
     });
@@ -616,12 +652,12 @@ void main() {
       expect(r.used, greaterThanOrEqualTo(3), reason: r.debugText);
       final truth = cropGrey(lumaOf(rgbView(s, w, h, fr[r.anchor].$1)), inner);
       final anchorOnly = cropGrey(lumaOf(fr[r.anchor].$2), inner);
-      final merged = lumaOf(r.image);
+      final merged = lumaOf(r.image!);
       final eA = rms(anchorOnly, truth), eM = rms(merged, truth);
       expect(eM, lessThan(eA * 0.8), reason: 'anchor $eA merged $eM');
       expect(ncc(merged, truth), greaterThan(0.97));
-      expect(r.image.width, inner.$3);
-      expect(r.image.height, inner.$4);
+      expect(r.image!.width, inner.$3);
+      expect(r.image!.height, inner.$4);
     });
 
     test('anchor = the sharpest frame (a blurred first frame is not it)', () {
@@ -648,7 +684,7 @@ void main() {
         frames[k] = RgbFrame(w, h, b);
       }
       final r = mergeBurst(frames, inner: inner, budgetMs: 60000);
-      final out = lumaOf(r.image);
+      final out = lumaOf(r.image!);
       final anc = cropGrey(lumaOf(frames[r.anchor]), inner);
       // inside the patch (inner coords) the result follows the anchor
       var maxDiff = 0.0;
@@ -677,7 +713,7 @@ void main() {
       expect(r.debugText, startsWith('best of 3'));
       // the output is the anchor's region, untouched
       final all = [fr[0].$2, dark, other];
-      expect(r.image.rgb, frames0(all[r.anchor], inner));
+      expect(r.image!.rgb, frames0(all[r.anchor], inner));
     });
 
     test('no halos: merged + sharpened stays within local extremes', () {
@@ -704,7 +740,7 @@ void main() {
         mn = math.min(mn, v);
         mx = math.max(mx, v);
       }
-      for (final v in r.image.rgb) {
+      for (final v in r.image!.rgb) {
         expect(v, inInclusiveRange(mn, mx));
       }
     });
@@ -724,34 +760,144 @@ void main() {
       final dir = Directory.systemTemp.createTempSync('v1160b');
       addTearDown(() => dir.deleteSync(recursive: true));
       final fr = burst(noise: 8);
-      final files = <(String, int, int)>[];
+      final files = <String>[];
       for (var i = 0; i < fr.length; i++) {
-        final p = '${dir.path}/f$i.rgb';
-        File(p).writeAsBytesSync(fr[i].$2.rgb);
-        files.add((p, w, h));
+        final p = '${dir.path}/f$i.png';
+        File(p).writeAsBytesSync(img.encodePng(rgbImage(fr[i].$2)));
+        files.add(p);
       }
       final out = '${dir.path}/out.jpg';
       final job = await BurstJob.start(
-        frames: files,
+        paths: files,
+        region: (0, 0, w, h),
         inner: inner,
         outJpeg: out,
+        native: false,
       );
-      final r = await job.result.timeout(const Duration(seconds: 30));
+      final r = await job.result.timeout(const Duration(seconds: 60));
       expect(r, isNotNull);
-      expect(r!.used, greaterThanOrEqualTo(2));
+      expect(r!.used, greaterThanOrEqualTo(2), reason: r.debugText);
       final jpg = img.decodeJpg(File(out).readAsBytesSync())!;
       expect(jpg.width, inner.$3);
       expect(jpg.height, inner.$4);
       // cancel right away → completes (null), no hang
       final job2 = await BurstJob.start(
-        frames: files,
+        paths: files,
+        region: (0, 0, w, h),
         inner: inner,
         outJpeg: '${dir.path}/out2.jpg',
+        native: false,
       );
       job2.cancel();
       expect(await job2.result.timeout(const Duration(seconds: 10)), isNull);
-      deleteQuietly([for (final f in files) f.$1]);
-      expect(files.every((f) => !File(f.$1).existsSync()), isTrue);
+      deleteQuietly(files);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(files.every((f) => !File(f).existsSync()), isTrue);
+    });
+
+    RegionReader memReader(Map<String, RgbFrame> m) => (p, rect, sample) async {
+      final f = m[p]!;
+      final (x, y, rw, rh) = rect;
+      final ow = (rw / sample).floor(), oh = (rh / sample).floor();
+      final o = Uint8List(ow * oh * 3);
+      for (var yy = 0; yy < oh; yy++) {
+        for (var xx = 0; xx < ow; xx++) {
+          final si = ((y + yy * sample) * f.width + x + xx * sample) * 3;
+          o.setRange((yy * ow + xx) * 3, (yy * ow + xx) * 3 + 3, f.rgb, si);
+        }
+      }
+      return RgbFrame(ow, oh, o);
+    };
+
+    test(
+      'banded merge: identical to one band (no seams), sub-region',
+      () async {
+        final fr = burst(noise: 10);
+        final m = {for (var i = 0; i < fr.length; i++) 'f$i': fr[i].$2};
+        final paths = m.keys.toList();
+        // region = a margin-cropped part of the still; inner off the tile grid
+        const region = (6, 4, 170, 230);
+        const inn = (11, 13, 141, 197);
+        final (one, r1) = await mergeBurstBanded(
+          paths: paths,
+          region: region,
+          inner: inn,
+          read: memReader(m),
+          rows: 100000,
+        );
+        final (many, r2) = await mergeBurstBanded(
+          paths: paths,
+          region: region,
+          inner: inn,
+          read: memReader(m),
+          rows: 16,
+        );
+        expect(one, isNotNull);
+        expect(r1.used, greaterThanOrEqualTo(3), reason: r1.debugText);
+        expect(r2.used, r1.used);
+        expect(many, one, reason: 'bands must not leave seams');
+        expect(one!.length, inn.$3 * inn.$4 * 3);
+        // and it really denoises vs the anchor alone
+        final truth = cropGrey(lumaOf(rgbView(s, w, h, fr[r1.anchor].$1)), (
+          region.$1 + inn.$1,
+          region.$2 + inn.$2,
+          inn.$3,
+          inn.$4,
+        ));
+        final anchorOnly = cropGrey(lumaOf(fr[r1.anchor].$2), (
+          region.$1 + inn.$1,
+          region.$2 + inn.$2,
+          inn.$3,
+          inn.$4,
+        ));
+        final merged = lumaOf(RgbFrame(inn.$3, inn.$4, one));
+        expect(rms(merged, truth), lessThan(rms(anchorOnly, truth) * 0.8));
+      },
+    );
+
+    test(
+      'banded merge: band reads stay bounded (no full-frame decode)',
+      () async {
+        final fr = burst(noise: 8);
+        final m = {for (var i = 0; i < fr.length; i++) 'f$i': fr[i].$2};
+        final reads = <(int, int, int, int)>[];
+        final base = memReader(m);
+        Future<RgbFrame> spy(String p, (int, int, int, int) r, int sample) {
+          reads.add(r);
+          return base(p, r, sample);
+        }
+
+        final (out, _) = await mergeBurstBanded(
+          paths: m.keys.toList(),
+          region: (0, 0, w, h),
+          inner: inner,
+          read: spy,
+          rows: 32,
+        );
+        expect(out, isNotNull);
+        // after the n proxy + n centre reads: band reads only (32 rows +
+        // whole-tile context + the mapped margin), never the whole frame
+        final bands = reads.skip(2 * m.length).toList();
+        expect(bands.length, greaterThan(m.length * 3));
+        final maxFull = bands.map((r) => r.$3 * r.$4).reduce(math.max);
+        expect(maxFull, lessThan(w * h ~/ 2), reason: 'max $maxFull px');
+      },
+    );
+
+    test('banded merge over time → null image, flagged (caller keeps the '
+        'sharpest full still)', () async {
+      final fr = burst(noise: 8);
+      final m = {for (var i = 0; i < fr.length; i++) 'f$i': fr[i].$2};
+      final (out, r) = await mergeBurstBanded(
+        paths: m.keys.toList(),
+        region: (0, 0, w, h),
+        inner: inner,
+        read: memReader(m),
+        budgetMs: -1,
+      );
+      expect(out, isNull);
+      expect(r.timedOut, isTrue);
+      expect(r.used, 1);
     });
 
     test('Dart region decode fallback: upright crop of the still', () async {
@@ -781,14 +927,29 @@ void main() {
 
     test('home: Normal + Pro, offline too; temp files cleaned', () {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
-      final i = h.indexOf('final b = await _zoomBurst(c, snap);');
+      final i = h.indexOf(
+        'final b = await _zoomBurst(c, snap, nativeZoom: nativeZoomMerge);',
+      );
       expect(i, greaterThan(0));
       final cond = h.substring(h.lastIndexOf('} else if (', i), i);
       expect(cond, isNot(contains('snap.ai')), reason: 'Normal mode too');
       expect(cond, isNot(contains('online')), reason: 'local, works offline');
-      expect(cond, contains('snap.digital > 1.2'));
-      expect(h, contains('deleteQuietly([for (final f in rgbs) f.\$1])'));
+      expect(cond, contains('snap.digital > 1.2 || nativeZoomMerge'));
+      // v11.9 coverage: Pro AI Zoom mode 2x … native max on cheap phones
+      final nz = h.substring(h.indexOf('final nativeZoomMerge ='));
+      expect(
+        nz.substring(0, 260),
+        allOf(
+          contains('snap.ai'),
+          contains('_zoomModeActive'),
+          contains('shouldMergeZoom('),
+        ),
+      );
+      expect(h, contains('BurstJob.start(\n        paths: paths,'));
+      expect(h, contains('final keep = paths[res.anchor];'));
+      expect(h, contains('_deletePaths(paths);'));
       expect(h, contains('_burstJob?.cancel()'));
+      expect(h, isNot(contains('rgbs')));
     });
   });
 
@@ -940,8 +1101,20 @@ void main() {
       expect(h, isNot(contains('kZoomSourceMargin\n')));
       expect(h, contains('_snack(kZoomNoSharpSource)'));
       expect(h, contains('_dropTrackedRefs('));
-      expect(h, contains("_tracker.disable('orientation')"));
-      expect(h, contains('_tracker.reset();'));
+      // rotation / lens switch → reset + fresh reference (no disabling)
+      expect(h, isNot(contains("disable('orientation')")));
+      expect(h, contains("_invalidateTracking('rotation')"));
+      expect(h, contains("_invalidateTracking('lens switch')"));
+      expect(h, contains("info['activePhysicalId']"));
+      expect(
+        h,
+        contains('detectStillRotation(ana, proxy, landscape: landscape)'),
+      );
+      expect(h, contains('shutterRot: trackRot,'));
+      // tracker work is off the UI isolate
+      expect(h, contains('TrackerWorker.start()'));
+      expect(h, isNot(contains('_tracker.update(')));
+      expect(h, isNot(contains('ZoomTracker()')));
     });
   });
 }
@@ -959,3 +1132,10 @@ Uint8List frames0(RgbFrame f, (int, int, int, int) r) {
   }
   return o;
 }
+
+img.Image rgbImage(RgbFrame f) => img.Image.fromBytes(
+  width: f.width,
+  height: f.height,
+  bytes: f.rgb.buffer,
+  numChannels: 3,
+);

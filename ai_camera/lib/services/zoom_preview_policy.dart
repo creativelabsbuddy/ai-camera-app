@@ -52,6 +52,10 @@ double meteringSizeForZoom(double digitalZoom) {
 /// Zoom must rest this long before a reference photo.
 const Duration kRefRest = Duration(milliseconds: 700);
 
+/// After a device rotation / lens switch: wait this long (and for a steady
+/// phone) before rooting a new tracking chain.
+const Duration kTrackSettle = Duration(milliseconds: 600);
+
 /// Each new reference must zoom at least this much further than the last.
 const double kRefZoomStep = 1.5;
 

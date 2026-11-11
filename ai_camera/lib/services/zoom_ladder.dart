@@ -81,7 +81,12 @@ class LadderShot {
     required this.cameraZoom,
     required this.sharpness,
     this.rootToRef,
+    this.stillRot = 0,
   });
+
+  /// v11.60: the photo = the analysis view rotated clockwise by
+  /// [stillRot]·90° (device orientation, image-verified).
+  final int stillRot;
 
   /// v11.60: tracked root → this photo's view (analysis coords) when the
   /// photo was taken; null = untracked (never a source on the ladder).

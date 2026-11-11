@@ -270,7 +270,7 @@ void main() {
       // v11.60: blurry references never break the TRACKING chain (they are
       // never sources); references come from the tracker, not from
       // per-checkpoint subject comparisons.
-      expect(h, contains("\${clear ? 'clear' : 'blurry'} · \${_tracker.debugText}"));
+      expect(h, contains("\${clear ? 'clear' : 'blurry'} · \${_track.debugText}"));
       expect(h, contains('rootToRef: before'));
       expect(h, contains('_zoomSendDbg = null'));
       expect(

@@ -4,7 +4,15 @@ import 'dart:math' as math;
 
 import 'package:image/image.dart' as img;
 
-import 'burst_merge.dart' show decodeRegion, deleteQuietly, uprightSize;
+import 'burst_merge.dart'
+    show
+        RgbFrame,
+        decodeRegion,
+        deleteQuietly,
+        dartRegionReader,
+        lumaGrey,
+        nativeRegion,
+        uprightSize;
 import 'image_register.dart';
 import 'zoom_ladder.dart' show LadderShot;
 import 'zoom_source.dart' show ZoomSourceCandidate, kZoomSourceMinPx;
@@ -53,18 +61,26 @@ class TrackedCandidates {
 
 /// Builds the candidates (best first as given). [finalFrac] = (width,
 /// height) of the final visible region as fractions of the still
-/// (centre ratio crop + digital zoom); [trackAspect] = analysis h/w.
+/// (centre ratio crop + digital zoom) in the SHUTTER still's own axes;
+/// [shutterRot] = that still's quarter turns from the analysis view (each
+/// ref carries its own [LadderShot.stillRot]); [trackAspect] = analysis h/w.
 Future<TrackedCandidates> trackedSourceCandidates({
   required List<LadderShot> refs,
   required Similarity rootToCur,
   required double trackAspect,
   required (double, double) finalFrac,
   required String outDir,
+  int shutterRot = 0,
 }) async {
   final cands = <ZoomSourceCandidate>[];
   final notes = <String>[];
   final files = <String>[];
-  final roiCur = NRect.centre(finalFrac.$1, finalFrac.$2, trackAspect);
+  final roiCur = finalRoiInAnalysis(
+    finalFrac.$1,
+    finalFrac.$2,
+    trackAspect,
+    shutterRot,
+  );
   String z(double v) => '${v.toStringAsFixed(1)}x';
   for (final r in refs) {
     final t = r.rootToRef;
@@ -79,7 +95,8 @@ Future<TrackedCandidates> trackedSourceCandidates({
       notes.add('${z(r.cameraZoom)} unreadable');
       continue;
     }
-    if ((h / w - trackAspect).abs() > kTrackAspectTol * trackAspect) {
+    final want = r.stillRot.isOdd ? 1 / trackAspect : trackAspect;
+    if ((h / w - want).abs() > kTrackAspectTol * want) {
       notes.add('${z(r.cameraZoom)} aspect');
       continue;
     }
@@ -98,7 +115,11 @@ Future<TrackedCandidates> trackedSourceCandidates({
       notes.add('${z(r.cameraZoom)} outside');
       continue;
     }
-    final (rect, m, longPx) = roiPixelRect(roi, w, h);
+    final (rect, m, longPx) = roiPixelRect(
+      roiToStill(roi, trackAspect, r.stillRot, w, h),
+      w,
+      h,
+    );
     if (longPx < kZoomSourceMinPx) {
       notes.add('${z(r.cameraZoom)} small');
       continue;
@@ -128,4 +149,27 @@ Future<TrackedCandidates> trackedSourceCandidates({
     }
   }
   return TrackedCandidates(cands, notes, files);
+}
+
+/// Grey proxy of a still (upright, as saved), long side ≈ [long] px, for
+/// the rotation check. Native sampled decode; Dart fallback.
+Future<GreyImage> stillProxy(String path, {int long = 96}) async {
+  final (w, h) = await uprightSize(path);
+  var sample = 1;
+  while (math.max(w, h) / (sample * 2) >= long * 2) {
+    sample *= 2;
+  }
+  RgbFrame f;
+  try {
+    f = await nativeRegion(path, (0, 0, w, h), sample);
+  } catch (_) {
+    f = await Isolate.run(() => dartRegionReader()(path, (0, 0, w, h), sample));
+  }
+  final g = lumaGrey(f);
+  final s = long / math.max(g.width, g.height);
+  return resizeGrey(
+    g,
+    math.max(8, (g.width * s).round()),
+    math.max(8, (g.height * s).round()),
+  );
 }

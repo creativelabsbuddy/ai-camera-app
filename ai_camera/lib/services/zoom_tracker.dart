@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'dart:typed_data';
+
 import 'image_register.dart';
 
 /// v11.60 wide→close zoom TRACKING (cheap phones). The live analysis
@@ -389,3 +391,135 @@ double transformDelta(Similarity a, Similarity b) {
       (d.scale - 1).abs() +
       d.angle.abs();
 }
+
+// ---- v11.60 still orientation ----------------------------------------------
+//
+// Analysis frames are always rotated by the sensor orientation only (the
+// app UI is portrait-locked), so tracking coordinates never rotate. Stills
+// follow the DEVICE orientation (EXIF): a still is the analysis view
+// rotated clockwise by k·90°. k's parity comes from the device orientation
+// (metadata: portrait → 0/2, landscape → 1/3); within that pair an image
+// match against the live analysis frame must decide with a clear margin,
+// else the reference is rejected (no guessing).
+
+/// Rotates a grey image clockwise by [k]·90°.
+GreyImage rotateGreyCw(GreyImage g, int k) {
+  var cur = g;
+  for (var n = 0; n < ((k % 4) + 4) % 4; n++) {
+    final w = cur.width, h = cur.height;
+    final d = Float32List(w * h);
+    // new (x', y') in an h×w image = old (y', h − 1 − x')
+    for (var y2 = 0; y2 < w; y2++) {
+      for (var x2 = 0; x2 < h; x2++) {
+        d[y2 * h + x2] = cur.data[(h - 1 - x2) * w + y2];
+      }
+    }
+    cur = GreyImage(h, w, d);
+  }
+  return cur;
+}
+
+/// Box/bilinear resample of [g] to [w]×[h].
+GreyImage resizeGrey(GreyImage g, int w, int h) {
+  final d = Float32List(w * h);
+  final sx = g.width / w, sy = g.height / h;
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      // average of a 2×2 sample grid inside the footprint
+      var s = 0.0;
+      var n = 0;
+      for (var j = 0; j < 2; j++) {
+        for (var i = 0; i < 2; i++) {
+          final v = g.sample(
+            ((x + (i + 0.5) / 2) * sx - 0.5).clamp(0, g.width - 1).toDouble(),
+            ((y + (j + 0.5) / 2) * sy - 0.5).clamp(0, g.height - 1).toDouble(),
+          );
+          if (!v.isNaN) {
+            s += v;
+            n++;
+          }
+        }
+      }
+      d[y * w + x] = n == 0 ? 0 : s / n;
+    }
+  }
+  return GreyImage(w, h, d);
+}
+
+/// Margin the winning rotation must beat the other candidate by.
+const double kRotationMargin = 0.10;
+
+class StillRotation {
+  const StillRotation(this.k, this.score, this.margin);
+  final int? k;
+  final double score;
+  final double margin;
+  bool get ok => k != null;
+}
+
+/// Which clockwise quarter-turn [k] makes the still from the analysis
+/// view: candidates by the device's [landscape] metadata, decided by the
+/// image (score ≥ [kTrackMinScore], margin ≥ [kRotationMargin]). Pure.
+StillRotation detectStillRotation(
+  GreyImage analysis,
+  GreyImage still, {
+  required bool landscape,
+}) {
+  final cands = landscape ? const [1, 3] : const [0, 2];
+  final scores = <int, double>{};
+  for (final k in cands) {
+    // still rotated back (counter-clockwise k) = analysis orientation
+    final back = rotateGreyCw(still, 4 - k);
+    if ((back.aspect - analysis.aspect).abs() >
+        kTrackAspectTol * analysis.aspect) {
+      scores[k] = -1;
+      continue;
+    }
+    final r = registerSimilarity(
+      resizeGrey(back, analysis.width, analysis.height),
+      analysis,
+      scaleFactors: const [0.95, 1.0, 1.05],
+      radius: 3,
+    );
+    scores[k] = r.score;
+  }
+  final best = cands.reduce((a, b) => scores[a]! >= scores[b]! ? a : b);
+  final other = cands.firstWhere((c) => c != best);
+  final margin = scores[best]! - scores[other]!;
+  final ok = scores[best]! >= kTrackMinScore && margin >= kRotationMargin;
+  return StillRotation(ok ? best : null, scores[best]!, margin);
+}
+
+/// Analysis-normalised (u, v) of a frame with [aspect] (h/w) → fractional
+/// (0..1) coords in a still that is the view rotated clockwise by [k]. Pure.
+(double, double) analysisToStillFrac(double u, double v, double aspect, int k) {
+  var fx = u + 0.5, fy = v / aspect + 0.5;
+  for (var n = 0; n < ((k % 4) + 4) % 4; n++) {
+    final t = fx;
+    fx = 1 - fy;
+    fy = t;
+  }
+  return (fx, fy);
+}
+
+/// [roi] (analysis coords, frame aspect [aspect]) → the matching rect in
+/// a [w]×[h] still rotated by [k], in the STILL's normalised coords. Pure.
+NRect roiToStill(NRect roi, double aspect, int k, int w, int h) {
+  final pts = [
+    analysisToStillFrac(roi.l, roi.t, aspect, k),
+    analysisToStillFrac(roi.r, roi.t, aspect, k),
+    analysisToStillFrac(roi.l, roi.b, aspect, k),
+    analysisToStillFrac(roi.r, roi.b, aspect, k),
+  ];
+  final l = pts.map((p) => p.$1).reduce(math.min);
+  final r = pts.map((p) => p.$1).reduce(math.max);
+  final t = pts.map((p) => p.$2).reduce(math.min);
+  final b = pts.map((p) => p.$2).reduce(math.max);
+  final hw = h / w;
+  return NRect(l - 0.5, (t - 0.5) * hw, r - 0.5, (b - 0.5) * hw);
+}
+
+/// The final visible region (fractions [fw]×[fh] of a still rotated by
+/// [k]) in analysis coords (centred; a quarter turn swaps the axes). Pure.
+NRect finalRoiInAnalysis(double fw, double fh, double aspect, int k) =>
+    k.isOdd ? NRect.centre(fh, fw, aspect) : NRect.centre(fw, fh, aspect);
