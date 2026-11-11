@@ -192,6 +192,38 @@ class ZoomLadder {
     return pick.toList()..sort((a, b) => a.cameraZoom.compareTo(b.cameraZoom));
   }
 
+  /// v11.59: lowest-checkpoint sharpness (the chain's clear reference).
+  double get refSharpness => _ref;
+
+  /// v11.59 nearest CLEAR photo below [cp] (subject checks compare clear
+  /// photos only; a blurry checkpoint never breaks the chain).
+  LadderShot? lastClearBelow(double cp) {
+    LadderShot? best;
+    for (final s in shots) {
+      if (s.checkpoint < cp - 0.01 && isClear(s)) best = s;
+    }
+    return best;
+  }
+
+  /// v11.59 sharp-source candidates for a shutter at [finalZoom]: CLEAR
+  /// photos only, clearly wider than the final, best first (highest zoom =
+  /// most real pixels on the final area; tie → sharper), at most [max].
+  List<LadderShot> sourceCandidates(
+    double finalZoom, {
+    int max = kLadderMaxRefs,
+  }) {
+    final c =
+        [
+          for (final s in shots)
+            if (isClear(s) && finalZoom / math.max(0.3, s.cameraZoom) >= 1.05)
+              s,
+        ]..sort((a, b) {
+          final z = b.cameraZoom.compareTo(a.cameraZoom);
+          return z != 0 ? z : b.sharpness.compareTo(a.sharpness);
+        });
+    return c.take(max).toList();
+  }
+
   /// Key builds: "Ladder: 2x✓ 3x✓ 4x✗ · last clear 3x · sent 3x, 4x + final".
   String debugText({List<LadderShot>? sent}) {
     final caps = shots.isEmpty

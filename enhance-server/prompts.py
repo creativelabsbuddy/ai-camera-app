@@ -783,7 +783,18 @@ MACRO_CONTEXT_LINE = (
 # v11.30 100x zoom ladder (cheap phones): boxed lower-zoom reference photos
 # first, the final photo (to enhance) last. Hidden; the app sends only a flag.
 # v11.34 high zoom (2x+, all phones): keep the photo, raise its own detail.
-ZOOM_CLEAN_PROMPT = UNIVERSAL_ENHANCE_PROMPT  # v11.58: zoom uses the universal prompt
+# v11.59: zoom gets its own SAFE prompt (= kZoomCleanPrompt): keep design /
+# identity / text, unrecoverable detail stays soft, no invented texture.
+ZOOM_CLEAN_PROMPT = (
+    'Keep this zoomed photo exactly as it is: same subject, shapes, framing, colours and light. Make the detail that is already there clearer and gently clean light noise, with a real camera-photo look. Keep every visible print, letter, pattern and design exactly as it is. Where detail cannot be seen, leave it soft; do not invent new texture, detail or objects.'
+)
+# v11.59 sharp-source zoom (= kZoomSourcePrompt): image 1 = the sharp lower-zoom
+# photo aligned to the zoomed area (content), image 2 = the final zoom (framing only).
+ZOOM_SOURCE_PROMPT = (
+    "The first image is a sharp photo of exactly the area to show. The second image is a blurrier, more zoomed photo of the same area; use it only to match the framing. Show the first image's real content at that framing as a clear, natural camera photo. Keep every visible shape, colour, print, letter, pattern and design exactly as in the first image. Where detail is not visible in the first image, leave it soft; do not invent new texture, detail or objects."
+)
+ZOOM_SOURCE_MAIN_LONG = 1536
+ZOOM_FRAMING_LONG = 768
 # Cheap phones with matching checkpoint photos: final photo first, then refs.
 ZOOM_LADDER_REFS_LINE = (
     "The other images are clearer close-up views of the same area; use them for detail."
@@ -815,3 +826,13 @@ def parse_fill(text: Optional[str]) -> tuple[Optional[float], Optional[bool]]:
     except (TypeError, ValueError):
         fill = None
     return fill, (w if isinstance(w, bool) else None)
+
+
+def zoom_source_prompt(style_prompt: str | None = None, color_prompt: str | None = None) -> str:
+    """v11.59: the sharp source first, the final zoom (framing) second."""
+    parts = [ZOOM_SOURCE_PROMPT]
+    if style_prompt and style_prompt.strip():
+        parts.append(f"Style: {style_prompt.strip()}")
+    if color_prompt and color_prompt.strip():
+        parts.append(f"Color look: {color_prompt.strip()} {COLOR_FILTER_TAIL}")
+    return " ".join(parts)

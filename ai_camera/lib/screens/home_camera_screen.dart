@@ -40,7 +40,7 @@ import '../config/ai_config.dart';
 import '../services/macro.dart';
 import '../services/macro_box.dart';
 import '../services/micro_lock.dart';
-import '../services/mode_prompts.dart' show kMacroGeneralSubject, isVagueDetect;
+import '../services/mode_prompts.dart' show kMacroGeneralSubject;
 import '../widgets/credit_icon.dart';
 import '../widgets/styles_quick_panel.dart';
 import '../widgets/video_style_flow.dart';
@@ -56,6 +56,8 @@ import '../services/pose_catalog.dart';
 import '../services/scene_suggest.dart';
 import '../services/night_pipeline.dart';
 import '../services/zoom_ladder.dart';
+import '../services/zoom_source.dart';
+import '../services/network_check.dart';
 import '../services/zoom_assist.dart';
 import '../services/camera_extras.dart';
 import '../services/style_catalog.dart';
@@ -214,6 +216,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   double? _clearLimit;
   bool _clearLimitBusy = false;
   String? _ladderDbg;
+
+  /// v11.59 what the last zoom shutter really sent (source, match, sizes).
+  String? _zoomSendDbg;
+  final GlobalKey _menuKey = GlobalKey(debugLabel: 'four_dot');
   bool _holdSteady = false;
 
   // Continuous zoom ruler (long-press / drag the pill, or pinch).
@@ -706,6 +712,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       _mode = m;
     });
     unawaited(_restoreAutoExposure()); // v11.46: no stale exposure
+    if (m == CaptureMode.pro) unawaited(_aiReachable()); // v11.59 warm
     // v11.48: Macro is Pro-only, HDR is Normal-only → back to Photo.
     if (!ShootMode.stripFor(
       aiMode: m == CaptureMode.pro,
@@ -1012,6 +1019,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     if (_night) unawaited(_applyNightExposure());
     // v11.33: Macro always opens at 1x (no level).
     if (_macroActive) _resetMacroFlow();
+    if (_aiMode) unawaited(_aiReachable()); // v11.59 warm the check
     // Free on-device live vision (faces / QR / labels / frame stats) on the
     // new controller; analyzers follow the shooting mode.
     unawaited(_vision.attach(controller));
@@ -1411,7 +1419,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           '${_latchMeterPoint == null ? '' : ' · meter (${_latchMeterPoint!.dx.toStringAsFixed(2)}, ${_latchMeterPoint!.dy.toStringAsFixed(2)})'}',
       '${formatZoom(_zoom)}x = camera ${_cameraZoom.toStringAsFixed(2)}x × crop ${_digitalZoom.toStringAsFixed(2)}x',
       _activeLensText,
-      'match ${_lastMatch?.toStringAsFixed(2) ?? '–'} misses $_matchMisses · ladder ${ln == null ? '–' : ln.takenCheckpoints.map(formatZoom).join(',')}',
+      'match ${_lastMatch?.toStringAsFixed(2) ?? '–'} misses $_matchMisses · ladder ${ln == null ? 'none' : (ln.shots.isEmpty ? 'empty' : ln.shots.map((e) => '${formatZoom(e.checkpoint)}${ln.isClear(e) ? '✓' : '✗'}').join(','))}',
+      'chain ${_ladderDbg ?? '–'} · last zoom ${_zoomSendDbg ?? '–'}',
     ];
   }
 
@@ -1715,6 +1724,22 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         _snack(kPickMacroLevel);
         return;
       }
+      // v11.59: Pro AI with no working internet → the exact message right
+      // away, no capture / spinner, nothing charged (Normal is untouched).
+      if (_aiMode && !NetworkCheck.instance.recentlyOnline) {
+        _captureLock = true;
+        bool ok;
+        try {
+          ok = await _aiReachable();
+        } finally {
+          _captureLock = false;
+        }
+        if (!mounted) return;
+        if (!ok) {
+          _snack(kCheckInternet);
+          return;
+        }
+      }
       await _awaitContextSnap();
       if (!mounted) return;
       _captureLock = true;
@@ -1744,6 +1769,17 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     if (_initializing || _bokehBusy) return;
 
     await _pickFromGallery(source: ImageSource.camera);
+  }
+
+  /// v11.59: AI reachable (or no AI configured → nothing to check).
+  Future<bool> _aiReachable() async {
+    final acct = AccountService.instance;
+    final url = await acct.serverUrl();
+    if (url.isEmpty && !AiConfig.hasEmbeddedApiKey) return true;
+    NetworkCheck.instance.serverHost = url.isEmpty
+        ? null
+        : Uri.tryParse(url)?.host;
+    return NetworkCheck.instance.online();
   }
 
   /// What is on screen at the moment of the tap.
@@ -1806,6 +1842,17 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           lockName = co.lock;
           lockPart = co.part;
           if (!mounted) return;
+          final fail = co.fail;
+          if (fail != null || lockName == null || lockPart == null) {
+            // v11.59 F6: fail closed — no AI call, nothing charged.
+            setState(() {
+              _processingCapture = false;
+              _holdSteady = false;
+              _nightStage = null;
+            });
+            _snack(fail ?? kMicroNoMatch);
+            return;
+          }
         }
         shotPath = path;
         captureNote = note;
@@ -1820,22 +1867,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           // v11.58: locked object + its part → material-aware text prompt.
           microSpot = lockPart;
           subject = lockName;
-        } else if (level != null && level.isMicroscopic) {
-          // v11.47/49: Microscope, Extreme, Ultra — sharpest of final + step
-          // photos (tie → final) + the widest step photo as an overview →
-          // ONE name detection. A clear, non-vague name → text-only;
-          // none → the photo flow.
-          final (p, f) = await _sharpestMicroSource(path, crop, snap.zoom);
-          final d = await _detectBoxArea(
-            p,
-            f,
-            widePath: _macroWidePath(snap.zoom),
-          );
-          final ok = d != null && !isVagueDetect(d);
-          microSpot = ok ? d : null;
-          subject = level == MacroLevel.microscope
-              ? (microSpot ?? kMacroGeneralSubject)
-              : microSpot;
         } else {
           subject = kMacroGeneralSubject;
         }
@@ -1913,40 +1944,14 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       _processingCapture = true;
       _holdSteady = false;
     });
-    // v11.30: ladder references (≤3, boxed at the final zoom).
-    var ladderRefs = zoomFlow == ZoomFlow.ladder
-        ? (_ladder?.selectRefs(snap.zoom) ?? const <LadderShot>[])
+    // v11.59 sharp-source zoom: CLEAR checkpoint photos only (best first);
+    // each is cut at the final area × kZoomSourceMargin and aligned to the
+    // final area after the crop below.
+    final ladderRefs = zoomFlow == ZoomFlow.ladder
+        ? (_ladder?.sourceCandidates(snap.zoom) ?? const <LadderShot>[])
               .where((s) => File(s.path).existsSync())
               .toList()
         : const <LadderShot>[];
-    // v11.34: only references that match the final photo; none → final
-    // only (clean-up prompt).
-    if (ladderRefs.isNotEmpty) {
-      final finalCam = snap.zoom / math.max(1.0, snap.digital);
-      final keep = <LadderShot>[];
-      for (final r in ladderRefs) {
-        try {
-          final m = await checkpointMatch(
-            r.path,
-            r.cameraZoom,
-            shotPath,
-            finalCam,
-          );
-          if (isSameSubject(m)) keep.add(r);
-        } catch (_) {}
-      }
-      ladderRefs = keep;
-    }
-    if (zoomFlow == ZoomFlow.ladder) {
-      var dbg = _ladder?.debugText(sent: ladderRefs) ?? 'Ladder: none';
-      if (_ladderDbg != null) dbg = '$dbg · $_ladderDbg';
-      if (_clearLimit != null) dbg = '$dbg · clear limit ${_clearLimit}x';
-      if (_brightApplied) dbg = '$dbg · far-bright latch';
-      debugPrint(dbg);
-      if (AiConfig.hasEmbeddedApiKey) {
-        captureNote = captureNote == null ? dbg : '$captureNote · $dbg';
-      }
-    }
     final ctxSnap =
         snap.ai &&
             zoomFlow == ZoomFlow.normal &&
@@ -2017,6 +2022,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         // wider, never nearly the same area).
         stepCropMargin: macroCtx.isNotEmpty
             ? kMacroCtxMargin
+            : ladderRefs.isNotEmpty && microHint == null
+            ? kZoomSourceMargin
             : ladderRefs.isEmpty && microHint == null
             ? 0
             : kLadderRefMargin,
@@ -2032,11 +2039,69 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         });
       }
     }
-    if (zoomFlow == ZoomFlow.ladder && AiConfig.hasEmbeddedApiKey) {
-      // v11.31 key builds: sizes of the images sent.
-      final sz = ladderSizesFor(crop.path, crop.stepPaths);
-      debugPrint('Ladder $sz');
-      captureNote = captureNote == null ? sz : '$captureNote · $sz';
+    // v11.59 sharp-source zoom (cheap phones): the sharpest matching clear
+    // checkpoint photo, aligned to the final area, becomes the AI's source;
+    // the final is the framing reference only. Past the phone's clear limit
+    // with no usable match → no AI call, nothing charged (fail closed).
+    File? zoomSource;
+    if (zoomFlow == ZoomFlow.ladder) {
+      final l = _ladder;
+      var finalClear = false;
+      if (l != null && l.shots.isNotEmpty) {
+        try {
+          finalClear = isClearPhoto(
+            await photoSharpness(shotPath),
+            l.refSharpness,
+          );
+        } catch (_) {}
+      }
+      final need = zoomNeedsSource(
+        ladderFlow: true,
+        zoom: snap.zoom,
+        opticalLimit: snap.optical.opticalLimit,
+        clearLimit: _clearLimit,
+        finalClear: finalClear,
+      );
+      final n = math.min(ladderRefs.length, crop.stepPaths.length);
+      final cands = <ZoomSourceCandidate>[
+        for (var i = 0; i < n; i++)
+          ZoomSourceCandidate(
+            crop.stepPaths[i],
+            ladderRefs[i].checkpoint,
+            margin: effectiveSourceMargin(
+              snapshotRegionZoom(snap.zoom, ladderRefs[i].cameraZoom),
+            ),
+          ),
+      ];
+      final d = await pickZoomSource(
+        finalAreaPath: crop.path,
+        candidates: cands,
+      );
+      if (d.ok) zoomSource = File(d.path!);
+      final failClosed =
+          !d.ok && need && d.reason != ZoomSourceReason.finalSharp;
+      final sent = d.ok
+          ? 'sent source + final (framing only)'
+          : failClosed
+          ? 'sent nothing (no sharp source)'
+          : 'sent final only (${finalClear ? 'final clear' : (need ? 'final as sharp' : 'within clear limit')})';
+      _zoomSendDbg = '${d.debugText} · $sent';
+      debugPrint('Zoom source: $_zoomSendDbg');
+      if (AiConfig.hasEmbeddedApiKey) {
+        final sz = ladderSizesFor(
+          d.ok ? d.path! : crop.path,
+          d.ok ? [crop.path] : const [],
+        );
+        final dbg = '$_zoomSendDbg · $sz';
+        captureNote = captureNote == null ? dbg : '$captureNote · $dbg';
+      }
+      if (failClosed) {
+        if (mounted) {
+          setState(() => _processingCapture = false);
+          _snack(kZoomNoSharpSource);
+        }
+        return;
+      }
     }
     if (!mounted) return;
     ZoomInfoService.lastCaptureCalibration = _calibrationLine(
@@ -2093,10 +2158,16 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           spotSource: spotSource,
           subjectSure: aiModeId == 'macro' && (subject ?? '').isNotEmpty,
           contextBoxed: crop.contextBoxed,
-          stepFiles: extreme || zoomFlow == ZoomFlow.flagshipSingle
+          stepFiles:
+              extreme ||
+                  zoomFlow == ZoomFlow.flagshipSingle ||
+                  zoomFlow == ZoomFlow.ladder
               ? const []
               : [for (final p in crop.stepPaths) File(p)],
-          zoomLadder: zoomFlow == ZoomFlow.ladder && crop.stepPaths.isNotEmpty,
+          // v11.59: the ladder sends the aligned sharp source (+ the final
+          // as framing), never the final first with references after it.
+          zoomLadder: false,
+          zoomSourceFile: zoomSource,
           zoomClean: zoomFlow != ZoomFlow.normal,
           macroLevel: macroLevel,
           captureNote: captureNote,
@@ -2664,90 +2735,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     if (changed || AiConfig.hasEmbeddedApiKey) setState(() {});
   }
 
-  /// v11.49: widest step photo (taken at the shutter) when it is really
-  /// wider than the shot (≥1.5x); null below ~3x (no step photos).
-  String? _macroWidePath(double userZoom) {
-    for (final s in _macroCtx) {
-      if (File(s.path).existsSync() &&
-          snapshotRegionZoom(userZoom, s.cameraZoom) >= 1.5) {
-        return s.path;
-      }
-    }
-    return null;
-  }
-
-  /// v11.47 Microscope: the sharpest of the final photo and the step
-  /// photos (same centre area, downscaled Laplacian variance). Returns the
-  /// path and its crop factor for [_detectBoxArea]. Any error → final.
-  Future<(String, double)> _sharpestMicroSource(
-    String finalPath,
-    double crop,
-    double userZoom,
-  ) async {
-    final cands = <(String, double)>[(finalPath, crop)];
-    for (final s in _macroCtx) {
-      if (File(s.path).existsSync()) {
-        cands.add((s.path, snapshotRegionZoom(userZoom, s.cameraZoom)));
-      }
-    }
-    if (cands.length == 1) return cands.first;
-    try {
-      final scores = <double>[
-        for (final c in cands)
-          await photoRegionSharpness(c.$1, c.$2 / kMacroBoxFraction),
-      ];
-      final i = sharpestPhotoIndex(scores);
-      debugPrint('Microscope sharpness $scores → #$i');
-      return cands[i < 0 ? 0 : i];
-    } catch (e) {
-      debugPrint('Sharpness skipped: $e');
-      return cands.first;
-    }
-  }
-
-  /// Shutter: ONE detection call on the box area. Null = unclear / failed
-  /// (then "Move closer", nothing charged).
-  Future<String?> _detectBoxArea(
-    String shotPath,
-    double crop, {
-    String? widePath,
-  }) async {
-    final setStage = mounted;
-    if (setStage) setState(() => _nightStage = 'Checking…');
-    String? boxPath;
-    String? wideOut;
-    try {
-      final dir = (await getTemporaryDirectory()).path;
-      boxPath = await cropCentreToFile(shotPath, crop / kMacroBoxFraction, dir);
-      // v11.49: the widest step photo as the overview (full frame).
-      if (widePath != null) {
-        try {
-          wideOut = await cropCentreToFile(widePath, 1.0, dir);
-        } catch (_) {
-          wideOut = null;
-        }
-      }
-      final d = await _detector.detectBox(
-        File(boxPath),
-        wide: wideOut == null ? null : File(wideOut),
-      );
-      _boxDbg =
-          'detect ${d ?? '-'} (${_detector.lastReason}'
-          '${_detector.lastSpotModel.isEmpty ? '' : ' · ${_detector.lastSpotModel}'})';
-      debugPrint('Macro box: $_boxDbg');
-      return d;
-    } catch (e) {
-      _boxDbg = 'detect error $e';
-      return null;
-    } finally {
-      for (final f in [boxPath, wideOut]) {
-        if (f != null) {
-          unawaited(File(f).delete().then((_) {}, onError: (_) {}));
-        }
-      }
-      if (mounted) setState(() => _nightStage = null);
-    }
-  }
+  // v11.59 F6: the old detect-only Microscope fallback was removed (it ran
+  // an AI flow without a 1.5x lock / match); Microscope now fails closed.
 
   void _dropMicroLock() {
     final l = _microLock;
@@ -2795,22 +2784,63 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// "Hold steady" and retake (max [kMicroRetakes]). No lock / still no
   /// match → lock null (the older photo / box flow runs; never a wrong
   /// name).
-  Future<({String path, String note, double crop, String? lock, String? part})>
-  _coordinatedMicro(CameraController c, String path, String note, double crop) async {
+  /// v11.59 F6: fails CLOSED — no 1.5x photo, no lock, a comparison error
+  /// or still no match after the retakes → [fail] is set and the caller
+  /// makes no AI call (nothing charged), never the old detect-only flow.
+  Future<
+    ({
+      String path,
+      String note,
+      double crop,
+      String? lock,
+      String? part,
+      String? fail,
+    })
+  >
+  _coordinatedMicro(
+    CameraController c,
+    String path,
+    String note,
+    double crop,
+  ) async {
     for (var attempt = 0; ; attempt++) {
       final half = _microOneHalf;
       if (half == null || !File(half.path).existsSync()) {
-        return (path: path, note: note, crop: crop, lock: null, part: null);
+        _boxDbg = 'lock - (no 1.5x photo)';
+        return (
+          path: path,
+          note: note,
+          crop: crop,
+          lock: null,
+          part: null,
+          fail: kMicroNoLock,
+        );
       }
       final lock = await _lockMicroObject(half);
       if (lock == null) {
         _boxDbg = 'lock - (${_detector.lastReason})';
-        return (path: path, note: note, crop: crop, lock: null, part: null);
+        return (
+          path: path,
+          note: note,
+          crop: crop,
+          lock: null,
+          part: null,
+          fail: kMicroNoLock,
+        );
       }
-      var score = 1.0;
+      var score = 0.0;
+      var matchError = false;
       try {
-        score = await checkpointMatch(half.path, half.cameraZoom, path, _macroShotCamera);
-      } catch (_) {}
+        score = await checkpointMatch(
+          half.path,
+          half.cameraZoom,
+          path,
+          _macroShotCamera,
+        );
+      } catch (e) {
+        matchError = true; // no evidence → mismatch (fail closed)
+        debugPrint('Microscope match failed: $e');
+      }
       PartResult? pr;
       String? boxed;
       if (mounted) setState(() => _nightStage = 'Checking…');
@@ -2830,7 +2860,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         }
         if (mounted) setState(() => _nightStage = null);
       }
-      final mismatch = microFrameMismatch(pixelScore: score, inScene: pr?.sameSubject);
+      final mismatch =
+          matchError ||
+          microFrameMismatch(pixelScore: score, inScene: pr?.sameSubject);
       _boxDbg =
           'lock $lock · part ${pr?.part ?? '-'} · match ${score.toStringAsFixed(2)}'
           '${mismatch ? ' · retake ${attempt + 1}' : ''}';
@@ -2842,10 +2874,18 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           crop: crop,
           lock: lock,
           part: microPartText(pr?.part, lock),
+          fail: null,
         );
       }
       if (attempt >= kMicroRetakes || !mounted || !identical(c, _controller)) {
-        return (path: path, note: '$note · frames did not match', crop: crop, lock: null, part: null);
+        return (
+          path: path,
+          note: '$note · frames did not match',
+          crop: crop,
+          lock: null,
+          part: null,
+          fail: kMicroNoMatch,
+        );
       }
       // Frames do not match → "Hold steady" and retake.
       _showToast(kMicroHoldSteady);
@@ -2931,6 +2971,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final old = _ladder?.clear() ?? const <String>[];
     _ladder = null;
     _subjectChanged = false;
+    // v11.59: no stale diagnostics from an old chain.
+    _lastMatch = null;
+    _matchMisses = 0;
+    _ladderDbg = null;
+    _zoomSendDbg = null;
     _deletePaths(old);
   }
 
@@ -2993,10 +3038,13 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           _slowHintShown = true;
           _showToast(kZoomSlowlyHint);
         }
-        // v11.34: same subject as the previous checkpoint? Else restart
-        // the chain from here.
-        final prev = l.below(cp);
+        // v11.59: a BLURRY checkpoint never breaks the sharp chain: it is
+        // kept (framing only, never a source) without a subject check.
+        // Clear photos are compared with the last CLEAR photo below.
+        final clear = l.shots.isEmpty || isClearPhoto(sharp, l.refSharpness);
+        final prev = clear ? l.lastClearBelow(cp) : null;
         var same = true;
+        var compared = false;
         if (prev != null) {
           try {
             final m = await checkpointMatch(
@@ -3006,18 +3054,23 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
               cam,
             );
             same = isSameSubject(m);
+            compared = true;
             _lastMatch = m;
             _ladderDbg =
                 'match ${prev.checkpoint}x→${cp}x ${m.toStringAsFixed(2)}';
           } catch (e) {
+            // No evidence → not a subject change (the shot stays out of
+            // the source list only if it is not clear).
             debugPrint('Checkpoint match failed: $e');
           }
+        } else if (!clear) {
+          _ladderDbg = '${cp}x blurry (chain kept)';
         }
         if (!identical(l, _ladder)) {
           _deletePaths([shot.path]);
           return;
         }
-        if (same) {
+        if (same || !compared) {
           _matchMisses = 0;
         } else if (++_matchMisses < kSubjectMissesNeeded) {
           // v11.36: one miss is not enough — retake this checkpoint.
@@ -3029,7 +3082,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           );
           return;
         }
-        if (!same) {
+        if (!same && compared) {
+          // Two clear photos in a row show something else: new subject.
           _matchMisses = 0;
           _deletePaths(l.clear());
           _subjectChanged = true;
@@ -3988,10 +4042,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                     if (_stylesHint &&
                         !_menuOpen &&
                         quickMenuVisible(aiMode: _aiMode, mode: _shootMode))
-                      Positioned(
-                        right: 10,
-                        bottom: 66,
-                        child: StylesHereTooltip(
+                      // v11.59: anchored to the real four-dot button.
+                      Positioned.fill(
+                        child: AnchoredStylesHint(
+                          anchorKey: _menuKey,
                           onTap: () => unawaited(_dismissStylesHint()),
                         ),
                       ),
@@ -4383,6 +4437,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                   showChips: _cameraReady && !_initializing && !macro,
                   menuDot: _filterActive || _styleActive || _night,
                   menuNew: _stylesHint,
+                  menuKey: _menuKey,
                   onSelected: _processingCapture ? null : _onZoomChip,
                   onOpenMenu: () => _toggleMenu(true),
                   showMenu: quickMenuVisible(aiMode: _aiMode, mode: _shootMode),

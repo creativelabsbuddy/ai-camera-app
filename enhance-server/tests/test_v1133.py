@@ -6,7 +6,7 @@ from tests.test_v11 import env, enhance, photo_jpeg  # noqa: F401
 
 
 def test_version():
-    assert main.app.version == "11.1.58"  # v11.58
+    assert main.app.version == "11.1.59"  # v11.59
 
 
 def test_credit_table_and_merge():

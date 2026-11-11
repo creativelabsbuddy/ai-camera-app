@@ -268,6 +268,29 @@ in Pro AI). See enhance-server/README.md for the API.
 - Credits icon: gold lightning bolt PNG `assets/icons/credit_bolt.png` (+2.0x/3.0x); `CreditText` renders the `🪙` token in labels as the bolt. Credit values unchanged.
 - Screens rendered offscreen: `flutter test tool_shots/v1154_shots_test.dart --update-goldens` → `tool_shots/out/`.
 
+## v11.59 (1.11.59+72) — Sharp-source zoom, fail-closed microscope, offline handling, anchored Styles hint
+
+- **Zoom (cheap phones, ladder flow):** the sharpest CLEAR, matching lower-zoom checkpoint photo,
+  cut at the final area x1.6 and aligned to the final area (edge NCC, every offset; strict - no
+  evidence = no match), becomes the AI's primary image; the final zoom is sent after it as the
+  framing reference only (`kZoomSourcePrompt` / `ZOOM_SOURCE_PROMPT`). A source must match
+  (>= 0.45), keep >= 96 px and be >= 1.15x sharper than the final at the same resolution.
+  Past the phone's own clear limit (observed per phone, else optical) with no usable source the
+  app does NOT fall back to final-only: "Hold steady and retake", no AI call, no credits.
+  Blurry checkpoints no longer break the chain (subject checks compare clear photos only).
+  Every zoom result is checked against its source area (structure + colours without a look) on
+  the key path and the server (`zoom_source` form field, `no_sharp_source` 422). Zoom uses a safe
+  prompt (keep design / identity / text; unrecoverable detail stays soft, no invented texture).
+  Key-build overlay: `chain ... · last zoom <refs tried / sent>`; diagnostics reset per session.
+- **Microscope:** missing 1.5x photo, failed lock, a comparison error or a mismatch after the
+  retakes fail closed (no AI call, nothing charged); the old detect-only fallback is removed.
+- **Offline:** short multi-endpoint TCP probe (not connectivity only) before Pro AI shutter,
+  enhance, styles / custom and video; "Check your internet connection", no spinner, no charge.
+  A watchdog cancels a running AI call within ~8 s when the network drops; DNS / socket errors
+  are classified as network, not provider errors. Normal photo is untouched.
+- **Styles are here hint:** anchored to the real four-dot button (measured after layout,
+  re-measured on rotation / width change), clamped inside the camera area, tail points at it.
+
 ## v11.58 (1.11.58+71) — Coordinated microscope, background video, DSLR enhance, per-style models
 - Microscope / Extreme / Ultra: the object is locked from a 1.5x shot (`lib/services/micro_lock.dart`, reused for 3 min while the frame still matches); higher zooms detect only a PART of that object ("{part} on the {object}"). Frame mismatch → "Hold steady" + automatic retake (up to 2). Prompts are material-aware (no hardcoded "cells"). Bad result → "Bad result? Refund ⚡N" on the preview (local-ledger builds).
 - Video: ≤5 s → 8scale Wan, >5 s → Phosor MiniMax H3 Turbo (unchanged routing). Jobs run in the background with a system notification when done/failed; long jobs show "Usually ready in 15–20 min"; 30-min timeout cancels at the provider ("Your credits were refunded" — nothing is charged before delivery). Phosor result HTTP 202 = still running. "AI-generated" label replaces the MiniMax chip. Video style cards read credit_cost + samples.

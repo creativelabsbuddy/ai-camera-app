@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/ai_config.dart';
 import 'account_service.dart';
 import 'entitlements.dart';
+import 'network_check.dart';
 import 'server_api_client.dart' show decodeAccountBlob;
 import 'video_notifier.dart';
 
@@ -500,6 +501,10 @@ class VideoService {
     if (bad != null) throw VideoException(bad);
     final be = await _backendFor(r.provider);
     if (be == null) throw VideoException('AI video is not set up in this build');
+    // v11.59: no working internet → nothing submitted, nothing charged.
+    if (!await NetworkCheck.instance.online()) {
+      throw VideoException(kCheckInternet);
+    }
     _cancelled = false;
     unawaited(VideoNotifier.instance.requestPermission());
     job.value = VideoJob(
@@ -565,7 +570,11 @@ class VideoService {
       }
     } catch (e) {
       if (_cancelled) return;
-      final msg = e is VideoException ? e.message : _redact('$e');
+      final msg = e is VideoException
+          ? e.message
+          : isOfflineError(e)
+          ? kCheckInternet
+          : _redact('$e');
       job.value = j.copy(phase: VideoPhase.failed, error: msg);
       await _clearPending();
       unawaited(VideoNotifier.instance.show(

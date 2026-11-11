@@ -50,9 +50,9 @@ void main() {
     AccountService.resetForTest();
   });
 
-  test('version (v11.58: 1.11.58+71)', () {
+  test('version (v11.59: 1.11.59+72)', () {
     expect(File('pubspec.yaml').readAsStringSync(),
-        contains('version: 1.11.58+71'));
+        contains('version: 1.11.59+72'));
   });
 
   group('no Free labels / no free-first style', () {

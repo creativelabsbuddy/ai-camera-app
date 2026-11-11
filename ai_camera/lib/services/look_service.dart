@@ -13,6 +13,7 @@ import 'account_service.dart';
 import 'ai_call.dart';
 import 'entitlements.dart';
 import 'local_style_prompts.dart';
+import 'network_check.dart';
 import 'openrouter_client.dart';
 import 'filter_catalog.dart';
 import 'prompt_builder.dart';
@@ -138,7 +139,9 @@ class LookService {
     Future<Directory> Function()? tempDir,
     String? Function(String styleId)? localPromptFor,
     RunwareClient? runware,
-  }) : _server = server ?? ServerApiClient(),
+    NetworkCheck? net,
+  }) : _netOverride = net,
+       _server = server ?? ServerApiClient(),
        _openRouter = openRouter ?? OpenRouterClient(),
        _runware = runware ?? RunwareClient(),
        _accountOverride = account,
@@ -153,6 +156,9 @@ class LookService {
   final String? Function(String styleId) _localPromptFor;
 
   AccountService get _account => _accountOverride ?? AccountService.instance;
+
+  final NetworkCheck? _netOverride;
+  NetworkCheck get _net => _netOverride ?? NetworkCheck.instance;
 
   static LookResult _failed(Object e) {
     final kind = classifyAiError(e);
@@ -188,16 +194,30 @@ class LookService {
     }
 
     final url = await _account.serverUrl();
+    // v11.59: no working internet → no AI call, nothing charged.
+    if (url.isNotEmpty || _openRouter.isConfigured) {
+      _net.serverHost = url.isEmpty ? null : Uri.tryParse(url)?.host;
+      if (!await _net.online()) {
+        return const LookResult(
+          error: kCheckInternetMessage,
+          failure: AiFailureKind.network,
+        );
+      }
+    }
     if (url.isNotEmpty) {
       try {
-        final r = await _server.applyLook(
-          baseUrl: url,
-          deviceId: await _account.deviceId(),
-          image: job.image,
-          styleId: job.style?.id,
-          customPrompt: job.customPrompt,
-          tier: job.effectiveTier,
-          cancel: cancel,
+        final r = await watchNetwork(
+          (tok) async => _server.applyLook(
+            baseUrl: url,
+            deviceId: await _account.deviceId(),
+            image: job.image,
+            styleId: job.style?.id,
+            customPrompt: job.customPrompt,
+            tier: job.effectiveTier,
+            cancel: tok,
+          ),
+          parent: cancel,
+          net: _net,
         );
         // The server only charges a request that is still connected; if
         // the user cancelled just as it finished, sync the balance anyway.
@@ -235,41 +255,60 @@ class LookService {
         stylePrompt: stylePrompt,
         customPrompt: job.isStyle ? null : job.customPrompt,
       );
-      Future<({List<Uint8List> images, double cost})> custom() => _openRouter.generateLook(
+      Future<({List<Uint8List> images, double cost})> custom(
+        AiCancelToken tok,
+      ) => _openRouter.generateLook(
         image: job.image,
         prompt: prompt,
         tier: job.effectiveTier,
         n: 1,
-        cancel: cancel,
+        cancel: tok,
       );
       try {
-        ({List<Uint8List> images, double cost})? r;
-        // v11.58: per-style model; on failure fall back to Custom (Flare).
-        final model = styleModelFor(job.style, runwareReady: _runware.isConfigured);
-        if (model != kStyleModelCustom) {
-          try {
-            if (model == kStyleModelRunware) {
-              final x = await _runware.generate(image: job.image, prompt: prompt, cancel: cancel);
-              r = (images: [x.image], cost: x.cost);
-            } else {
-              r = await _openRouter.generateLook(
-                image: job.image,
-                prompt: prompt,
-                tier: job.effectiveTier,
-                n: 1,
-                cancel: cancel,
-                model: AiConfig.kleinModel,
-              );
+        final r0 = await watchNetwork(
+          (tok) async {
+            ({List<Uint8List> images, double cost})? r;
+            // v11.58: per-style model; on failure fall back to Custom (Flare).
+            final model = styleModelFor(
+              job.style,
+              runwareReady: _runware.isConfigured,
+            );
+            if (model != kStyleModelCustom) {
+              try {
+                if (model == kStyleModelRunware) {
+                  final x = await _runware.generate(
+                    image: job.image,
+                    prompt: prompt,
+                    cancel: tok,
+                  );
+                  r = (images: [x.image], cost: x.cost);
+                } else {
+                  r = await _openRouter.generateLook(
+                    image: job.image,
+                    prompt: prompt,
+                    tier: job.effectiveTier,
+                    n: 1,
+                    cancel: tok,
+                    model: AiConfig.kleinModel,
+                  );
+                }
+              } on AiCancelledException {
+                rethrow;
+              } catch (e) {
+                if (tok.isCancelled || isOfflineError(e)) rethrow;
+                debugPrint(
+                  'Style model $model failed ($e) — falling back to Custom',
+                );
+                r = null;
+              }
             }
-          } on AiCancelledException {
-            rethrow;
-          } catch (e) {
-            if (cancel?.isCancelled ?? false) rethrow;
-            debugPrint('Style model $model failed ($e) — falling back to Custom');
-            r = null;
-          }
-        }
-        r ??= await custom();
+            r ??= await custom(tok);
+            return r;
+          },
+          parent: cancel,
+          net: _net,
+        );
+        final r = r0;
         if (cancel?.isCancelled ?? false) throw const AiCancelledException();
         // One image; charged only now (success).
         final charged = await _account.commitLocalLook(job.spec);
