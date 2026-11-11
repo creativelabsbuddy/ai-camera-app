@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
@@ -576,6 +577,88 @@ double sharpnessOf(img.Image im) {
   if (n == 0) return 0;
   final m = sum / n;
   return sum2 / n - m * m;
+}
+
+/// v11.61 FAIR detail measure for comparing two crops of the SAME area:
+/// Laplacian variance over the whole image minus the part that is just
+/// sensor noise (noise σ from the low tail of Immerkær's noise filter; the
+/// Laplacian of white noise has variance 20σ²). Noise never poses as detail.
+/// Call it on images resized to the same size. Pure.
+double fairSharpnessOf(img.Image im) {
+  final w = im.width, h = im.height;
+  if (w < 3 || h < 3) return 0;
+  final g = Float64List(w * h);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      final p = im.getPixel(x, y);
+      g[y * w + x] = 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+    }
+  }
+  var sum = 0.0, sum2 = 0.0;
+  final nres = <double>[];
+  for (var y = 1; y < h - 1; y++) {
+    for (var x = 1; x < w - 1; x++) {
+      final i = y * w + x;
+      final l = g[i - 1] + g[i + 1] + g[i - w] + g[i + w] - 4 * g[i];
+      sum += l;
+      sum2 += l * l;
+      // Immerkær mask [1 -2 1; -2 4 -2; 1 -2 1]: ~0 on smooth structure,
+      // σ·6 on white noise.
+      final n =
+          g[i - w - 1] -
+          2 * g[i - w] +
+          g[i - w + 1] -
+          2 * g[i - 1] +
+          4 * g[i] -
+          2 * g[i + 1] +
+          g[i + w - 1] -
+          2 * g[i + w] +
+          g[i + w + 1];
+      nres.add(n.abs());
+    }
+  }
+  final n = nres.length;
+  if (n == 0) return 0;
+  final m = sum / n;
+  final lapVar = sum2 / n - m * m;
+  // Noise σ from the LOW tail of the noise-filter response (fine texture and
+  // edges inflate the upper part; the 10th percentile of a half-normal is
+  // 0.1257 σ_N, σ_N = 6σ). Never removes more than 90 % (no 0/∞ ratios).
+  nres.sort();
+  final sigma = nres[n ~/ 10] / (0.1257 * 6);
+  return math.max(lapVar * 0.1, lapVar - 20 * sigma * sigma);
+}
+
+/// v11.61 fair comparison of two crops of the same area: both resized
+/// (box average) to the SAME size — the smaller real resolution of the two,
+/// capped at [cap] — so neither gains from a downscale (averaging) the other
+/// did not get, and a 3×3 sharpen at full resolution is averaged away;
+/// noise-corrected. Returns detail(a) / detail(b). Pure.
+double fairSharpRatio(
+  img.Image a,
+  img.Image b, {
+  double aRealScale = 1.0,
+  int cap = 256,
+}) {
+  final aLong = math.max(a.width, a.height) * aRealScale.clamp(0.05, 1.0);
+  final bLong = math.max(b.width, b.height).toDouble();
+  final long = math
+      .max(24, math.min(cap.toDouble(), math.min(aLong, bLong)))
+      .round();
+  img.Image fit(img.Image im) {
+    final s = long / math.max(im.width, im.height);
+    return img.copyResize(
+      im,
+      width: math.max(3, (im.width * s).round()),
+      height: math.max(3, (im.height * s).round()),
+      interpolation: img.Interpolation.average,
+    );
+  }
+
+  final fa = fairSharpnessOf(fit(a));
+  final fb = fairSharpnessOf(fit(b));
+  if (fb <= 1e-6) return fa > 1e-6 ? 99.0 : 1.0;
+  return fa / fb;
 }
 
 /// Centred box of the final zoom inside a photo whose region zoom is

@@ -6,6 +6,7 @@ import 'package:image/image.dart' as img;
 import 'image_register.dart' show Similarity;
 
 import 'macro.dart' show isClearPhoto;
+import 'zoom_root.dart' show RefZoomLabel;
 
 /// v11.30 100x zoom ladder (cheap phones): while the user zooms, a normal
 /// camera photo (free, no AI) is kept at each checkpoint passed. At the
@@ -82,7 +83,19 @@ class LadderShot {
     required this.sharpness,
     this.rootToRef,
     this.stillRot = 0,
+    this.optical = 1.0,
+    this.root = false,
   });
+
+  /// v11.61: optical-quality part of [cameraZoom] (lens / in-sensor crop);
+  /// the rest is a digital crop (no real pixels added).
+  final double optical;
+
+  /// v11.61: the low-zoom ROOT reference of this chain.
+  final bool root;
+
+  /// v11.61: real zoom label (optical vs digital crop).
+  RefZoomLabel get zoomLabel => RefZoomLabel(cameraZoom, optical);
 
   /// v11.60: the photo = the analysis view rotated clockwise by
   /// [stillRot]·90° (device orientation, image-verified).
@@ -140,6 +153,14 @@ class ZoomLadder {
   }
 
   void add(LadderShot s) => _shots[s.checkpoint] = s;
+
+  /// v11.61: the chain's low-zoom ROOT reference (null = none yet).
+  LadderShot? get root {
+    for (final s in shots) {
+      if (s.root) return s;
+    }
+    return null;
+  }
 
   /// v11.34 checkpoints that already have a photo.
   Set<double> get takenCheckpoints => _shots.keys.toSet();
@@ -233,8 +254,26 @@ class ZoomLadder {
           final z = b.cameraZoom.compareTo(a.cameraZoom);
           return z != 0 ? z : b.sharpness.compareTo(a.sharpness);
         });
-    return c.take(max).toList();
+    final out = c.take(max).toList();
+    // v11.61: the ROOT (if usable) is always among the candidates (last:
+    // the strict check tries the closer tracked steps first).
+    final r = root;
+    if (r != null && c.contains(r) && !out.contains(r) && out.isNotEmpty) {
+      out[out.length - 1] = r;
+    }
+    return out;
   }
+
+  /// v11.61 key builds: every reference with its real zoom, e.g.
+  /// "root 1x opt 1x ✓ · 4x opt 1x + dig 4.0x ✓".
+  String refsLabelText() => shots.isEmpty
+      ? 'refs none'
+      : shots
+            .map(
+              (s) =>
+                  '${s.root ? 'root ' : ''}${_x(s.checkpoint)} ${s.zoomLabel.text} ${isClear(s) ? '✓' : '✗'}',
+            )
+            .join(' · ');
 
   /// Key builds: "Ladder: 2x✓ 3x✓ 4x✗ · last clear 3x · sent 3x, 4x + final".
   String debugText({List<LadderShot>? sent}) {

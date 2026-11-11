@@ -5,7 +5,8 @@ import 'dart:math' as math;
 import 'package:image/image.dart' as img;
 
 import 'ai_call.dart' show kNoSharpSourceMessage;
-import 'capture_crop.dart' show sharpnessOf;
+import 'capture_crop.dart' show fairSharpRatio;
+import 'zoom_root.dart' show kRoiMinRealPx;
 import 'zoom_assist.dart' show edgeMap, kSubjectMatchMin;
 
 /// v11.59 sharp-source zoom (cheap phones, beyond the clear limit):
@@ -25,14 +26,23 @@ const double kZoomSourceMatchMin = kSubjectMatchMin;
 /// no match (fail closed; the old matcher returned 1 here).
 const int kZoomSourceMinValid = 200;
 
-/// The final area inside a source must hold at least this many real
-/// pixels on its long side (else it is not a usable source).
-const int kZoomSourceMinPx = 96;
+/// The final area inside a source must hold at least this many REAL
+/// pixels on its long side (else it is not a usable source → fail closed).
+/// v11.61: real sensor pixels (a digital crop's upscaled pixels do not
+/// count), lowered from 96 still pixels: beyond the clear range the shot is
+/// labelled "AI-enhanced" instead of being blocked; only an absurdly tiny
+/// region fails closed.
+const int kZoomSourceMinPx = kRoiMinRealPx;
 
-/// The source must be this much sharper than the final area (both at the
-/// source's resolution); otherwise the final already holds the detail and
-/// is enhanced alone (phones with a good lens at that zoom).
+/// Debug label only: a source this much more detailed than the final is
+/// reported "sharper".
 const double kZoomSourceSharperBy = 1.15;
+
+/// v11.61: a matched source is used when its noise-corrected detail at the
+/// SAME scale is at least this share of the final's (it really holds the
+/// area's detail). Clearly blurrier → not a usable source → fail closed
+/// (the old "final is sharp enough, send it alone" exemption is gone).
+const double kZoomSourceMinRatio = 0.8;
 
 /// Long side of the match proxies (final area).
 const int kZoomSourceProxyLong = 48;
@@ -48,8 +58,9 @@ enum ZoomSourceReason {
   /// Aligned, matching, sharper source found.
   ok,
 
-  /// The final itself is as sharp as any matching source (use it alone).
-  finalSharp,
+  /// v11.61: matching sources exist but each is clearly blurrier than the
+  /// final at the same scale (no usable sharp source → fail closed).
+  sourceBlurrier,
 
   /// No clear lower-zoom photo exists.
   noClearRef,
@@ -107,8 +118,7 @@ class ZoomSourceDecision {
     return switch (reason) {
       ZoomSourceReason.ok =>
         'src ${z(checkpoint!)} match ${score!.toStringAsFixed(2)} sharp ${sharpRatio!.toStringAsFixed(1)}x',
-      ZoomSourceReason.finalSharp =>
-        'src final (sharp enough${t.isEmpty ? '' : ': $t'})',
+      ZoomSourceReason.sourceBlurrier => 'src none (blurrier: $t)',
       ZoomSourceReason.noClearRef => 'src none (no clear photo)',
       ZoomSourceReason.noMatch => 'src none (no match: $t)',
       ZoomSourceReason.tooSmall => 'src none (too small: $t)',
@@ -216,9 +226,17 @@ class ZoomSourceCandidate {
     this.refCropPath,
     this.checkpoint, {
     this.margin = kZoomSourceMargin,
+    this.realScale = 1.0,
+    this.label = '',
   });
   final String refCropPath;
   final double checkpoint;
+
+  /// v11.61: real sensor pixels per crop pixel (< 1 = digital crop).
+  final double realScale;
+
+  /// v11.61: "root 1x opt 1x" / "4x opt 1x + dig 4.0x" (diagnostics).
+  final String label;
 
   /// Actual crop margin (smaller when the reference is only a little
   /// wider than the final: [effectiveSourceMargin]).
@@ -235,10 +253,15 @@ double effectiveSourceMargin(
 /// Pure core (images already decoded + upright): tries [refs] in order
 /// (best first) and returns the first aligned, matching, sharper source.
 /// [writeSource] stores the chosen crop and returns its path.
+///
+/// v11.61: [realScales] (index-aligned with [refs], default 1) = real sensor
+/// pixels per reference pixel (< 1 for a digital-crop reference). The size
+/// gate counts REAL pixels; sharpness is compared fairly ([fairSharpRatio]).
 ZoomSourceDecision pickZoomSourceImages({
   required img.Image finalArea,
   required List<(img.Image, double, double)> refs,
   required String Function(img.Image) writeSource,
+  List<double>? realScales,
 }) {
   if (refs.isEmpty) {
     return const ZoomSourceDecision(reason: ZoomSourceReason.noClearRef);
@@ -247,9 +270,22 @@ ZoomSourceDecision pickZoomSourceImages({
   final fg = greyOf(finalArea, pw, ph);
   final tries = <ZoomSourceTry>[];
   var anyMatchSmall = false;
-  var anyMatchNotSharper = false;
-  for (final (ref, cp, m) in refs) {
+  var anyMatchBlurrier = false;
+  for (var k = 0; k < refs.length; k++) {
+    final (ref, cp, m) = refs[k];
+    final real =
+        (realScales != null && k < realScales.length ? realScales[k] : 1.0)
+            .clamp(0.01, 1.0)
+            .toDouble();
     final margin = math.max(1.0, m);
+    // Real pixels of the final area inside this reference (known before
+    // matching: the reference was cut at the area × margin).
+    final realLong = math.max(ref.width, ref.height) / margin * real;
+    if (realLong < kZoomSourceMinPx) {
+      anyMatchSmall = true;
+      tries.add(ZoomSourceTry(cp, -1, 'small ${realLong.round()}px'));
+      continue;
+    }
     final ww = (pw * margin).round(), wh = (ph * margin).round();
     final rg = greyOf(ref, ww, wh);
     final (score, ox, oy) = alignInWide(rg, ww, wh, fg, pw, ph);
@@ -263,26 +299,16 @@ ZoomSourceDecision pickZoomSourceImages({
     final chh = (ph * sy).round().clamp(1, ref.height);
     final x = (ox * sx).round().clamp(0, ref.width - cw);
     final y = (oy * sy).round().clamp(0, ref.height - chh);
-    if (math.max(cw, chh) < kZoomSourceMinPx) {
-      anyMatchSmall = true;
-      tries.add(ZoomSourceTry(cp, score, 'small'));
-      continue;
-    }
     final src = img.copyCrop(ref, x: x, y: y, width: cw, height: chh);
-    // Sharpness at the SAME resolution (the source's): does the source
-    // really hold more detail than the final area?
-    final fin = img.copyResize(
-      finalArea,
-      width: cw,
-      height: chh,
-      interpolation: img.Interpolation.average,
-    );
-    final ss = sharpnessOf(_cap512(src));
-    final fs = sharpnessOf(_cap512(fin));
-    final ratio = fs <= 0 ? (ss > 0 ? 99.0 : 1.0) : ss / fs;
-    if (ratio < kZoomSourceSharperBy) {
-      anyMatchNotSharper = true;
-      tries.add(ZoomSourceTry(cp, score, 'not sharper'));
+    // v11.61 fair check: both at the SAME scale (the smaller real
+    // resolution), noise-corrected — does the source really hold the
+    // area's detail?
+    final ratio = fairSharpRatio(src, finalArea, aRealScale: real);
+    if (ratio < kZoomSourceMinRatio) {
+      anyMatchBlurrier = true;
+      tries.add(
+        ZoomSourceTry(cp, score, 'blurrier ${ratio.toStringAsFixed(2)}'),
+      );
       continue;
     }
     src.exif.imageIfd.orientation = null;
@@ -296,22 +322,14 @@ ZoomSourceDecision pickZoomSourceImages({
     );
   }
   return ZoomSourceDecision(
-    reason: anyMatchNotSharper
-        ? ZoomSourceReason.finalSharp
+    reason: anyMatchBlurrier
+        ? ZoomSourceReason.sourceBlurrier
         : anyMatchSmall
         ? ZoomSourceReason.tooSmall
         : ZoomSourceReason.noMatch,
     tries: tries,
   );
 }
-
-img.Image _cap512(img.Image im) => math.max(im.width, im.height) > 512
-    ? img.copyResize(
-        im,
-        width: im.width >= im.height ? 512 : null,
-        height: im.height > im.width ? 512 : null,
-      )
-    : im;
 
 /// File version (background isolate). [candidates] best first.
 Future<ZoomSourceDecision> pickZoomSource({
@@ -335,9 +353,13 @@ Future<ZoomSourceDecision> pickZoomSource({
         return const ZoomSourceDecision(reason: ZoomSourceReason.error);
       }
       final refs = <(img.Image, double, double)>[];
+      final reals = <double>[];
       for (final c in candidates) {
         final r = load(c.refCropPath);
-        if (r != null) refs.add((r, c.checkpoint, c.margin));
+        if (r != null) {
+          refs.add((r, c.checkpoint, c.margin));
+          reals.add(c.realScale);
+        }
       }
       if (refs.isEmpty) {
         return const ZoomSourceDecision(reason: ZoomSourceReason.noClearRef);
@@ -345,6 +367,7 @@ Future<ZoomSourceDecision> pickZoomSource({
       return pickZoomSourceImages(
         finalArea: fin,
         refs: refs,
+        realScales: reals,
         writeSource: (im) {
           final out = '${finalAreaPath}_source.jpg';
           File(
@@ -361,7 +384,9 @@ Future<ZoomSourceDecision> pickZoomSource({
 
 /// Does this shot need a sharp source? Cheap-phone ladder flow, past the
 /// phone's own clear limit (observed per phone, else its optical limit),
-/// and the final itself is not a clear photo. Pure.
+/// and the final itself is not a clear photo. v11.61: the caller never
+/// counts the final as clear past the per-device real-pixel clear limit.
+/// Pure.
 bool zoomNeedsSource({
   required bool ladderFlow,
   required double zoom,

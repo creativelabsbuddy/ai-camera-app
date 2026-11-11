@@ -275,6 +275,8 @@ in Pro AI). See enhance-server/README.md for the API.
   evidence = no match), becomes the AI's primary image; the final zoom is sent after it as the
   framing reference only (`kZoomSourcePrompt` / `ZOOM_SOURCE_PROMPT`). A source must match
   (>= 0.45), keep >= 96 px and be >= 1.15x sharper than the final at the same resolution.
+  (Superseded in v11.61: real-pixel gate of 32 px, fair noise-corrected comparison at equal
+  scale, and no "final is sharp enough → final alone" exemption — see v11.61.)
   Past the phone's own clear limit (observed per phone, else optical) with no usable source the
   app does NOT fall back to final-only: "Hold steady and retake", no AI call, no credits.
   Blurry checkpoints no longer break the chain (subject checks compare clear photos only).
@@ -367,3 +369,66 @@ bound or a synthetic-test result, not a measured clarity gain on any phone.
   rejected (fails closed, reported 'rotation unverified'). Lens identity needs the camera to
   report `activePhysicalId`; phones that do not → no lens-switch reset (the tracker's own
   scale/score checks still apply). Band timings on real cheap phones are unmeasured.
+
+## v11.61 (1.11.61+74) — Low-zoom root reference, real-pixel gate, no final-only exemption
+
+No hardware validation yet (no physical device in the build loop): every number below is a
+design bound or a synthetic-test result, not a measured clarity gain on any phone. AI model,
+prompts, credits, prices, video routing and style previews are unchanged.
+
+- **ROOT reference (`zoom_root.dart`, `zoom_preview_policy.dart`):** the FIRST reference of a
+  zoom chain must be taken at a low camera zoom — 1x–2x, or the device's true optical zoom
+  (`opticalLimit`: a real telephoto or the 2x in-sensor crop of a ≥40 MP main sensor) — while the
+  zoom has rested, the gyro is steady (gyro now also runs in the ladder below 10x; the "Hold
+  steady" hint / shutter wait stay > 10x only) and the view is tracked. Deep zoom without a root
+  takes no reference. Up to 3 more tracked step references (≥ 1.5x apart, ≤ hardware max); max 4.
+  The old comment/assumption that refs up to the camera's hardware max are "optically new" was
+  wrong: camera zoom above the optical part is a DIGITAL crop (ISP crop included). Every
+  reference is labelled `opt Nx` or `opt Nx + dig Mx` (`refZoomLabel`) and only REAL sensor
+  pixels are counted (`realScale = optical / camera zoom`). The root is the chain's sharpness
+  baseline. Live hint without a root past 2x: "Tap to capture a clear base photo first" (tap →
+  eased zoom to 1x, fresh tracking chain, root photo, back to the user's zoom).
+- **Tracking past blur (`zoom_tracker.dart`):** a blurry frame that misses the normal match is
+  retried at half resolution (coarse structure) and accepted at NCC ≥ 0.70 when it stays within
+  0.08 / ×1.15 of the zoom-predicted view; if the gyro reports the phone still, unmatched frames
+  coast on the zoom-predicted view (scale = zoom ratio, last position) for ≤ 20 frames instead of
+  losing the chain. Coarse/coasted frames never become keyframes, and a coasted region is never
+  trusted blindly — the strict source match against the final still has to pass.
+- **Sources at the shutter:** the root ROI (+ clearer tracked steps, best first, root always
+  included) are cut at their tracked region and sent as the AI's primary image with the merged
+  final as framing (existing payload/prompt). Gate: ≥ 32 REAL px on the ROI's long side (was 96
+  still px). Sharpness is compared fairly (`fairSharpRatio`): both crops box-resized to the SAME
+  size (the smaller real resolution, ≤ 256 px) so neither gets a downscale advantage and the
+  burst's 3×3 sharpen is averaged away; Laplacian variance minus the noise part (20σ², σ from the
+  low tail of Immerkær's noise filter). A matched source is used when its detail is ≥ 0.8× the
+  final's at that scale; clearly blurrier → `sourceBlurrier` (no usable source).
+- **No final-only exemption:** `ZoomSourceReason.finalSharp` and the `failClosed` exemption are
+  removed. Past the phone's clear limit with no usable sharp source → no AI call, no credits,
+  message "Hold steady at lower zoom first. No credits used." (no root) or the v11.59 "no sharp
+  photo matched" message (root present). The final can only count as clear inside the pixel
+  clear range.
+- **Real-pixel gate:** real ROI px = root still long side × root optical part ÷ final zoom.
+  Per-device clear limit = still long side × root optical part ÷ 384 px (≈ 10x for a 4000-px 1x
+  root; never below the optical limit; the last root's still size is remembered for the live
+  label). Beyond it the camera shows "Beyond clear range, AI-enhanced" live and on the result —
+  capture is NOT blocked. ROI < 32 real px → fail closed ("Zoomed too far for this phone to
+  capture real detail. Zoom out a little. No credits used.").
+- **Burst merge (`burst_merge.dart`):** ghost test per 16-px tile now removes the tile's own
+  brightness offset first (exposure flicker is not a ghost; the offset is also removed from the
+  merged pixels), adds edge tolerance 0.35 × the anchor's local gradient (sub-pixel
+  misregistration), floors noise σ at 1.5 (ISP-denoised stills reported a tiny σ), offset alone
+  > 6σ + 4 → ghost. Sharpening (0.3) is applied per pixel in proportion to how much really merged
+  there: anchor-only areas are not sharpened (a mostly anchor-only burst is no longer
+  over-sharpened). Same rule in every band (no seams; banded = single-band test still passes).
+- Key-build overlay: `refs root 1x opt 1x ✓ · 4x opt 1x + dig 4.0x ✓ · tracked … · src … ·
+  clear ≤10.4x roi 80px beyond · sent …`.
+- Tests: `test/v1161_test.dart` (root rule, optical vs digital labels, real-pixel gate, live note,
+  fail-closed verdict + messages, fair sharpness incl. noise, coarse/coasted tracking + bound,
+  burst offset/anchor-only/moving patch, wiring, result label widget); v1159/v1160 updated
+  (finalSharp → sourceBlurrier, 32-px real gate, root-first reference rule, max 4 refs).
+- **Limits:** no device run yet. A single-lens phone cannot produce optical-like 30–50x: beyond
+  the clear range the result is labelled AI-enhanced and fine detail (small text, faces) is the
+  model's estimate. The root needs one steady moment at ≤ 2x; zooming straight in without it
+  ends in the base-photo hint / fail closed. Coasting assumes the phone is still (gyro) and only
+  the zoom changed. Known open item (unchanged): a server-side completion/charge followed by a
+  network drop has no automatic refund.

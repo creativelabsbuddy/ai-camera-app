@@ -151,6 +151,7 @@ class TrackerWorker {
       p.f.cameraZoom,
       p.f.at.microsecondsSinceEpoch,
       p.rebase,
+      p.f.steady,
     ]);
   }
 
@@ -237,6 +238,7 @@ class TrackerWorker {
             GreyImage(w, h, Float32List.fromList(data)),
             l[5] as double,
             DateTime.fromMicrosecondsSinceEpoch(l[6] as int),
+            steady: l.length > 8 && l[8] == true,
           );
           if (l[7] as bool) {
             tr.rebase(f);
