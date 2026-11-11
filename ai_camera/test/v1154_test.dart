@@ -33,7 +33,7 @@ void main() {
 
   test('version 1.11.5x and bolt credit icon assets 1x/2x/3x', () {
     final pub = File('pubspec.yaml').readAsStringSync();
-    expect(pub, matches(RegExp(r'version: 1\.11\.5[4-9]\+')));
+    expect(pub, matches(RegExp(r'version: 1\.11\.(5[4-9]|6\d)\+')));
     expect(pub, contains('- assets/icons/'));
     for (final p in [
       'assets/icons/credit_bolt.png',

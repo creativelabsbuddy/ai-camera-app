@@ -312,3 +312,40 @@ in Pro AI). See enhance-server/README.md for the API.
 - Custom card → Custom window directly (no "photo or video?"): segments "AI Photo" | "AI Video" (Photo tab → AI Photo, Video tab → AI Video). AI Video = previous custom video (image→video / text→video, 9:16/16:9, 5/8/10/15 s, provider resolutions).
 - Real before/after samples: `styles.sample_before_url` / `sample_after_url` (nullable; video uses after only). Public bucket `style-samples`; prompt-free anon view `public.style_samples_public` (app reads it with the publishable key). `/v1/styles` exposes both fields. Admin style editor: upload/replace/remove BEFORE + AFTER (video: AFTER); API `POST /admin/api/styles/{id}/images` fields `sample_before`, `sample_after`, `remove_samples`. Cards show the AFTER image; the apply sheet shows a draggable before/after slider above the photo selection. Uploaded for germany_street, paris_eiffel, santorini, rainy_mumbai, studio_headshot.
 - Admin redeployed (Vercel `ai-camera-admin`, bundle `deploy-v1156.zip`).
+
+## v11.60 (1.11.60+73) — Calmer zoom preview, wide→close tracking, aligned zoom burst
+
+No hardware validation yet (no physical device in the build loop): every number below is a
+bound or a synthetic-test result, not a measured clarity gain on any phone.
+
+- **Live preview (cheap phones):** no centre-AF pass per zoom step any more. One centre AF
+  nudge only when the zoom has rested 1.2 s AND the camera itself reports out-of-focus
+  (CONTROL_AF_STATE 5/6), at most once per 5 s, never over a tap/lock, back to continuous AF
+  after 2.5 s (`zoomAfNudgeDue`). Metering region `clamp(0.5/digital, 0.10, 0.15)` of the
+  camera frame (`meteringSizeForZoom`, was down to 0.05). Preview stays `ResolutionPreset.max`.
+  The bright latch (dark scenes only) is unchanged.
+- **Reference stills instead of per-checkpoint photos:** a full-res reference only when the zoom
+  rested 0.7 s, gyro steady, tracked, view motion < 0.02, ≥1.5x the last reference, ≤ the
+  camera's own max zoom, ≤3 per session, flash off (`shouldCaptureReference`).
+- **Wide→close tracking (`zoom_tracker.dart`, `image_register.dart`):** analysis frames
+  (upright 72-px-wide grey proxy of the whole camera frame, 3×3 box-averaged, every 250 ms) are
+  registered to a keyframe with a similarity transform (pyramid NCC search seeded by the zoom
+  ratio, then Huber-weighted Gauss–Newton; scored at matched pixel density). Transforms chain
+  root→key→current; blurry frames never become keyframes and never reset the chain; 8 misses,
+  implausible motion (scale ±35 % vs zoom, rotation > 8°), leaving the reference or a different
+  subject → lost → references dropped (hint) → a shot needing a source fails closed (no AI
+  call, nothing charged). Orientation ≠ portraitUp or aspect change → tracking off. Each
+  reference stores its tracked view; at the shutter the final region is mapped cur→root→ref,
+  cut at ×1.3 (native region decode) and must still pass the strict v11.59 `pickZoomSource`
+  match + sharper check. No whole-frame-similarity fallback.
+- **Zoom burst (`burst_merge.dart`):** digitally zoomed shots (digital > 1.2, region ≤ 3 MP) on
+  cheap phones, Normal (offline too) and Pro AI in Zoom mode: 2–4 sequential stills within
+  1.8 s (a capture > 0.7 s ends it), only the region + 7.5 % decoded (Android
+  BitmapRegionDecoder + EXIF rotation; Dart fallback), merged in a killable isolate (6 s
+  budget): anchor = sharpest; frames with other exposure (±10 %) or that do not register
+  (median tile NCC < 0.85) left out; similarity warp; 16-px ghost tiles (anchor only); robust
+  per-pixel weights from the anchor's noise σ; mild halo-clamped sharpen only after a real
+  merge. An aligned multi-frame DENOISE merge, not super-resolution. Temp files deleted.
+- The merged region / tracked source feed the existing v11.59 payload (source first, final
+  framing only) for both the direct key and the server; no server change, same model/prompts.
+- Tests: `test/v1160_test.dart` (synthetic scenes with known transforms).
