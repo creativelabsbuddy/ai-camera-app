@@ -9,7 +9,7 @@ import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'dart:ui' show FrameTiming;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
-    show Clipboard, ClipboardData, HapticFeedback;
+    show Clipboard, ClipboardData, DeviceOrientation, HapticFeedback;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sensors_plus/sensors_plus.dart';
@@ -56,6 +56,11 @@ import '../services/pose_catalog.dart';
 import '../services/scene_suggest.dart';
 import '../services/night_pipeline.dart';
 import '../services/zoom_ladder.dart';
+import '../services/burst_merge.dart';
+import '../services/image_register.dart' show GreyImage, Similarity;
+import '../services/tracked_source.dart';
+import '../services/zoom_preview_policy.dart';
+import '../services/zoom_tracker.dart';
 import '../services/zoom_source.dart';
 import '../services/network_check.dart';
 import '../services/zoom_assist.dart';
@@ -197,8 +202,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   DateTime? _latchStep;
   Offset? _latchMeterPoint; // tapped area (visible crop coords)
   BrightSpot? _lastSpot;
-  int _matchMisses = 0;
-  double? _lastMatch;
   bool _overlayOn = true;
   Timer? _overlayTimer;
   Map<String, Object?> _overlayInfo = const {};
@@ -342,6 +345,15 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   ZoomLadder? _ladder;
   Timer? _ladderTimer;
   bool _ladderBusy = false;
+
+  // v11.60 wide→close tracking + live-preview policies (cheap phones).
+  final ZoomTracker _tracker = ZoomTracker();
+  DateTime? _zoomChangedAt;
+  DateTime? _lastAfNudge;
+  Timer? _afReleaseTimer;
+  Similarity? _prevTrack;
+  double _trackMotion = 1;
+  BurstJob? _burstJob;
   bool _ladderNoteShown = false;
 
   /// v11.9 context snapshot (sharp low-zoom still for the AI).
@@ -734,6 +746,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _gyroSub?.cancel();
     _stopFpsMeter();
     _zoomAfTimer?.cancel();
+    _afReleaseTimer?.cancel();
+    _burstJob?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _ladderTimer?.cancel();
     _lensTimer?.cancel();
@@ -1035,8 +1049,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// capture crop).
   /// Coalesces rapid pinch updates so only one platform call is in flight at
   /// a time (latest value wins).
-  /// v11.39 cheap phones: centre AF pass ~700 ms after a zoom to ≥ 2x
-  /// settles (preview softness at zoom). Not while bright-latched.
+  /// v11.60 cheap phones: continuous AF stays in charge while zooming. Only
+  /// when the zoom has rested and the camera ITSELF reports it is out of
+  /// focus, one centre AF pass (≤ 1 per [kZoomAfCooldown]), then back to
+  /// continuous AF. Never over a user tap / lock; no AF state → no nudge.
   Timer? _zoomAfTimer;
   void _scheduleZoomAf(double zoom) {
     _zoomAfTimer?.cancel();
@@ -1046,9 +1062,37 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         _macroActive) {
       return;
     }
-    _zoomAfTimer = Timer(const Duration(milliseconds: 700), () {
-      if (!mounted || _brightApplied || _processingCapture) return;
-      unawaited(_focus.centrePass());
+    _zoomAfTimer = Timer(
+      kZoomAfRest + const Duration(milliseconds: 50),
+      () => unawaited(_zoomAfCheck()),
+    );
+  }
+
+  Future<void> _zoomAfCheck() async {
+    if (!mounted || _brightApplied || _processingCapture) return;
+    final info = await CameraExtras.info();
+    if (!mounted) return;
+    final af = info['afState'];
+    final now = DateTime.now();
+    final due = zoomAfNudgeDue(
+      lowEnd: _macroLowEnd,
+      backLens: _lens == CameraLensDirection.back,
+      zoom: _zoom,
+      now: now,
+      zoomChangedAt: _zoomChangedAt,
+      lastNudgeAt: _lastAfNudge,
+      afState: af is num ? af.toInt() : null,
+      userFocus: _focus.point != null || _focus.locked,
+      busy: _processingCapture || _brightApplied || _captureLock,
+    );
+    if (!due) return;
+    _lastAfNudge = now;
+    await _focus.centrePass();
+    _afReleaseTimer?.cancel();
+    _afReleaseTimer = Timer(kZoomAfRelease, () {
+      if (mounted && !_processingCapture) {
+        unawaited(_focus.afterCapture(true));
+      }
     });
   }
 
@@ -1069,11 +1113,13 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     // New framing: tap point / AE-AF lock no longer valid (v11.35: a small
     // zoom change keeps the tap); the next zoom ends the tap's bright pause.
     _focus.onSceneChange(zoom: plan.selected);
+    _zoomChangedAt = DateTime.now();
     _scheduleZoomAf(plan.selected);
     _vision.cropZoom = plan.digitalZoom;
     _vision.zoom = plan.selected;
     _syncGyro();
-    CameraExtras.setMeteringSize(meteringSizeFor(plan.digitalZoom));
+    // v11.60: metering region in CAMERA coords, never tiny (AF hunting).
+    CameraExtras.setMeteringSize(meteringSizeForZoom(plan.digitalZoom));
     _scheduleLensCheck();
     _scheduleContextSnap();
     _onLadderZoom();
@@ -1419,7 +1465,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           '${_latchMeterPoint == null ? '' : ' · meter (${_latchMeterPoint!.dx.toStringAsFixed(2)}, ${_latchMeterPoint!.dy.toStringAsFixed(2)})'}',
       '${formatZoom(_zoom)}x = camera ${_cameraZoom.toStringAsFixed(2)}x × crop ${_digitalZoom.toStringAsFixed(2)}x',
       _activeLensText,
-      'match ${_lastMatch?.toStringAsFixed(2) ?? '–'} misses $_matchMisses · ladder ${ln == null ? 'none' : (ln.shots.isEmpty ? 'empty' : ln.shots.map((e) => '${formatZoom(e.checkpoint)}${ln.isClear(e) ? '✓' : '✗'}').join(','))}',
+      '${_tracker.debugText} · ladder ${ln == null ? 'none' : (ln.shots.isEmpty ? 'empty' : ln.shots.map((e) => '${formatZoom(e.checkpoint)}${ln.isClear(e) ? '✓' : '✗'}').join(','))}',
       'chain ${_ladderDbg ?? '–'} · last zoom ${_zoomSendDbg ?? '–'}',
     ];
   }
@@ -1812,12 +1858,17 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       _afterFrames = false;
     });
     String shotPath;
+    (double, double)? finalFrac;
     // v11.30 100x flow: cheap phones send ladder references, flagships one
     // photo only.
     final flow = !macro && !hdr && route.aiMode == 'photo' && _zoomModeActive
         ? zoomFlowFor(ai: snap.ai, lowEnd: _macroLowEnd, zoom: snap.zoom)
         : ZoomFlow.normal;
     if (flow == ZoomFlow.ladder) await _awaitLadderShot();
+    // v11.60: the tracked view at the shutter (fresh + valid only).
+    final trackAtShutter = flow == ZoomFlow.ladder && _trackFresh
+        ? _tracker.rootToCur
+        : null;
     // v11.35 debug note on all phones (key builds): bright / EV / tap /
     // camera × crop / lens, read at the shutter.
     final zoomDbg =
@@ -1871,28 +1922,22 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           subject = kMacroGeneralSubject;
         }
         if (!mounted) return;
-      } else if (snap.ai &&
-          route.capture == CaptureKind.single &&
-          _zoomModeActive &&
-          shouldMergeZoom(
-            lowEnd: _macroLowEnd,
-            zoom: snap.zoom,
-            opticalLimit: snap.optical.opticalLimit,
-          )) {
-        // v11.9 cheap phones at high zoom: 8 frames → align + average the
-        // sharpest (zoom limit unchanged).
-        final ourAf = await _preCapture();
-        try {
-          final (path, note) = await _burstSharpest(
-            c,
-            kZoomMergeFrames,
-            snap.digital,
-            merge: true,
-          );
-          shotPath = path;
-          captureNote = note;
-        } finally {
-          unawaited(_focus.afterCapture(ourAf));
+      } else if (route.capture == CaptureKind.single &&
+          route.aiMode == 'photo' &&
+          _shootMode == ShootMode.photo &&
+          (!_aiMode || _zoomModeActive) &&
+          _macroLowEnd &&
+          _lens == CameraLensDirection.back &&
+          snap.digital > 1.2) {
+        // v11.60 cheap phones, digitally zoomed: Normal (offline too) and
+        // Pro AI in Zoom mode (v11.36 gate kept). Short adaptive burst,
+        // region-only decode, aligned robust multi-frame denoise merge.
+        final b = await _zoomBurst(c, snap);
+        shotPath = b.path;
+        captureNote = b.note;
+        if (b.frac != null) {
+          finalFrac = b.frac;
+          snap = snap.withDigital(1.0);
         }
       } else {
         shotPath = await _takeSingle(c);
@@ -1922,7 +1967,16 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       spotSource: macro ? _detector.lastSpotModel : null,
       macroLevel: level,
       zoomFlow: flow,
+      trackAtShutter: trackAtShutter,
+      finalFrac: finalFrac,
     );
+  }
+
+  /// v11.60 the final visible region as fractions of the still.
+  (double, double)? _finalFrac(CaptureCropResult crop) {
+    final r = crop.crop, w = crop.sourceWidth, h = crop.sourceHeight;
+    if (r == null || w == null || h == null || w <= 0 || h <= 0) return null;
+    return (r.width / w, r.height / h);
   }
 
   /// Crop to the on-screen region, then the preview screen.
@@ -1939,6 +1993,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     MacroLevel? macroLevel,
     CaptureMode? modeOverride,
     ZoomFlow zoomFlow = ZoomFlow.normal,
+    Similarity? trackAtShutter,
+    (double, double)? finalFrac,
   }) async {
     setState(() {
       _processingCapture = true;
@@ -1947,9 +2003,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     // v11.59 sharp-source zoom: CLEAR checkpoint photos only (best first);
     // each is cut at the final area × kZoomSourceMargin and aligned to the
     // final area after the crop below.
+    // v11.60: TRACKED clear references only (the final region is located in
+    // each through the tracking chain, then strictly verified).
     final ladderRefs = zoomFlow == ZoomFlow.ladder
         ? (_ladder?.sourceCandidates(snap.zoom) ?? const <LadderShot>[])
-              .where((s) => File(s.path).existsSync())
+              .where((s) => s.rootToRef != null && File(s.path).existsSync())
               .toList()
         : const <LadderShot>[];
     final ctxSnap =
@@ -2014,17 +2072,13 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                   snapshotRegionZoom(snap.zoom, microHint.cameraZoom),
                 ),
               ]
-            : [
-                for (final s in ladderRefs)
-                  (s.path, snapshotRegionZoom(snap.zoom, s.cameraZoom)),
-              ],
+            : const [],
         // v11.42: context photos cut to ~2.5x the main shot's area (really
-        // wider, never nearly the same area).
+        // wider, never nearly the same area). v11.60: ladder references are
+        // cut at their TRACKED region below, not at the centre here.
         stepCropMargin: macroCtx.isNotEmpty
             ? kMacroCtxMargin
-            : ladderRefs.isNotEmpty && microHint == null
-            ? kZoomSourceMargin
-            : ladderRefs.isEmpty && microHint == null
+            : microHint == null
             ? 0
             : kLadderRefMargin,
       );
@@ -2062,22 +2116,38 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         clearLimit: _clearLimit,
         finalClear: finalClear,
       );
-      final n = math.min(ladderRefs.length, crop.stepPaths.length);
-      final cands = <ZoomSourceCandidate>[
-        for (var i = 0; i < n; i++)
-          ZoomSourceCandidate(
-            crop.stepPaths[i],
-            ladderRefs[i].checkpoint,
-            margin: effectiveSourceMargin(
-              snapshotRegionZoom(snap.zoom, ladderRefs[i].cameraZoom),
-            ),
-          ),
-      ];
+      // v11.60: the final region inside each clear reference comes from the
+      // accumulated tracking (never the centre of a whole-frame guess).
+      // No valid track → no candidates → fails closed when a source is
+      // needed.
+      final frac = finalFrac ?? _finalFrac(crop);
+      TrackedCandidates? tc;
+      final aspect = _tracker.rootAspect;
+      if (trackAtShutter != null &&
+          aspect != null &&
+          frac != null &&
+          ladderRefs.isNotEmpty) {
+        try {
+          tc = await trackedSourceCandidates(
+            refs: ladderRefs,
+            rootToCur: trackAtShutter,
+            trackAspect: aspect,
+            finalFrac: frac,
+            outDir: (await getTemporaryDirectory()).path,
+          );
+        } catch (e) {
+          debugPrint('Tracked source failed: $e');
+        }
+      }
       final d = await pickZoomSource(
         finalAreaPath: crop.path,
-        candidates: cands,
+        candidates: tc?.candidates ?? const [],
       );
+      if (tc != null) deleteQuietly(tc.files);
       if (d.ok) zoomSource = File(d.path!);
+      final trackTxt = trackAtShutter == null
+          ? _tracker.debugText
+          : 'tracked ${tc?.notes.join(', ') ?? 'none'}';
       final failClosed =
           !d.ok && need && d.reason != ZoomSourceReason.finalSharp;
       final sent = d.ok
@@ -2085,7 +2155,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           : failClosed
           ? 'sent nothing (no sharp source)'
           : 'sent final only (${finalClear ? 'final clear' : (need ? 'final as sharp' : 'within clear limit')})';
-      _zoomSendDbg = '${d.debugText} · $sent';
+      _zoomSendDbg = '$trackTxt · ${d.debugText} · $sent';
       debugPrint('Zoom source: $_zoomSendDbg');
       if (AiConfig.hasEmbeddedApiKey) {
         final sz = ladderSizesFor(
@@ -2191,6 +2261,127 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     setState(() => _nightFlash = FlashChoice.on);
     unawaited(_savePref(_kNightFlashKey, _nightFlash.name));
     _showToast('Night · Flash on');
+  }
+
+  /// v11.60 zoom burst: [kBurstMinFrames]–[kBurstMaxFrames] stills while
+  /// they fit [kBurstBudgetMs] (a slow capture ends it), only the zoomed
+  /// region (+ margin) decoded, merged in a cancellable isolate. Returns
+  /// the merged REGION (frac = its share of the still) or, when not
+  /// merged, the first full still (frac null). Temporary files removed.
+  Future<({String path, String? note, (double, double)? frac})> _zoomBurst(
+    CameraController c,
+    _ShotSnap snap,
+  ) async {
+    final ourAf = await _preCapture();
+    final paths = <String>[];
+    final sw = Stopwatch()..start();
+    var lastMs = 0;
+    (int, int)? size;
+    CropRect? rect;
+    if (mounted) setState(() => _holdSteady = true);
+    try {
+      while (burstWantsMore(
+        taken: paths.length,
+        elapsedMs: sw.elapsedMilliseconds,
+        lastCaptureMs: lastMs,
+      )) {
+        if (!mounted || !identical(c, _controller) || !c.value.isInitialized) {
+          break;
+        }
+        final t0 = sw.elapsedMilliseconds;
+        try {
+          paths.add((await c.takePicture()).path);
+        } catch (e) {
+          if (paths.isEmpty) rethrow;
+          break;
+        }
+        lastMs = sw.elapsedMilliseconds - t0;
+        if (paths.length == 1) {
+          final sz = await uprightSize(paths.first);
+          size = sz;
+          final r = computeCaptureCrop(
+            iw: sz.$1,
+            ih: sz.$2,
+            portraitRatio: snap.ratio.portrait,
+            digitalZoom: snap.digital,
+          );
+          rect = r;
+          if (!shouldBurstZoom(
+            lowEnd: true,
+            digital: snap.digital,
+            regionPixels: r.width * r.height,
+            plainPhoto: true,
+          )) {
+            break; // region too large for a safe merge → single shot
+          }
+        }
+      }
+    } finally {
+      unawaited(_focus.afterCapture(ourAf));
+      if (mounted) {
+        setState(() {
+          _holdSteady = false;
+          _afterFrames = true;
+        });
+      }
+    }
+    final ms = sw.elapsedMilliseconds;
+    final sz = size, r = rect;
+    if (paths.length < 2 || sz == null || r == null || !mounted) {
+      _deletePaths(paths.skip(1).toList());
+      return (path: paths.first, note: null, frac: null);
+    }
+    final (iw, ih) = sz;
+    final mx = (r.width * kBurstMargin).round();
+    final my = (r.height * kBurstMargin).round();
+    final ox = math.max(0, r.x - mx), oy = math.max(0, r.y - my);
+    final ow = math.min(iw, r.x + r.width + mx) - ox;
+    final oh = math.min(ih, r.y + r.height + my) - oy;
+    final dir = (await getTemporaryDirectory()).path;
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final rgbs = <(String, int, int)>[];
+    final out = '$dir/zoomburst_$stamp.jpg';
+    try {
+      for (var i = 0; i < paths.length; i++) {
+        final f = '$dir/burst_${stamp}_$i.rgb';
+        final (pth, w, h) = await decodeRegion(paths[i], (ox, oy, ow, oh), f);
+        if (w == ow && h == oh) {
+          rgbs.add((pth, w, h));
+        } else {
+          deleteQuietly([pth]);
+        }
+      }
+      if (rgbs.length < 2) throw StateError('region decode');
+      final job = await BurstJob.start(
+        frames: rgbs,
+        inner: (r.x - ox, r.y - oy, r.width, r.height),
+        outJpeg: out,
+      );
+      _burstJob = job;
+      final res = await job.result;
+      _burstJob = null;
+      if (res == null) throw StateError('merge cancelled / failed');
+      if (!mounted) {
+        deleteQuietly([out, ...paths]);
+        return (path: paths.first, note: null, frac: null);
+      }
+      _deletePaths(paths);
+      final n = paths.length;
+      final note = AiConfig.hasEmbeddedApiKey
+          ? 'Zoom burst $n frames ${ms}ms · ${res.debugText}'
+          : res.used >= 2
+          ? 'Merged ${res.used} of $n frames'
+          : 'Sharpest of $n';
+      debugPrint('Zoom burst: $note');
+      return (path: out, note: note, frac: (r.width / iw, r.height / ih));
+    } catch (e) {
+      debugPrint('Zoom burst merge failed: $e');
+      deleteQuietly([out]);
+      _deletePaths(paths.skip(1).toList());
+      return (path: paths.first, note: 'Single frame', frac: null);
+    } finally {
+      deleteQuietly([for (final f in rgbs) f.$1]);
+    }
   }
 
   Future<String> _takeSingle(CameraController c) async {
@@ -2972,10 +3163,12 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _ladder = null;
     _subjectChanged = false;
     // v11.59: no stale diagnostics from an old chain.
-    _lastMatch = null;
-    _matchMisses = 0;
     _ladderDbg = null;
     _zoomSendDbg = null;
+    // v11.60: a new chain starts from a fresh tracker.
+    _tracker.reset();
+    _prevTrack = null;
+    _trackMotion = 1;
     _deletePaths(old);
   }
 
@@ -2985,8 +3178,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     }
   }
 
-  /// Every zoom change: drop photos above the zoom (zoomed back out), then
-  /// take the next due checkpoint once the zoom rests.
+  /// Every zoom change: drop photos above the zoom (zoomed back out). v11.60:
+  /// no photo per checkpoint — a reference is taken only once the zoom has
+  /// rested and the view is steady AND tracked ([_maybeCaptureRef]).
   void _onLadderZoom() {
     unawaited(_maybeLadderNote());
     if (!_ladderMode) {
@@ -2995,116 +3189,156 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     }
     final l = _ladder ??= ZoomLadder(hardwareMax: _range.hardwareMax);
     _deletePaths(l.zoomedTo(_zoom));
-    if (l.due(_zoom) == null) return;
+    // No reference yet while already zoomed far: ask once to zoom slowly
+    // (references need the zoom to rest briefly while steady).
+    if (l.shots.isEmpty && _cameraZoom >= 3 && !_slowHintShown && mounted) {
+      _slowHintShown = true;
+      _showToast(kZoomSlowlyHint);
+    }
     _ladderTimer?.cancel();
-    _ladderTimer = Timer(kLadderSettle, () => unawaited(_takeLadderShot()));
+    _ladderTimer = Timer(
+      kRefRest + const Duration(milliseconds: 50),
+      _maybeCaptureRef,
+    );
   }
 
-  Future<void> _takeLadderShot() async {
+  /// The tracker's latest frame is recent (the chain describes NOW).
+  bool get _trackFresh {
+    final at = _tracker.curAt;
+    return at != null &&
+        DateTime.now().difference(at) < const Duration(milliseconds: 900);
+  }
+
+  /// v11.60: every analysed frame (ladder mode) → tracker. A lost chain
+  /// invalidates the references (a shot needing a sharp source then fails
+  /// closed); with nothing to protect the tracker simply re-roots.
+  void _feedTracker(FrameStats s) {
+    final tl = s.trackLuma;
+    if (!_ladderMode || tl == null || _processingCapture) return;
+    final c = _controller;
+    final upright =
+        c != null && c.value.deviceOrientation == DeviceOrientation.portraitUp;
+    final l = _ladder;
+    final hasRefs = l != null && l.shots.any((e) => e.rootToRef != null);
+    if (!upright) {
+      // Stills follow the device orientation, analysis frames do not:
+      // unsupported → no tracking, no tracked references.
+      if (_tracker.state != TrackState.unsupported) {
+        _tracker.disable('orientation');
+        if (hasRefs) _dropTrackedRefs('orientation');
+      }
+      return;
+    }
+    if (_tracker.state == TrackState.unsupported) _tracker.reset();
+    final f = TrackFrame(
+      GreyImage.fromBytes(s.trackWidth, s.trackHeight, tl),
+      _cameraZoom,
+      DateTime.now(),
+    );
+    if (_tracker.state == TrackState.lost) {
+      if (hasRefs) _dropTrackedRefs(_tracker.lostReason ?? 'lost');
+      _tracker.rebase(f);
+      _prevTrack = null;
+      _trackMotion = 1;
+      return;
+    }
+    _tracker.update(f);
+    if (_tracker.state == TrackState.lost) {
+      if (hasRefs) _dropTrackedRefs(_tracker.lostReason ?? 'lost');
+      return;
+    }
+    final cur = _tracker.rootToCur;
+    final prev = _prevTrack;
+    _trackMotion = cur == null || prev == null ? 1 : transformDelta(prev, cur);
+    _prevTrack = cur;
+    _maybeCaptureRef();
+  }
+
+  /// The chain broke: references no longer map to the view (hint shown).
+  void _dropTrackedRefs(String why) {
+    final l = _ladder;
+    if (l == null) return;
+    _deletePaths(l.clear());
+    _subjectChanged = true;
+    _ladderDbg = 'refs dropped ($why)';
+    debugPrint('Ladder: tracking lost ($why), references dropped');
+    if (mounted) setState(() {});
+  }
+
+  void _maybeCaptureRef() {
     final c = _controller;
     final l = _ladder;
     if (c == null || l == null || !c.value.isInitialized || !mounted) return;
     if (!_ladderMode) return;
-    final cp = l.due(_zoom);
-    if (cp == null) return;
-    if (_ladderBusy ||
-        _ctxBusy ||
-        _captureLock ||
-        _processingCapture ||
-        c.value.isTakingPicture ||
-        c.value.flashMode != FlashMode.off) {
-      // busy: try again shortly (never fire the flash for a silent photo)
-      _ladderTimer?.cancel();
-      _ladderTimer = Timer(kLadderSettle, () => unawaited(_takeLadderShot()));
-      return;
-    }
+    final ok = shouldCaptureReference(
+      cameraZoom: _cameraZoom,
+      hardwareMax: _range.hardwareMax,
+      refZooms: [for (final s in l.shots) s.cameraZoom],
+      now: DateTime.now(),
+      zoomChangedAt: _zoomChangedAt,
+      gyroSteady: !_steady.moving,
+      tracked: _tracker.rootToCur != null && _trackFresh,
+      motion: _trackMotion,
+      busy:
+          _ladderBusy ||
+          _ctxBusy ||
+          _captureLock ||
+          _processingCapture ||
+          _zoomInFlight ||
+          c.value.isTakingPicture,
+      flashOff: c.value.flashMode == FlashMode.off,
+    );
+    if (ok) unawaited(_takeLadderShot());
+  }
+
+  /// One reference still, stamped with the tracked view at that moment.
+  /// Discarded when the view moved / zoom changed during the still.
+  Future<void> _takeLadderShot() async {
+    final c = _controller;
+    final l = _ladder;
+    if (c == null || l == null || !c.value.isInitialized || !mounted) return;
+    if (!_ladderMode || _ladderBusy) return;
+    final before = _tracker.rootToCur;
+    if (before == null) return;
     _ladderBusy = true;
     final cam = _cameraZoom;
+    final cp = (_zoom * 10).round() / 10;
     try {
       final shot = await c.takePicture();
       final sharp = await photoSharpness(shot.path);
-      // Zoomed back out meanwhile, or a new ladder: discard.
-      if (!identical(l, _ladder) || _zoom < cp - 0.01) {
+      final after = _tracker.rootToCur;
+      final moved =
+          after == null || transformDelta(before, after) > kRefMaxMotion * 2;
+      if (!identical(l, _ladder) || (_cameraZoom - cam).abs() > 0.01 || moved) {
         _deletePaths([shot.path]);
+        _ladderDbg =
+            'ref ${formatZoom(cp)} discarded (${moved ? 'moved / lost' : 'zoom changed'})';
       } else {
-        final ls = LadderShot(
-          checkpoint: cp,
-          path: shot.path,
-          cameraZoom: cam,
-          sharpness: sharp,
-        );
-        // v11.34: missed lower checkpoint → hint once.
-        if (l.missedBelow(cp) && !_slowHintShown && mounted) {
-          _slowHintShown = true;
-          _showToast(kZoomSlowlyHint);
-        }
-        // v11.59: a BLURRY checkpoint never breaks the sharp chain: it is
-        // kept (framing only, never a source) without a subject check.
-        // Clear photos are compared with the last CLEAR photo below.
+        // A blurry reference is kept for the clear-limit record only (never
+        // a source); the tracking chain is not affected by it.
         final clear = l.shots.isEmpty || isClearPhoto(sharp, l.refSharpness);
-        final prev = clear ? l.lastClearBelow(cp) : null;
-        var same = true;
-        var compared = false;
-        if (prev != null) {
-          try {
-            final m = await checkpointMatch(
-              prev.path,
-              prev.cameraZoom,
-              ls.path,
-              cam,
-            );
-            same = isSameSubject(m);
-            compared = true;
-            _lastMatch = m;
-            _ladderDbg =
-                'match ${prev.checkpoint}x→${cp}x ${m.toStringAsFixed(2)}';
-          } catch (e) {
-            // No evidence → not a subject change (the shot stays out of
-            // the source list only if it is not clear).
-            debugPrint('Checkpoint match failed: $e');
-          }
-        } else if (!clear) {
-          _ladderDbg = '${cp}x blurry (chain kept)';
-        }
-        if (!identical(l, _ladder)) {
-          _deletePaths([shot.path]);
-          return;
-        }
-        if (same || !compared) {
-          _matchMisses = 0;
-        } else if (++_matchMisses < kSubjectMissesNeeded) {
-          // v11.36: one miss is not enough — retake this checkpoint.
-          _deletePaths([shot.path]);
-          _ladderTimer?.cancel();
-          _ladderTimer = Timer(
-            kLadderSettle,
-            () => unawaited(_takeLadderShot()),
-          );
-          return;
-        }
-        if (!same && compared) {
-          // Two clear photos in a row show something else: new subject.
-          _matchMisses = 0;
-          _deletePaths(l.clear());
-          _subjectChanged = true;
-          debugPrint('Ladder: subject changed at ${cp}x, chain restarted');
-        }
-        l.add(ls);
+        l.add(
+          LadderShot(
+            checkpoint: cp,
+            path: shot.path,
+            cameraZoom: cam,
+            sharpness: sharp,
+            rootToRef: before,
+          ),
+        );
         _noteClearLimit(l);
+        _ladderDbg =
+            'ref ${formatZoom(cp)} ${clear ? 'clear' : 'blurry'} · ${_tracker.debugText}';
         if (mounted) setState(() {});
         debugPrint(
-          'Ladder photo ${cp}x @ cam ${cam.toStringAsFixed(2)}x '
-          'sharp ${sharp.toStringAsFixed(1)}',
+          'Ladder ref ${cp}x @ cam ${cam.toStringAsFixed(2)}x '
+          'sharp ${sharp.toStringAsFixed(1)} ${clear ? 'clear' : 'blurry'}',
         );
       }
     } catch (e) {
       debugPrint('Ladder photo failed: $e');
     } finally {
       _ladderBusy = false;
-    }
-    if (mounted && _ladderMode && _ladder?.due(_zoom) != null) {
-      _ladderTimer?.cancel();
-      _ladderTimer = Timer(kLadderSettle, () => unawaited(_takeLadderShot()));
     }
   }
 
@@ -3599,6 +3833,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     var dirty = false;
     final stats = v.stats;
     if (stats != null) _lastStats = stats;
+    _vision.trackFrames = _ladderMode;
+    if (stats != null) _feedTracker(stats);
     if (_macroActive && stats != null) _updateBoxCheck(stats);
     if (stats != null) _updateBright(stats);
     if (stats?.thumb != null &&

@@ -57,7 +57,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('version bumped', () {
-    expect(File('pubspec.yaml').readAsStringSync(), matches(RegExp(r'version: 1\.11\.5[3-9]\+')));
+    expect(File('pubspec.yaml').readAsStringSync(), matches(RegExp(r'version: 1\.11\.(5[3-9]|6\d)\+')));
     expect(File('pubspec.yaml').readAsStringSync(), contains('video_player'));
   });
 

@@ -107,7 +107,7 @@ void main() {
   });
 
   test('version + labels', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.5'));
+    expect(File('pubspec.yaml').readAsStringSync(), matches(RegExp(r'version: 1\.11\.(5|6)\d')));
     expect(kAiGateSeconds, 3);
     expect(aiGateLabel(zoom: 40, night: false), 'Zoom 40x · AI enhance');
     expect(

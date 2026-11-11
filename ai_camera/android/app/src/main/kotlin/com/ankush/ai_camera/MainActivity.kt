@@ -16,6 +16,7 @@ class MainActivity : FlutterActivity() {
     private val personChannelName = "ai_camera/person"
     private val bokehChannelName = "ai_camera/bokeh"
     private val nightChannelName = "ai_camera/night"
+    private val regionChannelName = "ai_camera/region"
     private var bokeh: BokehSession? = null
     private val requestCodeCamera = 19283
     private var pendingResult: MethodChannel.Result? = null
@@ -89,6 +90,40 @@ class MainActivity : FlutterActivity() {
                             runOnUiThread { result.success(n) }
                         }.start()
                     }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // v11.60 burst merge: decode only the zoomed region (worker thread).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, regionChannelName)
+            .setMethodCallHandler { call, result ->
+                val path = call.argument<String>("path")
+                if (path == null) {
+                    result.error("bad_args", "path", null)
+                    return@setMethodCallHandler
+                }
+                when (call.method) {
+                    "info", "decode" -> Thread {
+                        try {
+                            val r = if (call.method == "info") {
+                                RegionDecode.info(path)
+                            } else {
+                                RegionDecode.decode(
+                                    path,
+                                    call.argument<Int>("x")!!,
+                                    call.argument<Int>("y")!!,
+                                    call.argument<Int>("w")!!,
+                                    call.argument<Int>("h")!!,
+                                    call.argument<String>("out")!!,
+                                )
+                            }
+                            runOnUiThread { result.success(r) }
+                        } catch (t: Throwable) {
+                            runOnUiThread {
+                                result.error("region_failed", "${t.javaClass.simpleName}: ${t.message}", null)
+                            }
+                        }
+                    }.start()
                     else -> result.notImplemented()
                 }
             }

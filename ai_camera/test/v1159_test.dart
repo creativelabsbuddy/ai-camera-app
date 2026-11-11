@@ -76,10 +76,10 @@ NetworkCheck fakeNet(bool online) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.59+72', () {
+  test('version (v11.60: 1.11.60+73)', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.59+72'),
+      contains('version: 1.11.60+73'),
     );
   });
 
@@ -267,8 +267,11 @@ void main() {
 
     test('home: blurry checkpoints keep the chain; diagnostics reset', () {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
-      expect(h, contains('blurry (chain kept)'));
-      expect(h, contains('l.lastClearBelow(cp)'));
+      // v11.60: blurry references never break the TRACKING chain (they are
+      // never sources); references come from the tracker, not from
+      // per-checkpoint subject comparisons.
+      expect(h, contains("\${clear ? 'clear' : 'blurry'} · \${_tracker.debugText}"));
+      expect(h, contains('rootToRef: before'));
       expect(h, contains('_zoomSendDbg = null'));
       expect(
         h,

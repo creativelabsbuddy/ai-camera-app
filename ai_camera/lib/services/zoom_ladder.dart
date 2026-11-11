@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:image/image.dart' as img;
 
+import 'image_register.dart' show Similarity;
+
 import 'macro.dart' show isClearPhoto;
 
 /// v11.30 100x zoom ladder (cheap phones): while the user zooms, a normal
@@ -78,7 +80,12 @@ class LadderShot {
     required this.path,
     required this.cameraZoom,
     required this.sharpness,
+    this.rootToRef,
   });
+
+  /// v11.60: tracked root → this photo's view (analysis coords) when the
+  /// photo was taken; null = untracked (never a source on the ladder).
+  final Similarity? rootToRef;
 
   final double checkpoint;
   final String path;
