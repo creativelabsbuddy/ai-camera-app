@@ -35,4 +35,4 @@ def test_part_endpoint_returns_fill(env, monkeypatch):
 
 
 def test_version():
-    assert main.app.version == "11.1.58"  # v11.58
+    assert main.app.version == "11.1.59"  # v11.59

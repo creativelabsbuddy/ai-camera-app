@@ -66,6 +66,7 @@ class PreviewScreen extends StatefulWidget {
     this.stepFiles = const [],
     this.zoomLadder = false,
     this.zoomClean = false,
+    this.zoomSourceFile,
     this.aiInputFile,
     this.subjectSure = false,
     this.spotSource,
@@ -133,6 +134,10 @@ class PreviewScreen extends StatefulWidget {
   /// v11.30 100x zoom ladder: [stepFiles] are boxed lower-zoom references.
   final bool zoomLadder;
   final bool zoomClean;
+
+  /// v11.59 sharp-source zoom: the aligned sharp lower-zoom crop the AI
+  /// works from ([imageFile] = the final zoom, framing only).
+  final File? zoomSourceFile;
 
   /// v11.13 Extreme: tighter spot sent instead of the crop.
   final File? aiInputFile;
@@ -389,6 +394,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     steps: widget.stepFiles,
     zoomLadder: widget.zoomLadder,
     zoomClean: widget.zoomClean,
+    zoomSource: widget.zoomSourceFile,
     context: widget.contextFile,
     tier: widget.tier,
     zoom: widget.captureZoom,
@@ -608,6 +614,13 @@ class _PreviewScreenState extends State<PreviewScreen> {
           _status = '$_status · framing ${r.structure!.toStringAsFixed(2)}';
         }
       });
+      if (guard == AiFailureKind.network) {
+        // v11.59: offline → the exact message, spinner already off (finally
+        // in _runAi), Retry stays available; nothing was charged.
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text(kCheckInternetMessage)));
+      }
       return;
     }
     final denied = r.denied;

@@ -20,6 +20,7 @@ class ZoomPill extends StatelessWidget {
     this.showMenu = true,
     this.menuDot = false,
     this.menuNew = false,
+    this.menuKey,
     this.onRulerOpen,
     this.onRulerDragStart,
     this.onRulerDragUpdate,
@@ -41,6 +42,9 @@ class ZoomPill extends StatelessWidget {
 
   /// v11.54 gold sparkle "NEW" dot (until Styles was opened once).
   final bool menuNew;
+
+  /// v11.59: key on the four-dot button (the Styles hint anchors to it).
+  final Key? menuKey;
 
   /// Long-press on the pill → open the zoom ruler.
   final VoidCallback? onRulerOpen;
@@ -93,7 +97,7 @@ class ZoomPill extends StatelessWidget {
             ),
           ),
         const SizedBox(width: 14),
-        if (showMenu) FourDotButton(onTap: onOpenMenu, dot: menuDot, sparkle: menuNew),
+        if (showMenu) FourDotButton(key: menuKey, onTap: onOpenMenu, dot: menuDot, sparkle: menuNew),
       ],
     );
     return FittedBox(fit: BoxFit.scaleDown, child: row);

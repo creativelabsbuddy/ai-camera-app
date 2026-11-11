@@ -142,3 +142,38 @@ def framing_similarity(src: bytes, out: bytes) -> float:
 def framing_ok(src: bytes, out: bytes) -> tuple[bool, float]:
     s = framing_similarity(src, out)
     return s >= FRAMING_MIN, s
+
+
+# v11.59 zoom output check (mirrors zoomOutputCheck in image_guard.dart): the
+# AI result must keep the SOURCE area's structure (the sharp source when one
+# was sent, else the final zoom) and, without a chosen look, its colours.
+ZOOM_STRUCTURE_MIN = STRUCTURE_MIN
+ZOOM_COLOUR_MAX_DIST = 70.0
+ZOOM_COLOUR_PROXY_W = 16
+
+
+def _rgb_proxy(raw: bytes, w: int, h: int) -> list[tuple[int, int, int]]:
+    im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    im = im.resize((w, h), Image.BOX)
+    b = im.tobytes()
+    return [(b[i], b[i + 1], b[i + 2]) for i in range(0, len(b), 3)]
+
+
+def mean_colour_distance(src: bytes, out: bytes) -> float:
+    im = Image.open(io.BytesIO(src))
+    sw, sh = im.size
+    w = ZOOM_COLOUR_PROXY_W
+    h = max(1, round(w * sh / max(1, sw)))
+    a, b = _rgb_proxy(src, w, h), _rgb_proxy(out, w, h)
+    n = min(len(a), len(b))
+    if n == 0:
+        return 0.0
+    return sum(math.dist(a[i], b[i]) for i in range(n)) / n
+
+
+def zoom_output_ok(src: bytes, out: bytes, check_colour: bool = True) -> tuple[bool, float]:
+    s = structure_similarity(src, out)
+    ok = s >= ZOOM_STRUCTURE_MIN
+    if ok and check_colour:
+        ok = mean_colour_distance(src, out) <= ZOOM_COLOUR_MAX_DIST
+    return ok, s

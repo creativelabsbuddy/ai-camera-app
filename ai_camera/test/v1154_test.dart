@@ -178,6 +178,7 @@ void main() {
   testWidgets('tooltip tap dismisses and stores it', (t) async {
     await t.pumpWidget(const AiCameraApp());
     await t.pump(const Duration(milliseconds: 300));
+    await t.pump(); // v11.59: anchored after one layout pass
     await t.tap(find.byKey(const ValueKey('styles_here_tooltip')));
     await t.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const ValueKey('styles_here_tooltip')), findsNothing);

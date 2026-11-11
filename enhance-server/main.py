@@ -113,7 +113,7 @@ RUNWARE_KLEIN4B_MODEL = os.environ.get("RUNWARE_KLEIN4B_MODEL", "runware:400@4")
 RUNWARE_LONG = 1024  # FLUX.2 Klein 4B ~1 MP output
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-app = FastAPI(title="AI Camera Enhance Server", version="11.1.58")
+app = FastAPI(title="AI Camera Enhance Server", version="11.1.59")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _ledger: Optional[L.Ledger] = None
@@ -737,6 +737,7 @@ async def enhance_v1(
     context_boxed: bool = Form(False),
     zoom_ladder: bool = Form(False),
     zoom_clean: bool = Form(False),
+    zoom_source: bool = Form(False),
 ):
     dev = _check_device(device_id)
     mode = (mode or "photo").strip().lower()
@@ -759,9 +760,17 @@ async def enhance_v1(
     # v11.13 Macro: the 1x / 2x / 3x / 4x step photos, each with the zoomed area boxed.
     steps_raw = [b for b in [await f.read() for f in (steps or [])[:4]] if b]
     # v11.30 100x zoom ladder (cheap phones): steps = boxed lower-zoom references.
-    ladder = bool(zoom_ladder) and mode == "photo" and bool(steps_raw)
+    # v11.59 sharp-source zoom: image = the sharp aligned lower-zoom source,
+    # steps[0] = the final zoom (framing only). No framing photo → fail closed.
+    zsrc = bool(zoom_source) and mode == "photo"
+    if zsrc and not steps_raw:
+        raise HTTPException(status_code=422, detail={
+            "reason": "no_sharp_source",
+            "message": "Hold steady and retake the zoom. No credits used."})
+    ladder = bool(zoom_ladder) and mode == "photo" and bool(steps_raw) and not zsrc
     # v11.34: 2x+ photo (flagship single / ladder with no matching refs).
-    zoom_only = (bool(zoom_clean) or bool(zoom_ladder)) and mode == "photo" and not ladder
+    zoom_only = ((bool(zoom_clean) or bool(zoom_ladder)) and mode == "photo"
+                 and not ladder and not zsrc)
 
     filt = P.FILTER_PROMPTS.get(filter_id or "")
     macro_credits = None
@@ -821,6 +830,8 @@ async def enhance_v1(
             _max_steps, _crop_long = P.macro_input_plan(level) if level else (0, None)
             if ladder:
                 _crop_long = P.ZOOM_LADDER_MAIN_LONG  # v11.31: final photo 1536 px
+            if zsrc:
+                _crop_long = P.ZOOM_SOURCE_MAIN_LONG  # v11.59: the sharp source
             main_jpg, w, h = prepare(raw, _crop_long or ENHANCE_INPUT_LONG)
             if level is not None and not _text_only:
                 main_jpg = CM.soften_chroma(main_jpg)  # v11.39 colour-noise clean-up
@@ -840,6 +851,13 @@ async def enhance_v1(
                 raise HTTPException(status_code=400, detail=f"bad image: {e}") from e
         else:
             step_jpgs_ladder = []
+        framing_jpg = None
+        if zsrc:
+            ctx_raw, ctx_jpg = b"", None
+            try:
+                framing_jpg = prepare(steps_raw[0], P.ZOOM_FRAMING_LONG)[0]
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"bad image: {e}") from e
         # v11.40: Extreme / Ultra with no detected spot → the zoomed photo (+ context
         # photos) instead of the spot-text-only call.
         # v11.47: Microscope too (detected spot only).
@@ -883,6 +901,15 @@ async def enhance_v1(
                 # detected spot only (aspect still follows the crop).
                 img = None if deep_text_only else data_url(main_jpg)
                 return build_payload(mt, quality, aspect, img, None, leading_urls=firsts)
+            if zsrc and with_ctx:
+                # v11.59: the sharp source FIRST (content), the final zoom after it (framing).
+                return build_payload(P.zoom_source_prompt(filt, color_text), quality, aspect,
+                                     data_url(main_jpg), None,
+                                     extra_urls=[data_url(framing_jpg)])
+            if zsrc:
+                # one-image fallback: the sharp source alone, the safe zoom prompt.
+                return build_payload(P.zoom_ladder_prompt(filt, color_text, refs=False), quality,
+                                     aspect, data_url(main_jpg), None)
             if ladder and with_ctx:
                 # v11.31: the final photo FIRST, reference crops after it.
                 return build_payload(P.zoom_ladder_prompt(filt, color_text), quality, aspect,
@@ -899,7 +926,8 @@ async def enhance_v1(
             )
             return build_payload(prompt, quality, aspect, data_url(main_jpg), ctx_url)
 
-        with_ctx = ctx_jpg is not None or bool(step_jpgs) or bool(step_jpgs_ladder)
+        with_ctx = (ctx_jpg is not None or bool(step_jpgs) or bool(step_jpgs_ladder)
+                    or framing_jpg is not None)
         try:
             status, body = await call_openrouter(payload(with_ctx))
             if with_ctx and status != 200 and is_multi_image_rejection(status):
@@ -944,6 +972,20 @@ async def enhance_v1(
                 raise HTTPException(status_code=422, detail={
                     "reason": "framing_changed",
                     "message": "Couldn't enhance this zoom — credit refunded",
+                    "similarity": round(similarity, 3)})
+        if zsrc or zoom_only:
+            # v11.59: every zoom result is checked against its SOURCE area (the
+            # sharp source when sent, else the final zoom) — changed → rejected.
+            try:
+                ok, similarity = G.zoom_output_ok(main_jpg, out,
+                                                  check_colour=not filt and not color_text)
+            except Exception as e:
+                raise ai_failure(502, "upstream", f"bad upstream image: {e}") from e
+            if not ok:
+                log.warning("zoom result rejected: output check %.3f (%s)", similarity, dev)
+                raise HTTPException(status_code=422, detail={
+                    "reason": "structure_changed",
+                    "message": "AI changed the scene, so the result was rejected. No credits used.",
                     "similarity": round(similarity, 3)})
         if is_macro and not color_text and level not in P.MACRO_DEEP_LEVELS and not deep_text_only:
             # v11.5: colours follow the real source crop (e.g. leaf hue).

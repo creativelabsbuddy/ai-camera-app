@@ -19,8 +19,10 @@ import 'openrouter_client.dart';
 import 'premium_filters.dart';
 import 'prompt_builder.dart';
 import 'server_api_client.dart';
+import 'network_check.dart';
 import 'zoom_ladder.dart'
     show kLadderImageLong, kLadderMainLong, kLadderMaxRefs;
+import 'zoom_source.dart' show kZoomFramingLong, kZoomSourceMainLong;
 
 enum EnhanceBackend { openRouter, server, local }
 
@@ -44,13 +46,21 @@ class EnhanceJob {
     this.steps = const [],
     this.zoomLadder = false,
     this.zoomClean = false,
+    this.zoomSource,
   });
 
   /// v11.34 high zoom (2x+ photo): the zoom clean-up prompt, final photo
   /// only (flagships, or a ladder with no matching checkpoint).
   final bool zoomClean;
-  bool get isZoomClean => zoomClean && aiMode == 'photo' && !isLadder;
-  bool get isZoomJob => isLadder || isZoomClean;
+  bool get isZoomClean =>
+      zoomClean && aiMode == 'photo' && !isLadder && !isZoomSource;
+  bool get isZoomJob => isLadder || isZoomClean || isZoomSource;
+
+  /// v11.59 sharp-source zoom: [zoomSource] (aligned sharp lower-zoom crop)
+  /// is the PRIMARY image; [image] (final zoom) is sent after it, framing
+  /// only. Output is checked against the source.
+  final File? zoomSource;
+  bool get isZoomSource => zoomSource != null && aiMode == 'photo';
 
   /// v11.30 100x zoom ladder: [steps] are boxed lower-zoom references (sent
   /// first), [image] is the final photo (sent last). All at 768 px.
@@ -149,6 +159,8 @@ class EnhanceJob {
       ? (deepTextOnly
             ? const <File>[]
             : steps.take(macroInputs.maxSteps).toList())
+      : isZoomSource
+      ? [image] // v11.59: the final zoom, framing only (after the source)
       : isLadder
       ? steps.take(kLadderMaxRefs).toList()
       : const [];
@@ -156,11 +168,20 @@ class EnhanceJob {
   /// Long side of the main image upload (null = default).
   int? get mainLong => aiMode == 'macro'
       ? macroInputs.cropLong
+      : isZoomSource
+      ? kZoomSourceMainLong
       : isLadder
       ? kLadderMainLong
       : null;
 
-  int get stepLong => isLadder ? kLadderImageLong : macroInputs.stepLong;
+  int get stepLong => isZoomSource
+      ? kZoomFramingLong
+      : isLadder
+      ? kLadderImageLong
+      : macroInputs.stepLong;
+
+  /// v11.59 the primary image sent to the AI.
+  File get primaryImage => isZoomSource ? zoomSource! : image;
 
   String? get stylePrompt {
     final f = aiFilter?.prompt.trim() ?? '';
@@ -189,8 +210,21 @@ class EnhanceJob {
           : '';
       return cp == null ? '$mp$ctx' : '$mp$ctx $cp';
     }
+    if (AiConfig.kHasEmbeddedKey && isZoomSource && hasContext) {
+      // v11.59: sharp source first, final framing second.
+      final cf = colorFilterId;
+      final cp = cf == null ? null : kColorFilterPrompts[cf];
+      final st = stylePrompt;
+      return [
+        kZoomSourcePrompt,
+        if (st != null) 'Style: $st',
+        if (cp != null) 'Color look: $cp $kColorFilterTail',
+      ].join(' ');
+    }
     if (AiConfig.kHasEmbeddedKey &&
-        (isZoomClean || (isLadder && !hasContext))) {
+        (isZoomClean ||
+            (isZoomSource && !hasContext) ||
+            (isLadder && !hasContext))) {
       // v11.34: the zoom clean-up prompt alone (+ chosen look).
       final cf = colorFilterId;
       final cp = cf == null ? null : kColorFilterPrompts[cf];
@@ -317,10 +351,15 @@ class EnhanceService {
     ServerApiClient? server,
     AccountService? account,
     Future<Directory> Function()? tempDir,
+    NetworkCheck? net,
   }) : _openRouter = openRouter ?? OpenRouterClient(),
        _server = server ?? ServerApiClient(),
        _accountOverride = account,
+       _netOverride = net,
        _tempDir = tempDir ?? getTemporaryDirectory;
+
+  final NetworkCheck? _netOverride;
+  NetworkCheck get _net => _netOverride ?? NetworkCheck.instance;
 
   final OpenRouterClient _openRouter;
   final ServerApiClient _server;
@@ -339,34 +378,49 @@ class EnhanceService {
     }
 
     final url = await _account.serverUrl();
+    // v11.59: no working internet → no AI call, nothing charged, one clear
+    // message (bounded multi-endpoint probe; Wi-Fi alone is not proof).
+    if (url.isNotEmpty || _openRouter.isConfigured) {
+      _net.serverHost = url.isEmpty ? null : Uri.tryParse(url)?.host;
+      if (!await _net.online()) return _offline();
+    }
     if (url.isNotEmpty) {
       // Server path: the server runs both night guards itself.
       try {
-        final r = await _server.enhance(
-          baseUrl: url,
-          deviceId: await _account.deviceId(),
-          image: job.image,
-          // v11.26: Macro sends no wide context photo.
-          context: job.aiMode == 'macro' || job.isZoomJob ? null : job.context,
-          tier: job.tier,
-          zoom: job.zoom,
-          opticalLimit: job.opticalLimit,
-          filterId: job.aiFilter?.id,
-          night: job.isNight,
-          mode: job.aiMode,
-          colorFilter: job.colorFilterId,
-          subject: job.subject,
-          part: job.aiMode == 'macro' ? job.part : null,
-          macroLevel: job.aiMode == 'macro' ? job.macroLevel : null,
-          subjectSure: job.subjectSure,
-          contextBoxed:
-              job.aiMode != 'macro' && job.contextBoxed && job.context != null,
-          steps: job.sentSteps,
-          zoomLadder: job.isLadder,
-          zoomClean: job.isZoomClean,
-          mainLong: job.mainLong,
-          stepLong: job.stepLong,
-          cancel: cancel,
+        final r = await watchNetwork(
+          (tok) async => _server.enhance(
+            baseUrl: url,
+            deviceId: await _account.deviceId(),
+            image: job.primaryImage,
+            // v11.26: Macro sends no wide context photo.
+            context: job.aiMode == 'macro' || job.isZoomJob
+                ? null
+                : job.context,
+            tier: job.tier,
+            zoom: job.zoom,
+            opticalLimit: job.opticalLimit,
+            filterId: job.aiFilter?.id,
+            night: job.isNight,
+            mode: job.aiMode,
+            colorFilter: job.colorFilterId,
+            subject: job.subject,
+            part: job.aiMode == 'macro' ? job.part : null,
+            macroLevel: job.aiMode == 'macro' ? job.macroLevel : null,
+            subjectSure: job.subjectSure,
+            contextBoxed:
+                job.aiMode != 'macro' &&
+                job.contextBoxed &&
+                job.context != null,
+            steps: job.sentSteps,
+            zoomLadder: job.isLadder,
+            zoomClean: job.isZoomClean,
+            zoomSource: job.isZoomSource,
+            mainLong: job.mainLong,
+            stepLong: job.stepLong,
+            cancel: tok,
+          ),
+          parent: cancel,
+          net: _net,
         );
         final file = await _writeBytes(r.bytes, 'server');
         await _account.onServerResult(r.account);
@@ -384,7 +438,9 @@ class EnhanceService {
           return EnhanceResult(denied: e.denyReason);
         }
         if (e.failureKind == AiFailureKind.tooDark ||
-            e.failureKind == AiFailureKind.structureChanged) {
+            e.failureKind == AiFailureKind.structureChanged ||
+            e.failureKind == AiFailureKind.framingChanged ||
+            e.failureKind == AiFailureKind.noSharpSource) {
           return EnhanceResult(guard: e.failureKind, aiError: e.message);
         }
         return _fallback(job, e, cancel);
@@ -413,7 +469,8 @@ class EnhanceService {
       }
       final macro = job.aiMode == 'macro';
       // v11.39: Macro / Close / Microscope crop with softened colour noise.
-      var sendImage = job.image;
+      // v11.59: sharp-source zoom → the aligned source is the main image.
+      var sendImage = job.primaryImage;
       if (macro && !job.isExtreme && !job.deepTextOnly) {
         try {
           final soft = await softenChroma(await job.image.readAsBytes());
@@ -423,24 +480,29 @@ class EnhanceService {
         }
       }
       try {
-        final r = await _openRouter.enhanceImages(
-          image: sendImage,
-          // Macro: boxed step photos first, then the crop (the boxed
-          // shutter frame only when no step photo exists).
-          context: macro || job.isZoomJob ? null : job.context,
-          // v11.19 Extreme: the zoomed crop only.
-          // v11.26: Macro / Close / Extreme / Ultra crop only; Microscope
-          // ≤2 step photos at 768 px. Crop capped at 1536 px (not deep).
-          leading: job.sentSteps,
-          mainLong: job.mainLong,
-          leadingLong: job.stepLong,
-          // v11.30: Extreme / Ultra send no photo — spot text prompt only.
-          textOnly: macro && job.deepTextOnly,
-          // v11.31 zoom ladder: final photo first, reference crops after.
-          leadingAfterMain: job.isLadder,
-          tier: job.tier,
-          promptFor: (hasContext) => job.prompt(hasContext: hasContext),
-          cancel: cancel,
+        final r = await watchNetwork(
+          (tok) => _openRouter.enhanceImages(
+            image: sendImage,
+            // Macro: boxed step photos first, then the crop (the boxed
+            // shutter frame only when no step photo exists).
+            context: macro || job.isZoomJob ? null : job.context,
+            // v11.19 Extreme: the zoomed crop only.
+            // v11.26: Macro / Close / Extreme / Ultra crop only; Microscope
+            // ≤2 step photos at 768 px. Crop capped at 1536 px (not deep).
+            leading: job.sentSteps,
+            mainLong: job.mainLong,
+            leadingLong: job.stepLong,
+            // v11.30: Extreme / Ultra send no photo — spot text prompt only.
+            textOnly: macro && job.deepTextOnly,
+            // v11.31 zoom ladder: final photo first, reference crops after.
+            // v11.59 sharp source: the source first, the final (framing) after.
+            leadingAfterMain: job.isLadder || job.isZoomSource,
+            tier: job.tier,
+            promptFor: (hasContext) => job.prompt(hasContext: hasContext),
+            cancel: tok,
+          ),
+          parent: cancel,
+          net: _net,
         );
         cancel?.throwIfCancelled();
         double? structure;
@@ -483,6 +545,26 @@ class EnhanceService {
             }
           } catch (e) {
             debugPrint('Framing check skipped: $e');
+          }
+        }
+        if (job.isZoomJob && !job.isLadder) {
+          // v11.59: every zoom result is checked against its SOURCE area
+          // (the aligned sharp source, else the final itself): a result
+          // that changed the structure / colours is rejected, no charge.
+          final (ok, sim) = await zoomOutputCheck(
+            await sendImage.readAsBytes(),
+            r.bytes,
+            checkColour: job.aiFilter == null && job.colorFilterId == null,
+          );
+          structure = sim;
+          debugPrint('Zoom output check: ${sim.toStringAsFixed(3)} ok=$ok');
+          if (!ok) {
+            return EnhanceResult(
+              guard: AiFailureKind.structureChanged,
+              aiError: kStructureChangedMessage,
+              structure: sim,
+              rejectedFile: await _keepRejected(r.bytes),
+            );
           }
         }
         var bytes = r.bytes;
@@ -535,8 +617,15 @@ class EnhanceService {
     Object error, [
     AiCancelToken? cancel,
   ]) async {
+    if (error is OfflineException) return _offline();
     if ((cancel?.isCancelled ?? false) || error is AiCancelledException) {
       return const EnhanceResult(cancelled: true);
+    }
+    // v11.59: DNS / socket / TLS = no internet → the clear message and
+    // Retry (no local filter pretending the AI ran).
+    if (isOfflineError(error)) {
+      _net.markOffline();
+      return _offline();
     }
     debugPrint('AI enhance failed (nothing charged): $error');
     File? local;
@@ -554,6 +643,11 @@ class EnhanceService {
       aiError: '$error',
     );
   }
+
+  EnhanceResult _offline() => const EnhanceResult(
+    guard: AiFailureKind.network,
+    aiError: kCheckInternet,
+  );
 
   /// v11.42: keep a rejected AI result on test builds only (never shown as
   /// the result; nothing charged).

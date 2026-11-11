@@ -35,8 +35,18 @@ const String kHighZoomClarity =
 /// first, the photo to enhance last. Mirrors the server's hidden prompt
 /// (key builds only).
 /// v11.34 high zoom (2x+, all phones): keep the photo, raise its detail.
-/// v11.58: zoom photos use the universal prompt too.
-const String kZoomCleanPrompt = kUniversalEnhancePrompt;
+/// v11.59 zoom safeguard: zoom photos no longer use the universal DSLR
+/// prompt ("sharpen everything" made the model invent texture on blurry
+/// zooms). Keep what is visible; unrecoverable detail stays soft.
+/// Mirrored in enhance-server/prompts.py (ZOOM_CLEAN_PROMPT).
+const String kZoomCleanPrompt =
+    'Keep this zoomed photo exactly as it is: same subject, shapes, framing, colours and light. Make the detail that is already there clearer and gently clean light noise, with a real camera-photo look. Keep every visible print, letter, pattern and design exactly as it is. Where detail cannot be seen, leave it soft; do not invent new texture, detail or objects.';
+
+/// v11.59 sharp-source zoom: image 1 = sharp lower-zoom photo aligned to
+/// the zoomed area (the content), image 2 = the blurry final zoom (framing
+/// only). = prompts.ZOOM_SOURCE_PROMPT.
+const String kZoomSourcePrompt =
+    'The first image is a sharp photo of exactly the area to show. The second image is a blurrier, more zoomed photo of the same area; use it only to match the framing. Show the first image\'s real content at that framing as a clear, natural camera photo. Keep every visible shape, colour, print, letter, pattern and design exactly as in the first image. Where detail is not visible in the first image, leave it soft; do not invent new texture, detail or objects.';
 const String kZoomLadderRefsLine =
     'The other images are clearer close-up views of the same area; use them '
     'for detail.';

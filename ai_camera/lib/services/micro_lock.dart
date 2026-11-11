@@ -57,3 +57,11 @@ bool isUsableLock(String? name) {
   final n = sanitizeDetected(name);
   return n.isNotEmpty && !isVagueDetect(n);
 }
+
+/// v11.59 F6 fail-closed messages (no AI call, nothing charged).
+const String kMicroNoLock =
+    "Couldn't recognise the object at 1.5x. Point at it, hold steady and "
+    'try again. No credits used.';
+const String kMicroNoMatch =
+    'Hold steady: the zoomed photo did not match the object. Try again. '
+    'No credits used.';
