@@ -370,6 +370,25 @@ bound or a synthetic-test result, not a measured clarity gain on any phone.
   report `activePhysicalId`; phones that do not → no lens-switch reset (the tracker's own
   scale/score checks still apply). Band timings on real cheap phones are unmeasured.
 
+## v11.62 (1.11.62+75) — Use the tracked root; send the root crop alone
+
+- **Sharpness check skipped for digital crops.** When the final's optical
+  part (lens / in-sensor crop) is no higher than the matched reference's —
+  always on a single-lens phone — the final is a digital crop that cannot
+  hold more real detail, and its sensor noise only *looks* like edges. The
+  tracked + matched root / reference is used without a sharpness
+  comparison. A genuine optical-vs-optical case (e.g. a real telephoto
+  final vs a 1x root) still runs the fair sharpness check.
+- **Root crop sent alone.** When the source is used this way, only the
+  aligned root ROI crop goes to the AI (framing came from tracking); the
+  blurry final is not sent. Existing single-image zoom prompt / server
+  `zoom_clean` path and output check; no prompt, model or credit changes.
+- Unchanged: strict content match, `< 32 px` real-ROI refusal, fail-closed
+  with no matched source (no AI call, no credits), "Beyond clear range,
+  AI-enhanced" label.
+- Debug overlay: e.g. `src root 2x roi 94px match 0.83 (sharpness skipped:
+  digital crop)` and `sent source crop only (framing from tracking)`.
+
 ## v11.61 (1.11.61+74) — Low-zoom root reference, real-pixel gate, no final-only exemption
 
 No hardware validation yet (no physical device in the build loop): every number below is a

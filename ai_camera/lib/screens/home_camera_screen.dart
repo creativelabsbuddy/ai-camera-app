@@ -2136,6 +2136,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     // pixels of the root's region decide the "Beyond clear range" label and
     // an absurdly tiny region fails closed.
     File? zoomSource;
+    var zoomSourceOnly = false;
     String? zoomLabel;
     if (zoomFlow == ZoomFlow.ladder) {
       final l = _ladder;
@@ -2188,6 +2189,13 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
             finalFrac: frac,
             shutterRot: trackRot,
             outDir: (await getTemporaryDirectory()).path,
+            // v11.62: the final's optical part (single lens → 1): a digital
+            // crop of no better optics than a reference skips sharpness.
+            finalOptical: refZoomLabel(
+              snap.zoom,
+              lensFactors: _optical.usableFactors,
+              sensorCrop: _optical.sensorCropFactor,
+            ).optical,
           );
         } catch (e) {
           debugPrint('Tracked source failed: $e');
@@ -2198,13 +2206,19 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         candidates: tc?.candidates ?? const [],
       );
       if (tc != null) deleteQuietly(tc.files);
-      if (d.ok) zoomSource = File(d.path!);
+      if (d.ok) {
+        zoomSource = File(d.path!);
+        // v11.62: digital-crop final → the matched source ALONE.
+        zoomSourceOnly = d.sharpnessSkipped;
+      }
       final trackTxt = trackAtShutter == null
           ? _track.debugText
           : 'tracked ${tc?.notes.join(', ') ?? 'none'}';
       final failClosed = zoomFailClosed(ok: d.ok, need: need, tiny: tiny);
       final sent = d.ok
-          ? 'sent source + final (framing only)'
+          ? (zoomSourceOnly
+                ? 'sent source crop only (framing from tracking)'
+                : 'sent source + final (framing only)')
           : failClosed
           ? 'sent nothing (${tiny
                 ? 'roi tiny'
@@ -2220,7 +2234,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (AiConfig.hasEmbeddedApiKey) {
         final sz = ladderSizesFor(
           d.ok ? d.path! : crop.path,
-          d.ok ? [crop.path] : const [],
+          d.ok && !zoomSourceOnly ? [crop.path] : const [],
         );
         final dbg = '$_zoomSendDbg · $sz';
         captureNote = captureNote == null ? dbg : '$captureNote · $dbg';
@@ -2299,6 +2313,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           // as framing), never the final first with references after it.
           zoomLadder: false,
           zoomSourceFile: zoomSource,
+          zoomSourceOnly: zoomSourceOnly,
           zoomLabel: zoomLabel,
           zoomClean: zoomFlow != ZoomFlow.normal,
           macroLevel: macroLevel,

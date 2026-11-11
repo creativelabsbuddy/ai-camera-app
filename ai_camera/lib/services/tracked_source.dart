@@ -72,6 +72,7 @@ Future<TrackedCandidates> trackedSourceCandidates({
   required (double, double) finalFrac,
   required String outDir,
   int shutterRot = 0,
+  double? finalOptical,
 }) async {
   final cands = <ZoomSourceCandidate>[];
   final notes = <String>[];
@@ -83,6 +84,9 @@ Future<TrackedCandidates> trackedSourceCandidates({
     shutterRot,
   );
   String z(double v) => '${v.toStringAsFixed(1)}x';
+  String zz(double v) => v == v.roundToDouble()
+      ? '${v.toStringAsFixed(0)}x'
+      : '${v.toStringAsFixed(1)}x';
   for (final r in refs) {
     final t = r.rootToRef;
     if (t == null) {
@@ -152,7 +156,12 @@ Future<TrackedCandidates> trackedSourceCandidates({
           r.cameraZoom,
           margin: m,
           realScale: lab.realScale,
-          label: '$tag ${lab.text}',
+          label: '${r.root ? 'root ' : ''}${zz(r.cameraZoom)}',
+          skipSharpness: skipSharpnessFor(
+            finalOptical: finalOptical,
+            refOptical: lab.optical,
+          ),
+          realPx: realPx,
         ),
       );
       notes.add('$tag roi ${realPx.round()}px ${lab.text}');
@@ -164,6 +173,17 @@ Future<TrackedCandidates> trackedSourceCandidates({
   }
   return TrackedCandidates(cands, notes, files);
 }
+
+/// v11.62: skip the sharpness comparison when the final cannot hold more
+/// real detail than the reference — its optical part (lens / in-sensor
+/// crop, [finalOptical]) is no higher than the reference's, i.e. the final
+/// is a digital crop of the same (or a lower-resolution) optical path. On a
+/// single-lens phone this is always true. Unknown final optics → compare.
+/// Pure.
+bool skipSharpnessFor({double? finalOptical, required double refOptical}) =>
+    finalOptical != null &&
+    finalOptical.isFinite &&
+    finalOptical <= refOptical + 0.01;
 
 /// Grey proxy of a still (upright, as saved), long side ≈ [long] px, for
 /// the rotation check. Native sampled decode; Dart fallback.

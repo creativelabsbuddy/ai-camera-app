@@ -76,10 +76,10 @@ NetworkCheck fakeNet(bool online) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version (v11.61: 1.11.61+74)', () {
+  test('version (v11.62: 1.11.62+75)', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.61+74'),
+      contains('version: 1.11.62+75'),
     );
   });
 

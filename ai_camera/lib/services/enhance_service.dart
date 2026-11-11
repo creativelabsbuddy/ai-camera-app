@@ -47,6 +47,7 @@ class EnhanceJob {
     this.zoomLadder = false,
     this.zoomClean = false,
     this.zoomSource,
+    this.zoomSourceOnly = false,
   });
 
   /// v11.34 high zoom (2x+ photo): the zoom clean-up prompt, final photo
@@ -61,6 +62,12 @@ class EnhanceJob {
   /// only. Output is checked against the source.
   final File? zoomSource;
   bool get isZoomSource => zoomSource != null && aiMode == 'photo';
+
+  /// v11.62: send ONLY the matched source crop (the final is a digital crop
+  /// with no more real detail; its framing came from tracking + alignment).
+  /// Same single-image zoom prompt / server zoom-clean path as before.
+  final bool zoomSourceOnly;
+  bool get isZoomSourceOnly => isZoomSource && zoomSourceOnly;
 
   /// v11.30 100x zoom ladder: [steps] are boxed lower-zoom references (sent
   /// first), [image] is the final photo (sent last). All at 768 px.
@@ -159,6 +166,8 @@ class EnhanceJob {
       ? (deepTextOnly
             ? const <File>[]
             : steps.take(macroInputs.maxSteps).toList())
+      : isZoomSourceOnly
+      ? const <File>[] // v11.62: the source crop alone
       : isZoomSource
       ? [image] // v11.59: the final zoom, framing only (after the source)
       : isLadder
@@ -413,8 +422,10 @@ class EnhanceService {
                 job.context != null,
             steps: job.sentSteps,
             zoomLadder: job.isLadder,
-            zoomClean: job.isZoomClean,
-            zoomSource: job.isZoomSource,
+            // v11.62: source alone → the existing single-image zoom path
+            // (zoom_source needs the framing photo on the server).
+            zoomClean: job.isZoomClean || job.isZoomSourceOnly,
+            zoomSource: job.isZoomSource && !job.isZoomSourceOnly,
             mainLong: job.mainLong,
             stepLong: job.stepLong,
             cancel: tok,

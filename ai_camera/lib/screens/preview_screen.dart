@@ -67,6 +67,7 @@ class PreviewScreen extends StatefulWidget {
     this.zoomLadder = false,
     this.zoomClean = false,
     this.zoomSourceFile,
+    this.zoomSourceOnly = false,
     this.aiInputFile,
     this.subjectSure = false,
     this.spotSource,
@@ -143,6 +144,9 @@ class PreviewScreen extends StatefulWidget {
   /// v11.59 sharp-source zoom: the aligned sharp lower-zoom crop the AI
   /// works from ([imageFile] = the final zoom, framing only).
   final File? zoomSourceFile;
+
+  /// v11.62: send only [zoomSourceFile] (no blurry final frame).
+  final bool zoomSourceOnly;
 
   /// v11.13 Extreme: tighter spot sent instead of the crop.
   final File? aiInputFile;
@@ -400,6 +404,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     zoomLadder: widget.zoomLadder,
     zoomClean: widget.zoomClean,
     zoomSource: widget.zoomSourceFile,
+    zoomSourceOnly: widget.zoomSourceOnly,
     context: widget.contextFile,
     tier: widget.tier,
     zoom: widget.captureZoom,
