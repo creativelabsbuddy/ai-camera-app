@@ -15,7 +15,8 @@ import 'burst_merge.dart'
         uprightSize;
 import 'image_register.dart';
 import 'zoom_ladder.dart' show LadderShot;
-import 'zoom_source.dart' show ZoomSourceCandidate, kZoomSourceMinPx;
+import 'zoom_root.dart' show roiTooTiny;
+import 'zoom_source.dart' show ZoomSourceCandidate;
 import 'zoom_tracker.dart';
 
 /// v11.60: sharp-source candidates from TRACKED references. The final
@@ -120,8 +121,13 @@ Future<TrackedCandidates> trackedSourceCandidates({
       w,
       h,
     );
-    if (longPx < kZoomSourceMinPx) {
-      notes.add('${z(r.cameraZoom)} small');
+    // v11.61: REAL pixels (a digital-crop reference's upscaled pixels do
+    // not count); only an absurdly tiny region is rejected here.
+    final lab = r.zoomLabel;
+    final realPx = longPx * lab.realScale;
+    final tag = '${r.root ? 'root ' : ''}${z(r.cameraZoom)}';
+    if (roiTooTiny(realPx)) {
+      notes.add('$tag tiny ${realPx.round()}px');
       continue;
     }
     final stamp = DateTime.now().microsecondsSinceEpoch;
@@ -140,8 +146,16 @@ Future<TrackedCandidates> trackedSourceCandidates({
         File(jpg).writeAsBytesSync(img.encodeJpg(im, quality: 95), flush: true);
       });
       files.add(jpg);
-      cands.add(ZoomSourceCandidate(jpg, r.cameraZoom, margin: m));
-      notes.add('${z(r.cameraZoom)} roi');
+      cands.add(
+        ZoomSourceCandidate(
+          jpg,
+          r.cameraZoom,
+          margin: m,
+          realScale: lab.realScale,
+          label: '$tag ${lab.text}',
+        ),
+      );
+      notes.add('$tag roi ${realPx.round()}px ${lab.text}');
     } catch (_) {
       notes.add('${z(r.cameraZoom)} decode');
     } finally {

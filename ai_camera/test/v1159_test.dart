@@ -76,10 +76,10 @@ NetworkCheck fakeNet(bool online) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version (v11.60: 1.11.60+73)', () {
+  test('version (v11.61: 1.11.61+74)', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.60+73'),
+      contains('version: 1.11.61+74'),
     );
   });
 
@@ -126,7 +126,7 @@ void main() {
       expect(d.reason, ZoomSourceReason.ok, reason: d.debugText);
       expect(d.ok, isTrue);
       expect(d.checkpoint, 8);
-      expect(d.sharpRatio!, greaterThanOrEqualTo(kZoomSourceSharperBy));
+      expect(d.sharpRatio!, greaterThanOrEqualTo(kZoomSourceMinRatio));
       // cropped to the final area (1/1.6 of the ref), not the whole ref
       final wh = written!.split('x').map(int.parse).toList();
       expect((wh[0] - 300).abs(), lessThanOrEqualTo(3));
@@ -143,7 +143,10 @@ void main() {
       expect(d.ok, isFalse);
     });
 
-    test('ref not sharper than the final → finalSharp', () {
+    // v11.61: no "final is sharp enough → send it alone" exemption any
+    // more: a matching source that is clearly blurrier than the final (fair,
+    // same-scale, noise-corrected) is no usable source → caller fails closed.
+    test('ref clearly blurrier than the final → sourceBlurrier', () {
       final sharpFinal = img.copyCrop(
         wide,
         x: 90,
@@ -156,16 +159,26 @@ void main() {
         refs: [(img.gaussianBlur(img.Image.from(wide), radius: 6), 8, 1.6)],
         writeSource: write,
       );
-      expect(d.reason, ZoomSourceReason.finalSharp, reason: d.debugText);
+      expect(d.reason, ZoomSourceReason.sourceBlurrier, reason: d.debugText);
+      expect(d.ok, isFalse);
     });
 
-    test('tiny matching ref → tooSmall', () {
+    test('tiny matching ref (< 32 real px) → tooSmall', () {
+      // v11.61: the gate counts REAL pixels (kRoiMinRealPx = 32).
       final d = pickZoomSourceImages(
         finalArea: fin,
-        refs: [(img.copyResize(wide, width: 120, height: 90), 8, 1.6)],
+        refs: [(img.copyResize(wide, width: 40, height: 30), 8, 1.6)],
         writeSource: write,
       );
       expect(d.reason, ZoomSourceReason.tooSmall, reason: d.debugText);
+      // A digital-crop ref: its upscaled pixels do not count.
+      final dig = pickZoomSourceImages(
+        finalArea: fin,
+        refs: [(wide, 8, 1.6)],
+        realScales: const [0.1],
+        writeSource: write,
+      );
+      expect(dig.reason, ZoomSourceReason.tooSmall, reason: dig.debugText);
     });
 
     test('no clear refs → noClearRef (caller fails closed)', () {
@@ -279,12 +292,11 @@ void main() {
           "'chain \${_ladderDbg ?? '–'} · last zoom \${_zoomSendDbg ?? '–'}'",
         ),
       );
-      // no silent final-only fallback past the clear limit
-      expect(h, contains('_snack(kZoomNoSharpSource)'));
-      expect(
-        h,
-        contains('!d.ok && need && d.reason != ZoomSourceReason.finalSharp'),
-      );
+      // no silent final-only fallback past the clear limit; v11.61: no
+      // "final sharp enough" exemption at all
+      expect(h, contains('zoomFailClosed(ok: d.ok, need: need, tiny: tiny)'));
+      expect(h, contains('_snack(zoomFailMessage('));
+      expect(h, isNot(contains('ZoomSourceReason.finalSharp')));
     });
   });
 

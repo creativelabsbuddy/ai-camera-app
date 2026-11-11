@@ -21,7 +21,10 @@ import 'image_register.dart';
 /// • per tile: a frame whose content differs from the anchor beyond the
 ///   noise level (moving subject) is ignored there (anchor only);
 /// • per pixel: robust weights relative to the anchor's noise level;
-/// • a mild, halo-clamped sharpen only when ≥ 2 frames really merged.
+/// • a mild, halo-clamped sharpen only where ≥ 2 frames really merged
+///   (v11.61: per pixel; anchor-only areas stay unsharpened);
+/// • v11.61 robust ghost test: per-tile exposure offset removed, edge
+///   tolerance for sub-pixel misregistration, σ floor.
 /// Fewer than 2 usable frames → the sharpest frame alone.
 
 /// Burst bounds (cheap phones: sequential full-res takePicture calls).
@@ -65,11 +68,26 @@ const double kBurstExposureTol = 0.10;
 const int kBurstTile = 16;
 const double kBurstGhostSigma = 3.0;
 
+/// v11.61 robust ghost test: the tile's own brightness offset (exposure
+/// flicker) is removed first; edges get extra tolerance for sub-pixel
+/// registration error (this × the anchor's mean local gradient); a tile is
+/// a ghost only when what is left still differs. A tile whose mean offset
+/// alone exceeds [kBurstOffsetSigma]σ + 4 is a ghost too.
+const double kBurstGhostGrad = 0.35;
+const double kBurstOffsetSigma = 6.0;
+
+/// Noise σ floor for the ghost / weight tests (ISP-denoised stills report
+/// a tiny σ that turned most tiles into "ghosts").
+const double kBurstSigmaFloor = 1.5;
+
 /// Per-pixel weight: 1 up to [kBurstPixLow]σ, 0 from [kBurstPixHigh]σ.
 const double kBurstPixLow = 2.5;
 const double kBurstPixHigh = 5.0;
 
-/// Mild sharpen amount after a real merge (halo-clamped).
+/// Mild sharpen amount after a real merge (halo-clamped). v11.61: applied
+/// per pixel in proportion to how much really merged there — anchor-only
+/// pixels (ghost tiles) are not sharpened at all, so a burst that mostly
+/// fell back to the anchor is not over-sharpened.
 const double kBurstSharpen = 0.3;
 
 /// Merge wall-clock budget inside the isolate (ms): over → anchor alone.
@@ -318,10 +336,18 @@ Uint8List mergeBand({
   for (var j = 0; j < iw * ih * 3; j++) {
     acc[j] = res[j].toDouble();
   }
-  final lo = kBurstPixLow * sigma, hi = kBurstPixHigh * sigma;
-  final ghostTol = kBurstGhostSigma * sigma + 1.0;
+  final sg = math.max(kBurstSigmaFloor, sigma);
+  final lo = kBurstPixLow * sg, hi = kBurstPixHigh * sg;
+  final ghostTol = kBurstGhostSigma * sg + 1.0;
+  final offTol = kBurstOffsetSigma * sg + 4.0;
   final px = Float32List(3);
+  final ds = <double>[];
   var any = false;
+  double lumaRes(int x, int y) {
+    final d = (y * iw + x) * 3;
+    return 0.299 * res[d] + 0.587 * res[d + 1] + 0.114 * res[d + 2];
+  }
+
   for (final e in others.entries) {
     final m = plan.affines[e.key]!;
     final f = e.value.f;
@@ -356,8 +382,8 @@ Uint8List mergeBand({
             yB = math.min(gy + kBurstTile, iy + ih) - iy;
         final xA = math.max(gx, ix) - ix,
             xB = math.min(gx + kBurstTile, ix + iw) - ix;
-        var diff = 0.0;
-        var n = 0;
+        ds.clear();
+        var sumD = 0.0, grad = 0.0;
         var outside = false;
         for (var y = yA; y < yB && !outside; y += 2) {
           for (var x = xA; x < xB; x += 2) {
@@ -365,15 +391,32 @@ Uint8List mergeBand({
               outside = true;
               break;
             }
-            final d = (y * iw + x) * 3;
-            final la = 0.299 * res[d] + 0.587 * res[d + 1] + 0.114 * res[d + 2];
+            final la = lumaRes(x, y);
             final lf = 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2];
-            diff += (lf - la).abs();
-            n++;
+            final d = lf - la;
+            ds.add(d);
+            sumD += d;
+            final xr = x + 1 < iw ? x + 1 : x - 1;
+            final yb = y + 1 < ih ? y + 1 : y - 1;
+            grad += xr < 0 || yb < 0
+                ? 0
+                : (lumaRes(xr, y) - la).abs() + (lumaRes(x, yb) - la).abs();
           }
         }
         stats.tiles++;
-        if (outside || n == 0 || diff / n > ghostTol) {
+        final n = ds.length;
+        if (outside || n == 0) {
+          stats.ghost++;
+          continue;
+        }
+        final meanD = sumD / n;
+        var dev = 0.0;
+        for (final d in ds) {
+          dev += (d - meanD).abs();
+        }
+        dev /= n;
+        final tol = ghostTol + kBurstGhostGrad * (grad / n);
+        if (dev > tol || meanD.abs() > offTol) {
           stats.ghost++;
           continue;
         }
@@ -382,13 +425,14 @@ Uint8List mergeBand({
             if (!warp(x, y)) continue;
             final j = y * iw + x, d = j * 3;
             final la = 0.299 * res[d] + 0.587 * res[d + 1] + 0.114 * res[d + 2];
-            final lf = 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2];
+            // v11.61: this tile's brightness offset removed first.
+            final lf = 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2] - meanD;
             final dd = (lf - la).abs();
             final w = dd <= lo ? 1.0 : (dd >= hi ? 0.0 : (hi - dd) / (hi - lo));
             if (w <= 0) continue;
-            acc[d] += w * px[0];
-            acc[d + 1] += w * px[1];
-            acc[d + 2] += w * px[2];
+            acc[d] += w * (px[0] - meanD);
+            acc[d + 1] += w * (px[1] - meanD);
+            acc[d + 2] += w * (px[2] - meanD);
             wsum[j] += w;
             usedHere = true;
           }
@@ -400,16 +444,18 @@ Uint8List mergeBand({
       any = true;
     }
   }
-  // Sharpened whenever a merge was planned (also a band where every tile
-  // fell back to the anchor) → bands never differ in treatment.
+  // v11.61: sharpen per pixel in proportion to what really merged there
+  // (anchor-only pixels: none) → identical rule in every band (no seams).
   if (!any) stats.allGhostBands++;
+  final amount = Float32List(iw * ih);
   for (var j = 0; j < iw * ih; j++) {
     final ws = wsum[j];
     acc[j * 3] /= ws;
     acc[j * 3 + 1] /= ws;
     acc[j * 3 + 2] /= ws;
+    amount[j] = kBurstSharpen * math.min(1.0, ws - 1).toDouble();
   }
-  _sharpenClamped(acc, iw, ih, res, kBurstSharpen);
+  _sharpenClamped(acc, iw, ih, res, amount);
   return res;
 }
 
@@ -503,9 +549,26 @@ BurstMergeResult mergeBurst(
 
 /// Unsharp mask (3×3 box) whose result is clamped to the 3×3 min/max of
 /// the merged image (no overshoot → no halos). Writes bytes into [out].
-void _sharpenClamped(Float32List m, int w, int h, Uint8List out, double k) {
+/// v11.61: per-pixel amount [ks] (0 = untouched).
+void _sharpenClamped(
+  Float32List m,
+  int w,
+  int h,
+  Uint8List out,
+  Float32List ks,
+) {
   for (var y = 0; y < h; y++) {
     for (var x = 0; x < w; x++) {
+      final k = ks[y * w + x];
+      if (k <= 0) {
+        for (var c = 0; c < 3; c++) {
+          out[(y * w + x) * 3 + c] = m[(y * w + x) * 3 + c].round().clamp(
+            0,
+            255,
+          );
+        }
+        continue;
+      }
       for (var c = 0; c < 3; c++) {
         final v = m[(y * w + x) * 3 + c];
         var s = 0.0, mn = v, mx = v;

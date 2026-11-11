@@ -134,10 +134,10 @@ GreyImage cropGrey(GreyImage g, (int, int, int, int) r) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.60+73', () {
+  test('version 1.11.61+74', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.60+73'),
+      contains('version: 1.11.61+74'),
     );
   });
 
@@ -519,10 +519,13 @@ void main() {
 
     test('reference stills: rested, steady, tracked, optically new only', () {
       expect(ref(), isTrue);
-      expect(ref(refs: const []), isTrue);
+      // v11.61: the first reference is the low-zoom ROOT only.
+      expect(ref(refs: const []), isFalse, reason: 'root must be ≤ 2x');
+      expect(ref(refs: const [], cam: 1), isTrue);
+      expect(ref(refs: const [], cam: 2), isTrue);
       expect(ref(cam: 2.5), isFalse, reason: '< 1.5× the last reference');
       expect(ref(cam: 12), isFalse, reason: 'above hardware max (no pixels)');
-      expect(ref(refs: const [1, 2, 3]), isFalse, reason: 'max 3');
+      expect(ref(refs: const [1, 2, 3, 4]), isFalse, reason: 'max 4');
       expect(ref(rest: const Duration(milliseconds: 300)), isFalse);
       expect(ref(steady: false), isFalse);
       expect(ref(tracked: false), isFalse);
@@ -1017,7 +1020,8 @@ void main() {
           finalFrac: (frac, frac),
           outDir: dir.path,
         );
-        expect(tc.notes, ['1.0x roi']);
+        expect(tc.notes.single, startsWith('1.0x roi '));
+        expect(tc.notes.single, endsWith('px opt 1x'));
         final d = await pickZoomSource(
           finalAreaPath: fin.path,
           candidates: tc.candidates,
@@ -1099,7 +1103,7 @@ void main() {
       expect(h, contains('candidates: tc?.candidates ?? const []'));
       // no centre-cut ladder references any more
       expect(h, isNot(contains('kZoomSourceMargin\n')));
-      expect(h, contains('_snack(kZoomNoSharpSource)'));
+      expect(h, contains('_snack(zoomFailMessage('));
       expect(h, contains('_dropTrackedRefs('));
       // rotation / lens switch → reset + fresh reference (no disabling)
       expect(h, isNot(contains("disable('orientation')")));

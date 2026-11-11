@@ -52,6 +52,23 @@ const double kTrackMaxAngle = 0.14; // ≈ 8°
 /// Analysis vs still aspect must agree within this (else unsupported).
 const double kTrackAspectTol = 0.02;
 
+/// v11.61 past blur: a BLURRY frame (deep digital zoom) may still be
+/// tracked by a coarse match at half resolution with this lower score,
+/// when the result stays near the zoom-predicted view.
+const double kTrackBlurMinScore = 0.70;
+
+/// Coarse/coasted result must stay within this (normalised units) of the
+/// predicted position, and its scale within [kTrackCoarseScaleTol].
+const double kTrackCoarseShift = 0.08;
+const double kTrackCoarseScaleTol = 1.15;
+
+/// v11.61: while the GYRO says the phone is steady, an unmatched frame
+/// "coasts" on the zoom-predicted view (scale = zoom ratio, last position)
+/// for at most this many consecutive frames instead of losing the chain.
+/// A coasted region is never trusted blindly: the strict source check
+/// must still match the final against it (else fail closed).
+const int kTrackCoastMax = 20;
+
 /// Retry scale search (fast pinch: the camera's zoom lags the request).
 const List<double> kTrackWideScales = [
   0.7,
@@ -80,10 +97,13 @@ enum TrackState {
 
 /// One analysed frame.
 class TrackFrame {
-  const TrackFrame(this.grey, this.cameraZoom, this.at);
+  const TrackFrame(this.grey, this.cameraZoom, this.at, {this.steady = false});
   final GreyImage grey;
   final double cameraZoom;
   final DateTime at;
+
+  /// v11.61: the gyro reported the phone steady at this frame.
+  final bool steady;
 }
 
 class _Key {
@@ -116,6 +136,7 @@ class ZoomTracker {
   DateTime? _curAt;
   double _curZoom = 1;
   int _misses = 0;
+  int _coast = 0;
   int _frames = 0;
   int _keys = 0;
   double _lastScore = -1;
@@ -139,7 +160,8 @@ class ZoomTracker {
     TrackState.idle => 'track idle',
     TrackState.tracking =>
       'track ok ${_lastScore.toStringAsFixed(2)} k$_keys f$_frames'
-          '${_misses > 0 ? ' miss $_misses' : ''}',
+          '${_misses > 0 ? ' miss $_misses' : ''}'
+          '${_coast > 0 ? ' coast $_coast' : ''}',
     TrackState.lost => 'track lost ($_lostReason)',
     TrackState.unsupported => 'track off ($_lostReason)',
   };
@@ -155,6 +177,7 @@ class ZoomTracker {
     _keyToCurLast = null;
     _curAt = null;
     _misses = 0;
+    _coast = 0;
     _frames = 0;
     _keys = 0;
     _lastScore = -1;
@@ -187,6 +210,7 @@ class ZoomTracker {
     _curZoom = f.cameraZoom;
     _state = TrackState.tracking;
     _misses = 0;
+    _coast = 0;
     _keys = 1;
     _lastScore = 1;
     _lostReason = null;
@@ -236,13 +260,48 @@ class ZoomTracker {
       if (r2.score > r.score) r = r2;
     }
     _lastScore = r.score;
-    final t = r.transform;
-    final plausible =
-        r.score >= kTrackMinScore &&
-        t.isFinite &&
-        t.scale / predScale <= kTrackScaleTol &&
-        predScale / t.scale <= kTrackScaleTol &&
-        t.angle.abs() <= kTrackMaxAngle;
+    var t = r.transform;
+    bool plausibleT(Similarity x) =>
+        x.isFinite &&
+        x.scale / predScale <= kTrackScaleTol &&
+        predScale / x.scale <= kTrackScaleTol &&
+        x.angle.abs() <= kTrackMaxAngle;
+    bool nearGuess(Similarity x) {
+      final dx = x.tx - guess.tx, dy = x.ty - guess.ty;
+      return math.sqrt(dx * dx + dy * dy) <= kTrackCoarseShift &&
+          x.scale / predScale <= kTrackCoarseScaleTol &&
+          predScale / x.scale <= kTrackCoarseScaleTol;
+    }
+
+    var plausible = r.score >= kTrackMinScore && plausibleT(t);
+    var coarse = false;
+    var coasted = false;
+    final sh = f.grey.laplacianVariance();
+    if (!plausible && sh < key.sharpness * kTrackKeySharpRatio) {
+      // v11.61 past blur: coarse match at half resolution (the blur hides
+      // the fine detail, the coarse structure is still there).
+      final rc = registerSimilarity(
+        f.grey.half(),
+        key.frame.grey.half(),
+        guess: guess,
+        scaleFactors: scaleFactors,
+        radius: 3,
+      );
+      if (rc.score >= kTrackBlurMinScore &&
+          plausibleT(rc.transform) &&
+          nearGuess(rc.transform)) {
+        t = rc.transform;
+        _lastScore = rc.score;
+        plausible = true;
+        coarse = true;
+      }
+    }
+    if (!plausible && f.steady && _coast < kTrackCoastMax && guess.isFinite) {
+      // v11.61: gyro steady → coast on the zoom-predicted view.
+      t = guess;
+      plausible = true;
+      coasted = true;
+    }
     if (!plausible) {
       _misses++;
       _lastNote = r.score < kTrackMinScore
@@ -253,6 +312,7 @@ class ZoomTracker {
       }
       return TrackUpdate(_state, r.score, _lastNote);
     }
+    _coast = coasted ? _coast + 1 : 0;
     _misses = 0;
     final keyToCur = t.inverse();
     _keyToCurLast = keyToCur;
@@ -269,9 +329,14 @@ class ZoomTracker {
     _rootToCur = rootToCur;
     _curAt = f.at;
     _curZoom = f.cameraZoom;
-    _lastNote = 'ok ${r.score.toStringAsFixed(2)}';
+    _lastNote = coasted
+        ? 'coast $_coast'
+        : coarse
+        ? 'coarse ${_lastScore.toStringAsFixed(2)}'
+        : 'ok ${r.score.toStringAsFixed(2)}';
+    // Coarse / coasted frames never become keyframes.
+    if (coarse || coasted) return TrackUpdate(_state, _lastScore, _lastNote);
     // Keyframe promotion: clear + confident + moved / zoomed enough.
-    final sh = f.grey.laplacianVariance();
     final grown = 1 / t.scale >= kTrackKeyScaleStep;
     final moved = math.sqrt(t.tx * t.tx + t.ty * t.ty) >= kTrackKeyShift;
     if (r.score >= kTrackKeyScore &&

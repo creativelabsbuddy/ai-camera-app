@@ -75,7 +75,12 @@ class PreviewScreen extends StatefulWidget {
     this.enhanceService,
     this.source,
     this.captureNote,
+    this.zoomLabel,
   });
+
+  /// v11.61: e.g. "Beyond clear range, AI-enhanced" — the zoom went past the
+  /// real detail this phone captured; shown on the result.
+  final String? zoomLabel;
 
   /// Where the photo came from (v10 enhance rules). Defaults from [mode]:
   /// PRO AI capture vs Normal capture. Gallery picks pass
@@ -904,6 +909,33 @@ class _PreviewScreenState extends State<PreviewScreen> {
               ],
             ),
           ),
+          if (widget.zoomLabel case final zl?)
+            Padding(
+              key: const ValueKey('zoom_clear_label'),
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.auto_awesome_rounded,
+                    size: 16,
+                    color: AppColors.proGold,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      zl,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.proGold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),

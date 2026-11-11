@@ -61,6 +61,7 @@ import '../services/burst_merge.dart';
 import '../services/image_register.dart' show GreyImage, Similarity;
 import '../services/tracked_source.dart';
 import '../services/zoom_preview_policy.dart';
+import '../services/zoom_root.dart';
 import '../services/zoom_tracker.dart';
 import '../services/zoom_tracker_worker.dart';
 import '../services/zoom_source.dart';
@@ -220,6 +221,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   bool _subjectChanged = false;
   double? _clearLimit;
   bool _clearLimitBusy = false;
+  // v11.61 ROOT reference: still long side + real zoom (real-pixel gate).
+  int? _rootStillLong;
+  RefZoomLabel? _rootLabel;
   String? _ladderDbg;
 
   /// v11.59 what the last zoom shutter really sent (source, match, sizes).
@@ -2127,11 +2131,19 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     // checkpoint photo, aligned to the final area, becomes the AI's source;
     // the final is the framing reference only. Past the phone's clear limit
     // with no usable match → no AI call, nothing charged (fail closed).
+    // v11.61: the low-zoom ROOT (+ clear tracked steps) are the sources; no
+    // "final is sharp enough" exemption past the clear limit; the real
+    // pixels of the root's region decide the "Beyond clear range" label and
+    // an absurdly tiny region fails closed.
     File? zoomSource;
+    String? zoomLabel;
     if (zoomFlow == ZoomFlow.ladder) {
       final l = _ladder;
+      final root = l?.root;
+      final clearLim = _pixelClearLimit;
+      final beyond = beyondClearRange(snap.zoom, clearLim);
       var finalClear = false;
-      if (l != null && l.shots.isNotEmpty) {
+      if (l != null && l.shots.isNotEmpty && !beyond) {
         try {
           finalClear = isClearPhoto(
             await photoSharpness(shotPath),
@@ -2146,6 +2158,16 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         clearLimit: _clearLimit,
         finalClear: finalClear,
       );
+      // Real pixels of the final framing inside the root (estimate from its
+      // zoom; the tracked crop below measures the real region).
+      final rootPx = root == null || _rootStillLong == null
+          ? null
+          : realRoiPx(
+              stillLong: _rootStillLong!,
+              label: root.zoomLabel,
+              finalZoom: snap.zoom,
+            );
+      final tiny = rootPx != null && roiTooTiny(rootPx);
       // v11.60: the final region inside each clear reference comes from the
       // accumulated tracking (never the centre of a whole-frame guess).
       // No valid track → no candidates → fails closed when a source is
@@ -2153,7 +2175,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       final frac = finalFrac ?? _finalFrac(crop);
       TrackedCandidates? tc;
       final aspect = _track.rootAspect;
-      if (trackAtShutter != null &&
+      if (!tiny &&
+          trackAtShutter != null &&
           aspect != null &&
           frac != null &&
           ladderRefs.isNotEmpty) {
@@ -2179,14 +2202,20 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       final trackTxt = trackAtShutter == null
           ? _track.debugText
           : 'tracked ${tc?.notes.join(', ') ?? 'none'}';
-      final failClosed =
-          !d.ok && need && d.reason != ZoomSourceReason.finalSharp;
+      final failClosed = zoomFailClosed(ok: d.ok, need: need, tiny: tiny);
       final sent = d.ok
           ? 'sent source + final (framing only)'
           : failClosed
-          ? 'sent nothing (no sharp source)'
-          : 'sent final only (${finalClear ? 'final clear' : (need ? 'final as sharp' : 'within clear limit')})';
-      _zoomSendDbg = '$trackTxt · ${d.debugText} · $sent';
+          ? 'sent nothing (${tiny
+                ? 'roi tiny'
+                : root == null
+                ? 'no root'
+                : 'no sharp source'})'
+          : 'sent final only (${finalClear ? 'final clear' : 'within clear limit'})';
+      final gate =
+          'clear ≤${formatZoom(clearLim)}x${rootPx == null ? '' : ' roi ${rootPx.round()}px'}${beyond ? ' beyond' : ''}';
+      _zoomSendDbg =
+          '${l?.refsLabelText() ?? 'refs none'} · $trackTxt · ${d.debugText} · $gate · $sent';
       debugPrint('Zoom source: $_zoomSendDbg');
       if (AiConfig.hasEmbeddedApiKey) {
         final sz = ladderSizesFor(
@@ -2199,10 +2228,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (failClosed) {
         if (mounted) {
           setState(() => _processingCapture = false);
-          _snack(kZoomNoSharpSource);
+          _snack(zoomFailMessage(tiny: tiny, hasRoot: root != null));
         }
         return;
       }
+      if (beyond) zoomLabel = kBeyondClearLabel;
     }
     if (!mounted) return;
     ZoomInfoService.lastCaptureCalibration = _calibrationLine(
@@ -2269,6 +2299,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           // as framing), never the final first with references after it.
           zoomLadder: false,
           zoomSourceFile: zoomSource,
+          zoomLabel: zoomLabel,
           zoomClean: zoomFlow != ZoomFlow.normal,
           macroLevel: macroLevel,
           captureNote: captureNote,
@@ -2825,9 +2856,14 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   bool get _steadyOn =>
       steadyActive(zoom: _zoom, back: _lens == CameraLensDirection.back);
 
-  /// Gyro only while above 10x on the back camera.
+  /// v11.61: the gyro is live and reports the phone still.
+  bool get _gyroStill => _gyroSub != null && _steady.steadyAt(DateTime.now());
+
+  /// Gyro only while above 10x on the back camera. v11.61: also in the
+  /// cheap-phone zoom ladder (steady root photo + tracking past blur); the
+  /// "Hold steady" hint and shutter wait still apply above 10x only.
   void _syncGyro() {
-    if (_steadyOn) {
+    if (_steadyOn || _ladderMode) {
       _gyroSub ??=
           gyroscopeEventStream(
             samplingPeriod: SensorInterval.gameInterval,
@@ -3307,7 +3343,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _trackOrient ??= o;
     final g = GreyImage.fromBytes(s.trackWidth, s.trackHeight, tl);
     _lastTrackGrey = g;
-    w.submit(TrackFrame(g, _cameraZoom, now), rebase: _trackRebaseNext);
+    w.submit(
+      TrackFrame(g, _cameraZoom, now, steady: _gyroStill),
+      rebase: _trackRebaseNext,
+    );
     _trackRebaseNext = false;
   }
 
@@ -3376,8 +3415,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       refZooms: [for (final s in l.shots) s.cameraZoom],
       now: DateTime.now(),
       zoomChangedAt: _zoomChangedAt,
-      gyroSteady: !_steady.moving,
+      gyroSteady: _gyroSub == null ? true : !_steady.moving,
       tracked: _track.rootToCur != null && _trackFresh,
+      opticalLimit: _optical.opticalLimit,
       motion: _trackMotion,
       busy:
           _ladderBusy ||
@@ -3402,9 +3442,21 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final ana = _lastTrackGrey;
     final orient = _trackOrient;
     if (before == null || ana == null || orient == null) return;
-    _ladderBusy = true;
     final cam = _cameraZoom;
     final cp = (_zoom * 10).round() / 10;
+    // v11.61: the first reference of a chain is the low-zoom ROOT; deep zoom
+    // without one takes no reference (the shot fails closed instead).
+    final isRoot = l.root == null;
+    if (isRoot && !isRootZoom(cam, _optical.opticalLimit)) {
+      _ladderDbg = 'no root yet (cam ${formatZoom(cam)}x > root max)';
+      return;
+    }
+    final label = refZoomLabel(
+      cam,
+      lensFactors: _optical.usableFactors,
+      sensorCrop: _optical.sensorCropFactor,
+    );
+    _ladderBusy = true;
     final epoch = _trackWorker?.epoch;
     try {
       final shot = await c.takePicture();
@@ -3445,8 +3497,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       } else {
         _trackRot ??= rot.k;
         // A blurry reference is kept for the clear-limit record only (never
-        // a source); the tracking chain is not affected by it.
-        final clear = l.shots.isEmpty || isClearPhoto(sharp, l.refSharpness);
+        // a source); the tracking chain is not affected by it. v11.61: the
+        // ROOT is the sharpness baseline of the chain.
+        final clear = isRoot || isClearPhoto(sharp, l.refSharpness);
         l.add(
           LadderShot(
             checkpoint: cp,
@@ -3455,15 +3508,18 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
             sharpness: sharp,
             rootToRef: before,
             stillRot: rot.k!,
+            optical: label.optical,
+            root: isRoot,
           ),
         );
         _noteClearLimit(l);
+        if (isRoot) unawaited(_noteRootStill(shot.path, label));
         _ladderDbg =
-            'ref ${formatZoom(cp)} ${clear ? 'clear' : 'blurry'} · ${_track.debugText}';
+            'ref ${isRoot ? 'root ' : ''}${formatZoom(cp)} ${label.text} ${clear ? 'clear' : 'blurry'} · ${_track.debugText}';
         if (mounted) setState(() {});
         debugPrint(
-          'Ladder ref ${cp}x @ cam ${cam.toStringAsFixed(2)}x '
-          'sharp ${sharp.toStringAsFixed(1)} ${clear ? 'clear' : 'blurry'}',
+          'Ladder ref ${isRoot ? '(root) ' : ''}${cp}x @ cam ${cam.toStringAsFixed(2)}x '
+          '(${label.text}) sharp ${sharp.toStringAsFixed(1)} ${clear ? 'clear' : 'blurry'}',
         );
       }
     } catch (e) {
@@ -3488,8 +3544,50 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       final prefs = await SharedPreferences.getInstance();
       final v = double.tryParse(prefs.getString(kClearLimitKey) ?? '');
       if (v != null && mounted) setState(() => _clearLimit = v);
+      final r = int.tryParse(prefs.getString(kRootStillLongKey) ?? '');
+      if (r != null && r > 0 && mounted) setState(() => _rootStillLong = r);
     } catch (_) {}
   }
+
+  /// v11.61: long side + real zoom of the current ROOT still (real-pixel
+  /// gate); the long side is remembered for the live label next time.
+  Future<void> _noteRootStill(String path, RefZoomLabel label) async {
+    try {
+      final (w, h) = await uprightSize(path);
+      final long = math.max(w, h);
+      if (!mounted || long <= 0) return;
+      setState(() {
+        _rootStillLong = long;
+        _rootLabel = label;
+      });
+      unawaited(_savePref(kRootStillLongKey, long.toString()));
+    } catch (_) {}
+  }
+
+  /// v11.61 per-device clear limit from REAL pixels: the root's (or, before
+  /// one exists, the last root still's / a default) long side × its optical
+  /// part ÷ [kClearRoiPx]; never below the optical limit.
+  double get _pixelClearLimit {
+    final l = _ladder;
+    final hasRoot = l?.root != null;
+    return pixelClearLimit(
+      stillLong: _rootStillLong ?? kDefaultStillLong,
+      rootOptical: hasRoot ? (_rootLabel?.optical ?? 1.0) : 1.0,
+      opticalLimit: _optical.opticalLimit,
+    );
+  }
+
+  /// v11.61 live note while zooming (ladder): missing base photo, or
+  /// "Beyond clear range, AI-enhanced". Capture is never blocked by it.
+  String? get _liveZoomNote => _processingCapture || _clearLimitBusy
+      ? null
+      : liveZoomNote(
+          ladderMode: _ladderMode && _zoomModeActive,
+          zoom: _zoom,
+          opticalLimit: _optical.opticalLimit,
+          hasRoot: _ladder?.root != null,
+          clearLimit: _pixelClearLimit,
+        );
 
   bool get _showNewSubject =>
       _ladderMode &&
@@ -3503,16 +3601,38 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   /// Tap on "New subject": zoom (~1 s) to the clear limit, take 1–2
   /// checkpoint photos, then back to the user's zoom. Only on tap.
+  /// v11.61: without a ROOT the low-zoom base photo is taken first (the
+  /// chain's root), at 1x (or the lowest zoom the camera allows).
   Future<void> _captureAtClearLimit() async {
+    final needRoot = _ladder?.root == null;
     final lim = _clearLimit;
-    if (lim == null || _clearLimitBusy) return;
+    if ((lim == null && !needRoot) || _clearLimitBusy) return;
     final back = _zoom;
     setState(() {
       _clearLimitBusy = true;
       _subjectChanged = false;
     });
     try {
-      await _animateZoomTo(lim, kClearLimitAnim);
+      if (needRoot) {
+        final rz = 1.0.clamp(_range.minZoom, _userZoomMax).toDouble();
+        await _animateZoomTo(rz, kClearLimitAnim);
+        await _waitZoomSettled();
+        await Future<void>.delayed(kLadderStepPause);
+        // A chain rooted deep in the zoom cannot hold the wide view: start a
+        // fresh chain here and wait (≤ 1.5 s) for it before the base photo.
+        if (_track.rootToCur == null || !_trackFresh) _resetTracking();
+        for (var i = 0; i < 30 && mounted; i++) {
+          if (_track.rootToCur != null && _trackFresh) break;
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        await _takeLadderShot();
+        if (lim == null) {
+          await _animateZoomTo(back, kClearLimitAnim);
+          await _waitZoomSettled();
+          return;
+        }
+      }
+      await _animateZoomTo(lim!, kClearLimitAnim);
       await _waitZoomSettled();
       await Future<void>.delayed(kLadderStepPause);
       await _takeLadderShot();
@@ -5226,7 +5346,28 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                             ],
                           ),
                         ),
-                      if (_showNewSubject)
+                      // v11.61: no clear base photo yet while zoomed deep
+                      // (tap: capture it, then back) / beyond the clear
+                      // range (label only — capture is never blocked).
+                      if (_liveZoomNote case final note?)
+                        GestureDetector(
+                          key: ValueKey(
+                            note == kRootMissingHint
+                                ? 'root_missing_hint'
+                                : 'beyond_clear_label',
+                          ),
+                          onTap: note == kRootMissingHint
+                              ? () => unawaited(_captureAtClearLimit())
+                              : null,
+                          child: _ModeNote(
+                            icon: note == kRootMissingHint
+                                ? Icons.center_focus_strong_rounded
+                                : Icons.auto_awesome_rounded,
+                            text: note,
+                            color: AppColors.proGold,
+                          ),
+                        ),
+                      if (_showNewSubject && _liveZoomNote != kRootMissingHint)
                         GestureDetector(
                           key: const ValueKey('new_subject_hint'),
                           onTap: () => unawaited(_captureAtClearLimit()),
