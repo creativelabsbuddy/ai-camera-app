@@ -90,7 +90,20 @@ class ZoomSourceDecision {
     this.score,
     this.sharpRatio,
     this.tries = const [],
+    this.sharpnessSkipped = false,
+    this.label = '',
+    this.realPx,
   });
+
+  /// v11.62: the final is a digital crop of a sensor with no more real
+  /// detail than the source's → no sharpness comparison (a digital crop
+  /// cannot hold more real detail than the reference); the matched source
+  /// is used and sent ALONE (final framing comes from tracking + alignment).
+  final bool sharpnessSkipped;
+
+  /// v11.62 diagnostics: "root 2x" and the source region's real pixels.
+  final String label;
+  final double? realPx;
   final ZoomSourceReason reason;
 
   /// Aligned source crop (same aspect as the final area) when [ok].
@@ -115,9 +128,13 @@ class ZoomSourceDecision {
               '${z(e.checkpoint)} ${e.score.toStringAsFixed(2)}${e.note.isEmpty ? '' : ' ${e.note}'}',
         )
         .join(', ');
+    final who = label.isEmpty ? z(checkpoint ?? 0) : label;
+    final px = realPx == null ? '' : ' roi ${realPx!.round()}px';
     return switch (reason) {
+      ZoomSourceReason.ok when sharpnessSkipped =>
+        'src $who$px match ${score!.toStringAsFixed(2)} (sharpness skipped: digital crop)',
       ZoomSourceReason.ok =>
-        'src ${z(checkpoint!)} match ${score!.toStringAsFixed(2)} sharp ${sharpRatio!.toStringAsFixed(1)}x',
+        'src $who$px match ${score!.toStringAsFixed(2)} sharp ${sharpRatio!.toStringAsFixed(1)}x',
       ZoomSourceReason.sourceBlurrier => 'src none (blurrier: $t)',
       ZoomSourceReason.noClearRef => 'src none (no clear photo)',
       ZoomSourceReason.noMatch => 'src none (no match: $t)',
@@ -228,7 +245,17 @@ class ZoomSourceCandidate {
     this.margin = kZoomSourceMargin,
     this.realScale = 1.0,
     this.label = '',
+    this.skipSharpness = false,
+    this.realPx,
   });
+
+  /// v11.62: the final cannot hold more real detail than this reference
+  /// (digital crop of the same / a lower-resolution optical path) → the
+  /// sharpness comparison is skipped once the match passes.
+  final bool skipSharpness;
+
+  /// v11.62: real pixels on the long side of the final region in this ref.
+  final double? realPx;
   final String refCropPath;
   final double checkpoint;
 
@@ -262,6 +289,9 @@ ZoomSourceDecision pickZoomSourceImages({
   required List<(img.Image, double, double)> refs,
   required String Function(img.Image) writeSource,
   List<double>? realScales,
+  List<bool>? skipSharpness,
+  List<String>? labels,
+  List<double?>? realPxs,
 }) {
   if (refs.isEmpty) {
     return const ZoomSourceDecision(reason: ZoomSourceReason.noClearRef);
@@ -300,6 +330,26 @@ ZoomSourceDecision pickZoomSourceImages({
     final x = (ox * sx).round().clamp(0, ref.width - cw);
     final y = (oy * sy).round().clamp(0, ref.height - chh);
     final src = img.copyCrop(ref, x: x, y: y, width: cw, height: chh);
+    final skip =
+        skipSharpness != null && k < skipSharpness.length && skipSharpness[k];
+    final lab = labels != null && k < labels.length ? labels[k] : '';
+    final rpx = realPxs != null && k < realPxs.length ? realPxs[k] : null;
+    if (skip) {
+      // v11.62: the final is a digital crop with no more real detail than
+      // this reference: its noise / ISP sharpening only LOOKS like edges.
+      // The geometry + content match passed → use the reference.
+      src.exif.imageIfd.orientation = null;
+      return ZoomSourceDecision(
+        reason: ZoomSourceReason.ok,
+        path: writeSource(src),
+        checkpoint: cp,
+        score: score,
+        tries: tries,
+        sharpnessSkipped: true,
+        label: lab,
+        realPx: rpx,
+      );
+    }
     // v11.61 fair check: both at the SAME scale (the smaller real
     // resolution), noise-corrected — does the source really hold the
     // area's detail?
@@ -319,6 +369,8 @@ ZoomSourceDecision pickZoomSourceImages({
       score: score,
       sharpRatio: ratio,
       tries: tries,
+      label: lab,
+      realPx: rpx,
     );
   }
   return ZoomSourceDecision(
@@ -354,11 +406,17 @@ Future<ZoomSourceDecision> pickZoomSource({
       }
       final refs = <(img.Image, double, double)>[];
       final reals = <double>[];
+      final skips = <bool>[];
+      final labels = <String>[];
+      final pxs = <double?>[];
       for (final c in candidates) {
         final r = load(c.refCropPath);
         if (r != null) {
           refs.add((r, c.checkpoint, c.margin));
           reals.add(c.realScale);
+          skips.add(c.skipSharpness);
+          labels.add(c.label);
+          pxs.add(c.realPx);
         }
       }
       if (refs.isEmpty) {
@@ -368,6 +426,9 @@ Future<ZoomSourceDecision> pickZoomSource({
         finalArea: fin,
         refs: refs,
         realScales: reals,
+        skipSharpness: skips,
+        labels: labels,
+        realPxs: pxs,
         writeSource: (im) {
           final out = '${finalAreaPath}_source.jpg';
           File(
