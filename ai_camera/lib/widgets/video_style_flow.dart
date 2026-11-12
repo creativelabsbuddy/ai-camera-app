@@ -9,17 +9,17 @@ import 'credit_icon.dart';
 import 'save_style_button.dart';
 
 /// v11.57 video style cards: last photo auto-used → confirm sheet (preview,
-/// 480p / 580p / 720p, "Generate · ⚡N"). Image-to-video only. Same from the
+/// 480p / 768p, "Generate · ⚡N"). Image-to-video only. Same from the
 /// quick row and the full Styles sheet. Custom still picks a photo.
 
-/// Preset videos: 5 s · 9:16 (Wan).
+/// Preset videos: 5 s · 9:16 (Phosor MiniMax H3 Turbo).
 const kPresetVideoSeconds = 5;
 const kDefaultVideoResolution = '480p';
 
 /// Lowest price of a preset video ("from ⚡N" on cards).
 int videoFromCredits(VideoService svc) {
   var best = -1;
-  for (final r in kWanResolutions) {
+  for (final r in kMiniMaxResolutions) {
     final c = svc.creditsForKey(kPresetVideoSeconds, r);
     if (best < 0 || c < best) best = c;
   }
@@ -180,7 +180,7 @@ class _VideoConfirmSheetState extends State<VideoConfirmSheet> {
                 Wrap(
                   spacing: 8,
                   children: [
-                    for (final r in kWanResolutions)
+                    for (final r in kMiniMaxResolutions)
                       ChoiceChip(
                         key: ValueKey('preset_res_$r'),
                         label: CreditText('$r · $kCreditGlyph${widget.svc.creditsForKey(kPresetVideoSeconds, r)}'),

@@ -2127,15 +2127,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         });
       }
     }
-    // v11.59 sharp-source zoom (cheap phones): the sharpest matching clear
-    // checkpoint photo, aligned to the final area, becomes the AI's source;
-    // the final is the framing reference only. Past the phone's clear limit
-    // with no usable match → no AI call, nothing charged (fail closed).
-    // v11.61: the low-zoom ROOT (+ clear tracked steps) are the sources; no
-    // "final is sharp enough" exemption past the clear limit; the real
-    // pixels of the root's region decide the "Beyond clear range" label and
-    // an absurdly tiny region fails closed.
-    File? zoomSource;
+    // v11.63: always send the last shutter photo. Tracking / root may
+    // still run for the debug overlay and the "Beyond clear range" label,
+    // but they never replace the AI input and never block capture.
+    File? zoomSource; // always left null — last photo is the AI input
     var zoomSourceOnly = false;
     String? zoomLabel;
     if (zoomFlow == ZoomFlow.ladder) {
@@ -2206,26 +2201,12 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         candidates: tc?.candidates ?? const [],
       );
       if (tc != null) deleteQuietly(tc.files);
-      if (d.ok) {
-        zoomSource = File(d.path!);
-        // v11.62: digital-crop final → the matched source ALONE.
-        zoomSourceOnly = d.sharpnessSkipped;
-      }
+      // v11.63: do not replace the last photo with a tracked source crop.
       final trackTxt = trackAtShutter == null
           ? _track.debugText
           : 'tracked ${tc?.notes.join(', ') ?? 'none'}';
-      final failClosed = zoomFailClosed(ok: d.ok, need: need, tiny: tiny);
-      final sent = d.ok
-          ? (zoomSourceOnly
-                ? 'sent source crop only (framing from tracking)'
-                : 'sent source + final (framing only)')
-          : failClosed
-          ? 'sent nothing (${tiny
-                ? 'roi tiny'
-                : root == null
-                ? 'no root'
-                : 'no sharp source'})'
-          : 'sent final only (${finalClear ? 'final clear' : 'within clear limit'})';
+      zoomFailClosed(ok: d.ok, need: need, tiny: tiny); // v11.63: always false
+      final sent = 'sent final only';
       final gate =
           'clear ≤${formatZoom(clearLim)}x${rootPx == null ? '' : ' roi ${rootPx.round()}px'}${beyond ? ' beyond' : ''}';
       _zoomSendDbg =
@@ -2238,13 +2219,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         );
         final dbg = '$_zoomSendDbg · $sz';
         captureNote = captureNote == null ? dbg : '$captureNote · $dbg';
-      }
-      if (failClosed) {
-        if (mounted) {
-          setState(() => _processingCapture = false);
-          _snack(zoomFailMessage(tiny: tiny, hasRoot: root != null));
-        }
-        return;
       }
       if (beyond) zoomLabel = kBeyondClearLabel;
     }
@@ -5361,9 +5335,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                             ],
                           ),
                         ),
-                      // v11.61: no clear base photo yet while zoomed deep
-                      // (tap: capture it, then back) / beyond the clear
-                      // range (label only — capture is never blocked).
+                      // v11.63: "Beyond clear range, AI-enhanced" is a
+                      // label only (capture is never blocked). The old
+                      // "Tap to capture a clear base photo first" hint
+                      // is no longer shown.
                       if (_liveZoomNote case final note?)
                         GestureDetector(
                           key: ValueKey(

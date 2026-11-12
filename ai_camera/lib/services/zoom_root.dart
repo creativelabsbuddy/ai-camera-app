@@ -135,6 +135,9 @@ bool beyondClearRange(double zoom, double clearLimit) =>
 bool roiTooTiny(double realPx) => !(realPx >= kRoiMinRealPx);
 
 /// The live note while zooming (null = none). Pure.
+/// v11.63: the missing-root "Tap to capture a clear base photo first"
+/// hint is no longer shown (capture is never blocked and the last photo
+/// is always sent). The "Beyond clear range, AI-enhanced" label stays.
 String? liveZoomNote({
   required bool ladderMode,
   required double zoom,
@@ -143,22 +146,19 @@ String? liveZoomNote({
   required double clearLimit,
 }) {
   if (!ladderMode) return null;
-  if (!hasRoot && zoom > rootMaxZoom(opticalLimit) + 0.01) {
-    return kRootMissingHint;
-  }
   if (beyondClearRange(zoom, clearLimit)) return kBeyondClearLabel;
   return null;
 }
 
-/// v11.61 shutter verdict (ladder): fail closed — no AI call, nothing
-/// charged — when a sharp source is needed and none was usable, or the
-/// root's region is absurdly tiny. There is no "final is sharp enough"
-/// exemption any more. Pure.
+/// v11.63: never fail closed on the shutter. The last photo is always
+/// sent; missing root / no clear base / a tiny ROI no longer block
+/// capture or the AI call. [ok]/[need]/[tiny] are kept so callers and
+/// tests compile. Pure.
 bool zoomFailClosed({
   required bool ok,
   required bool need,
   required bool tiny,
-}) => tiny || (need && !ok);
+}) => false;
 
 /// The message shown when the shot fails closed. Pure.
 String zoomFailMessage({required bool tiny, required bool hasRoot}) => tiny

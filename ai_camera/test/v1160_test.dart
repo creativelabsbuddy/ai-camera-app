@@ -134,10 +134,10 @@ GreyImage cropGrey(GreyImage g, (int, int, int, int) r) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.62+75', () {
+  test('version 1.11.63+76', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.62+75'),
+      contains('version: 1.11.63+76'),
     );
   });
 
@@ -1103,7 +1103,7 @@ void main() {
       expect(h, contains('candidates: tc?.candidates ?? const []'));
       // no centre-cut ladder references any more
       expect(h, isNot(contains('kZoomSourceMargin\n')));
-      expect(h, contains('_snack(zoomFailMessage('));
+      expect(h, isNot(contains('_snack(zoomFailMessage('))); // v11.63: never blocks
       expect(h, contains('_dropTrackedRefs('));
       // rotation / lens switch → reset + fresh reference (no disabling)
       expect(h, isNot(contains("disable('orientation')")));

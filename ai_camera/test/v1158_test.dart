@@ -36,8 +36,8 @@ class _SlowBackend implements VideoBackend {
 }
 
 void main() {
-  test('version (v11.62: 1.11.62+75)', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.62+75'));
+  test('version (v11.63: 1.11.63+76)', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.63+76'));
   });
 
   group('microscope: lock at 1.5x, part only, material-aware', () {
@@ -154,8 +154,8 @@ void main() {
       expect(kAiGeneratedLabel, 'AI-generated');
       final v = File('lib/services/video_service.dart').readAsStringSync();
       expect(v, contains('if (rr.statusCode == 202) return const VideoStatus(\'running\');'));
-      // Routing unchanged: 8scale ≤5 s, MiniMax > 5 s.
-      expect(providerFor(5), VideoProvider.wan);
+      // v11.63: every length is MiniMax / Phosor.
+      expect(providerFor(5), VideoProvider.minimax);
       expect(providerFor(8), VideoProvider.minimax);
     });
 
@@ -212,13 +212,13 @@ void main() {
   });
 
   group('enhance prompt + upload', () {
-    test('one universal DSLR prompt; Portrait variant replaces it', () {
-      expect(kUniversalEnhancePrompt, startsWith('Enhance this photo so it looks like it was shot on a professional DSLR camera'));
+    test('one simple enhance prompt; Portrait variant replaces it', () {
+      expect(kUniversalEnhancePrompt, 'Clean up and sharpen this image, with a natural tone.');
       expect(buildEnhancePrompt(zoom: 30, opticalLimit: 3, night: true), kUniversalEnhancePrompt);
       final p = buildEnhancePrompt(portrait: true);
       expect(p, kPortraitEnhancePrompt);
-      expect(kPortraitEnhancePrompt, contains('100% sharp'));
-      expect(kPortraitEnhancePrompt, contains('bokeh'));
+      expect(kPortraitEnhancePrompt, contains('natural bokeh'));
+      expect(kPortraitEnhancePrompt, contains('keep the subject sharp'));
       expect(kPortraitPrompt, kPortraitEnhancePrompt);
     });
 

@@ -40,9 +40,10 @@ class AiConfig {
         'https://yrgfoglpzrvjfyoclwyw.supabase.co/storage/v1/object/public/style-thumbs',
   );
 
-  /// v11.53 AI video (key TEST builds only, like OPENROUTER_API_KEY):
-  /// 8scale Wan 2.2 (≤5 s) and Phosor MiniMax H3 Turbo (>5 s). Server
-  /// builds leave these empty and go through `/v1/video/*`.
+  /// v11.63 AI video (key TEST builds only, like OPENROUTER_API_KEY):
+  /// Phosor MiniMax H3 Turbo for every length. [videoApiKey] is unused
+  /// (kept so a dart-define does not break the build). Server builds
+  /// leave these empty and go through `/v1/video/*`.
   static const String videoApiKey = String.fromEnvironment(
     'VIDEO_API_KEY',
     defaultValue: '',
@@ -51,6 +52,7 @@ class AiConfig {
     'PHOSOR_API_KEY',
     defaultValue: '',
   );
+  /// Unused (legacy 8scale base). Kept so an existing dart-define still compiles.
   static const String wanBaseUrl = String.fromEnvironment(
     'VIDEO_API_BASE',
     defaultValue: 'https://8scale.run',

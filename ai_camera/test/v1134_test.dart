@@ -115,8 +115,8 @@ void main() {
   });
 
   test('zoom prompt + wiring', () {
-    // v11.59: zoom uses its own safe prompt (no invented texture).
-    expect(kZoomCleanPrompt, contains('do not invent new texture'));
+    // v11.63: zoom uses the same simple prompt as Pro Photo.
+    expect(kZoomCleanPrompt, kUniversalEnhancePrompt);
     expect(kZoomLadderPrompt.startsWith(kZoomCleanPrompt), isTrue);
     final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
     expect(h, contains('zoomClean: zoomFlow != ZoomFlow.normal'));

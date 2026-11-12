@@ -67,10 +67,10 @@ img.Image noisyDigitalFinal(img.Image area, int seed) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.62+75', () {
+  test('version 1.11.63+76', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.62+75'),
+      contains('version: 1.11.63+76'),
     );
   });
 
@@ -280,13 +280,12 @@ void main() {
     );
   });
 
-  test('home wiring: finalOptical, source-only flag, debug text', () {
+  test('home wiring: last photo always sent, beyond-range label kept', () {
     final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
     expect(h, contains('finalOptical: refZoomLabel('));
-    expect(h, contains('zoomSourceOnly = d.sharpnessSkipped;'));
-    expect(h, contains('zoomSourceOnly: zoomSourceOnly,'));
-    expect(h, contains("'sent source crop only (framing from tracking)'"));
-    // fail-closed + labels kept
+    expect(h, contains("sent = 'sent final only';"));
+    expect(h, isNot(contains('zoomSourceOnly = d.sharpnessSkipped;')));
+    expect(h, isNot(contains("'sent source crop only (framing from tracking)'")));
     expect(h, contains('zoomFailClosed(ok: d.ok, need: need, tiny: tiny)'));
     expect(h, contains('if (beyond) zoomLabel = kBeyondClearLabel;'));
   });

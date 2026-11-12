@@ -201,10 +201,10 @@ void main() {
       expect(await BokehBridge.available(front: false), isFalse);
     });
 
-    test('portrait prompt (test-key copy) is bokeh only, keeps identity', () {
+    test('portrait prompt (test-key copy) is bokeh only', () {
       expect(kPortraitPrompt.toLowerCase(), contains('bokeh'));
-      expect(kPortraitPrompt.toLowerCase(), contains('keep the same people and faces exactly'));
-      expect(kPortraitPrompt.toLowerCase(), contains('100% sharp'));
+      expect(kPortraitPrompt, contains('keep the subject sharp'));
+      expect(kPortraitPrompt, startsWith('Clean up and sharpen this image, with a natural tone.'));
     });
   });
 

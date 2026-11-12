@@ -187,7 +187,7 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
 <form class="i" method="post" action="/admin/styles/{_esc(s.id)}/delete" onsubmit="return confirm('Delete {_esc(s.name)}?')"><button class="btn d">Delete</button></form>
 </td></tr>""")
         add = ('<a class="btn" href="/admin/styles/new?media=video">+ Add video style</a>'
-               '<span class="muted"> Video presets: image-to-video, 9:16, 5 s (Wan 2.2). Display image = preview.</span>'
+               '<span class="muted"> Video presets: image-to-video, 9:16, 5 s (Phosor MiniMax H3 Turbo). Display image = preview.</span>'
                if media == "video" else
                '<a class="btn" href="/admin/styles/new">+ Add photo style</a>'
                '<span class="muted"> Styles are listed in the app in this order. Prompts and reference images stay on the server.</span>')
@@ -860,7 +860,7 @@ def build_video_admin_router(get_store: Callable[[], ModePromptStore], get_log: 
         for k, v in t.items():
             prov, secs, res = k.split("_")
             cost = _VP.cost_inr(prov, int(secs), res)
-            label = "Wan 2.2 (8scale)" if prov == _VP.WAN else "MiniMax H3 Turbo (Phosor)"
+            label = "MiniMax H3 Turbo (Phosor)" if prov == _VP.MINIMAX else "legacy"
             rows.append(f"<tr><td>{label}</td><td>{secs} s</td><td>{res}</td><td>₹{cost:.2f}</td>"
                         f'<td><input name="{_esc(k)}" type="number" min="0" max="500" value="{v}" style="width:70px"></td></tr>')
         msg = '<p style="color:#9be59b">Saved.</p>' if saved else ""

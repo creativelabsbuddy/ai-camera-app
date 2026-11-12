@@ -63,15 +63,16 @@ void main() {
 
   test('provisional credit table (same as server)', () {
     final t = defaultVideoCredits();
-    expect([t['wan_5_480p'], t['wan_5_580p'], t['wan_5_720p']], [3, 4, 7]);
+    expect([t['minimax_5_480p'], t['minimax_5_768p']], [3, 7]);
     expect([t['minimax_8_480p'], t['minimax_10_480p'], t['minimax_15_480p']], [7, 9, 13]);
     expect([t['minimax_8_768p'], t['minimax_10_768p'], t['minimax_15_768p']], [11, 13, 20]);
+    expect(t.containsKey('wan_5_480p'), isFalse);
   });
 
-  test('routing + validation: 5 s Wan, longer MiniMax', () {
-    expect(providerFor(5), VideoProvider.wan);
+  test('routing + validation: all lengths MiniMax, 480p/768p only', () {
+    expect(providerFor(5), VideoProvider.minimax);
     expect(providerFor(8), VideoProvider.minimax);
-    expect(resolutionsFor(5), ['480p', '580p', '720p']);
+    expect(resolutionsFor(5), ['480p', '768p']);
     expect(resolutionsFor(15), ['480p', '768p']);
     expect(const VideoRequest(kind: VideoKind.t2v, prompt: 'x', seconds: 10, resolution: '580p').validate(),
         isNotNull);
@@ -109,13 +110,13 @@ void main() {
       final dl = <String>[];
       final s = svc(be, downloaded: dl);
       final before = await balance();
-      await s.start(const VideoRequest(kind: VideoKind.t2v, prompt: 'waves', seconds: 5, resolution: '580p'));
-      expect(s.job.value!.credits, 4);
+      await s.start(const VideoRequest(kind: VideoKind.t2v, prompt: 'waves', seconds: 5, resolution: '480p'));
+      expect(s.job.value!.credits, 3);
       await settle(s);
       expect(s.job.value!.phase, VideoPhase.done);
       expect(dl, ['https://x/v.mp4']);
-      expect(s.job.value!.creditsCharged, 4);
-      expect(await balance(), before - 4);
+      expect(s.job.value!.creditsCharged, 3);
+      expect(await balance(), before - 3);
     });
 
     test('failure: no charge, error shown', () async {
@@ -166,31 +167,41 @@ void main() {
   });
 
   group('DirectVideoBackend wire format', () {
-    test('Wan: path, body, status, cancel', () async {
+    test('5 s MiniMax: path, body, no 8scale URL', () async {
       final calls = <http.Request>[];
       final be = DirectVideoBackend(
         client: MockClient((r) async {
           calls.add(r);
-          if (r.url.path.endsWith('text-to-video')) return http.Response('{"requestId":"abcdef123"}', 200);
-          if (r.url.path.startsWith('/status/')) {
+          if (r.url.path.endsWith('/inference/submit')) {
+            return http.Response('{"request_id":"abcdef123"}', 200);
+          }
+          if (r.url.path.contains('/inference/status/')) {
             return http.Response('{"status":"COMPLETED","output":{"video_url":"https://cdn/x.mp4"}}', 200);
           }
           return http.Response('{}', 200);
         }),
       );
-      final id = await be.submit(const VideoRequest(kind: VideoKind.t2v, prompt: 'waves', resolution: '720p', aspect: '16:9'));
-      expect(id, 'wan~abcdef123');
+      final id = await be.submit(const VideoRequest(kind: VideoKind.t2v, prompt: 'waves', resolution: '480p', aspect: '16:9'));
+      expect(id, 'minimax~abcdef123');
       final body = jsonDecode(calls.first.body) as Map;
-      expect(body, {'prompt': 'waves', 'resolution': '720p', 'aspect_ratio': '16:9', 'seconds': 5});
-      expect(calls.first.url.path, '/wan-2.2/14b/text-to-video');
+      expect(body, {
+        'prompt': 'waves',
+        'resolution_tier': '480p',
+        'aspect_ratio': '16:9',
+        'duration': 5,
+        'model': 'minimax/h3/text-to-video/turbo',
+      });
+      expect(calls.first.url.host, 'phosor.ai');
+      expect(calls.first.url.path, '/api/v1/inference/submit');
+      expect(calls.any((r) => r.url.host.contains('8scale')), isFalse);
       final st = await be.status(id);
       expect(st.state, 'done');
       expect(st.url, 'https://cdn/x.mp4');
       await be.cancel(id);
-      expect(calls.last.url.path, '/cancel/abcdef123');
+      expect(calls.any((r) => r.url.path.contains('/cancel/')), isFalse);
     });
 
-    test('Wan 402 balance error is readable', () async {
+    test('MiniMax 402 balance error is readable', () async {
       final be = DirectVideoBackend(
         client: MockClient((r) async => http.Response('{"error":"insufficient balance"}', 402)),
       );
@@ -260,13 +271,15 @@ void main() {
     expect(find.byKey(const ValueKey('video_style_video_slow_zoom')), findsOneWidget);
     await t.tap(find.byKey(const ValueKey('video_tab_custom')));
     await t.pumpAndSettle();
-    expect(find.byWidgetPredicate((w) => isCreditText(w, '580p · 🪙4')), findsOneWidget);
-    expect(find.byKey(const ValueKey('video_wait_note')), findsNothing);
+    expect(find.byWidgetPredicate((w) => isCreditText(w, '480p · 🪙3')), findsOneWidget);
+    expect(find.byWidgetPredicate((w) => isCreditText(w, '768p · 🪙7')), findsOneWidget);
+    expect(find.byWidgetPredicate((w) => isCreditText(w, '580p · 🪙4')), findsNothing);
+    // v11.63: every length, including 5 s, shows the 15–20 min note.
+    expect(find.byKey(const ValueKey('video_wait_note')), findsOneWidget);
     await t.tap(find.byKey(const ValueKey('video_len_10')));
     await t.pump();
     expect(find.byWidgetPredicate((w) => isCreditText(w, '768p · 🪙13')), findsOneWidget);
-    expect(find.byWidgetPredicate((w) => isCreditText(w, '580p · 🪙4')), findsNothing);
-    // v11.58: no model chip; MiniMax lengths show the 15–20 min note.
+    expect(find.byWidgetPredicate((w) => isCreditText(w, '480p · 🪙9')), findsOneWidget);
     expect(find.byKey(const ValueKey('minimax_label')), findsNothing);
     expect(find.text(kLongVideoWaitNote), findsOneWidget);
     VideoService.resetForTest(VideoService());

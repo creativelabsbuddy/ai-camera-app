@@ -30,7 +30,7 @@ void main() {
     }
     expect(kMacroMicroscopePhotoPrompt, contains('brightfield'));
     expect(kZoomCleanPrompt, isNot(contains('strongly reduce')));
-    expect(kLockedEnhancePrompt, contains('Do not add new objects')); // v11.58
+    expect(kLockedEnhancePrompt, kUniversalEnhancePrompt); // v11.63
   });
 
   test('cheap-phone merge from 2x', () {

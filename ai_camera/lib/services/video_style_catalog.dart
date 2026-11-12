@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/ai_config.dart';
 import '../models/ai_style.dart';
 
-/// v11.53 video style presets (image-to-video · 9:16 · 5 s · Wan 2.2).
+/// v11.63 video style presets (image-to-video · 9:16 · 5 s · MiniMax H3).
 /// Read from Supabase with the publishable key (RLS: enabled
 /// media_type='video' rows only) so admin-added presets appear without a
 /// new APK; built-ins are the offline fallback.

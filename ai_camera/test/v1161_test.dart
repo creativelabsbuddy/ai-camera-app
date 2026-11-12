@@ -72,10 +72,10 @@ class FakeEnhance extends EnhanceService {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.62+75', () {
+  test('version 1.11.63+76', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.62+75'),
+      contains('version: 1.11.63+76'),
     );
   });
 
@@ -205,7 +205,7 @@ void main() {
       expect(roiTooTiny(double.nan), isTrue);
     });
 
-    test('live note: missing base photo first, then the clear-range label', () {
+    test('live note: clear-range label only; missing root is not shown', () {
       String? n({bool root = true, double zoom = 20, bool ladder = true}) =>
           liveZoomNote(
             ladderMode: ladder,
@@ -216,17 +216,17 @@ void main() {
           );
       expect(n(), kBeyondClearLabel);
       expect(n(zoom: 6), isNull);
-      expect(n(root: false), kRootMissingHint);
+      expect(n(root: false), kBeyondClearLabel); // v11.63: no clear-base hint; label only
       expect(n(root: false, zoom: 1.5), isNull);
       expect(n(ladder: false), isNull);
       expect(kBeyondClearLabel, 'Beyond clear range, AI-enhanced');
     });
 
-    test('fail closed: no exemption for a "sharp enough" final', () {
-      expect(zoomFailClosed(ok: false, need: true, tiny: false), isTrue);
+    test('fail closed: v11.63 never blocks the shutter', () {
+      expect(zoomFailClosed(ok: false, need: true, tiny: false), isFalse);
       expect(zoomFailClosed(ok: true, need: true, tiny: false), isFalse);
       expect(zoomFailClosed(ok: false, need: false, tiny: false), isFalse);
-      expect(zoomFailClosed(ok: true, need: true, tiny: true), isTrue);
+      expect(zoomFailClosed(ok: true, need: true, tiny: true), isFalse);
       expect(zoomFailMessage(tiny: false, hasRoot: false), kHoldLowerZoomFirst);
       expect(
         zoomFailMessage(tiny: false, hasRoot: true),
