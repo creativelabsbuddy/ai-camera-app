@@ -58,7 +58,7 @@ Env
                            resolution, aspect_ratio, [image] → {job_id, credits, model_label}
   GET  /v1/video/status/{job_id}?device_id=…   queued|running|done (+video_url, charged once)|failed
   POST /v1/video/cancel/{job_id}               best effort, never charged
-  VIDEO_API_KEY (8scale) / PHOSOR_API_KEY (Phosor) in .env; MINIMAX_ENABLED (1);
+  PHOSOR_API_KEY (Phosor MiniMax H3 Turbo) in .env; VIDEO_API_KEY is HMAC-only;
   VIDEO_CREDITS_JSON overrides; VIDEO_PER_DEVICE_PER_HOUR (10)
 """
 from __future__ import annotations
@@ -1239,7 +1239,7 @@ async def apply_look(
 
 
 # ---------------------------------------------------------------------------
-# v11.53 video: 8scale Wan 2.2 14B (≤5 s) / Phosor MiniMax H3 Turbo (>5 s).
+# v11.63 video: Phosor MiniMax H3 Turbo only (5/8/10/15 s).
 # Keys stay on the server. Credits (provisional, VIDEO_CREDITS_JSON) are
 # checked at submit and charged ONCE, only when the finished video is first
 # reported done (failed / cancelled / abandoned jobs are never charged).
@@ -1287,8 +1287,6 @@ async def video_styles():
 @app.get("/v1/video/options")
 async def video_options():
     return {"credits": VP.credit_table(_video_override()), "minimax_enabled": VP.minimax_enabled(),
-            "wan": {"seconds": list(VP.WAN_SECONDS), "resolutions": list(VP.WAN_RES),
-                    "aspect_ratios": list(VP.WAN_ASPECTS)},
             "minimax": {"seconds": list(VP.MM_SECONDS), "resolutions": list(VP.MM_RES),
                         "aspect_ratios": list(VP.MM_ASPECTS), "label": "MiniMax H3"}}
 
@@ -1306,7 +1304,7 @@ async def video_generate(
         if st is None or not st.enabled or st.media_type != "video":
             raise HTTPException(status_code=404, detail="video style not found")
         text = st.prompt
-        kind, seconds, aspect_ratio = "i2v", 5, "9:16"  # presets: I2V · 9:16 · 5 s (Wan)
+        kind, seconds, aspect_ratio = "i2v", 5, "9:16"  # presets: I2V · 9:16 · 5 s (MiniMax)
     elif P.blocked_custom_prompt(prompt):
         raise HTTPException(status_code=400, detail="Blocked by the safety list")
     try:

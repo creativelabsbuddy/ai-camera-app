@@ -91,7 +91,7 @@ void main() {
   test('video "from" price is the lowest resolution; labels use the bolt', () {
     final svc = VideoService();
     final from = videoFromCredits(svc);
-    for (final r in kWanResolutions) {
+    for (final r in kMiniMaxResolutions) {
       expect(from, lessThanOrEqualTo(svc.creditsForKey(5, r)));
     }
     expect(videoFromLabel(3), 'from ${kCreditGlyph}3');
@@ -231,12 +231,12 @@ void main() {
         .isNotEmpty;
     expect(btn('480p'), isTrue);
     expect(t.widget<ChoiceChip>(find.byKey(const ValueKey('preset_res_480p'))).selected, isTrue);
-    await t.tap(find.byKey(const ValueKey('preset_res_720p')));
+    await t.tap(find.byKey(const ValueKey('preset_res_768p')));
     await t.pump();
-    expect(btn('720p'), isTrue);
+    expect(btn('768p'), isTrue);
     await t.tap(find.byKey(const ValueKey('preset_go')));
     await _settle(t, 4);
-    expect(res, '720p');
+    expect(res, '768p');
   });
 
   testWidgets('custom window (AI Video): text → video asks for no image', (t) async {

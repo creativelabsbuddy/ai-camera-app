@@ -131,12 +131,12 @@ def test_runware_size():
 
 def test_universal_prompt_single_for_all():
     u = P.UNIVERSAL_ENHANCE_PROMPT
-    assert u.startswith("Enhance this photo so it looks like it was shot on a professional DSLR")
+    assert u == "Clean up and sharpen this image, with a natural tone."
     assert P.build_prompt(zoom=20, optical_limit=2, night=True).startswith(u)
     assert P.NIGHT_PROMPT not in P.build_prompt(night=True)
     port = P.build_prompt(portrait_prompt=P.PORTRAIT_ENHANCE_PROMPT)
-    assert port.startswith(P.PORTRAIT_ENHANCE_PROMPT) and u not in port
-    assert "bokeh" in P.PORTRAIT_ENHANCE_PROMPT and "100% sharp" in P.PORTRAIT_ENHANCE_PROMPT
+    assert port.startswith(P.PORTRAIT_ENHANCE_PROMPT) and port != u
+    assert "bokeh" in P.PORTRAIT_ENHANCE_PROMPT and "keep the subject sharp" in P.PORTRAIT_ENHANCE_PROMPT
 
 
 def test_prepare_no_q90(tmp_path):

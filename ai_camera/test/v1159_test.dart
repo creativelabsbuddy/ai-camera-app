@@ -76,10 +76,10 @@ NetworkCheck fakeNet(bool online) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version (v11.62: 1.11.62+75)', () {
+  test('version (v11.63: 1.11.63+76)', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.62+75'),
+      contains('version: 1.11.63+76'),
     );
   });
 
@@ -295,7 +295,7 @@ void main() {
       // no silent final-only fallback past the clear limit; v11.61: no
       // "final sharp enough" exemption at all
       expect(h, contains('zoomFailClosed(ok: d.ok, need: need, tiny: tiny)'));
-      expect(h, contains('_snack(zoomFailMessage('));
+      expect(h, isNot(contains('_snack(zoomFailMessage('))); // v11.63: never blocks
       expect(h, isNot(contains('ZoomSourceReason.finalSharp')));
     });
   });
@@ -418,8 +418,8 @@ void main() {
     test(
       'prompts: no invented texture; source prompt explains both images',
       () {
-        expect(kZoomCleanPrompt, contains('do not invent new texture'));
-        expect(kZoomCleanPrompt, contains('print, letter, pattern and design'));
+        expect(kZoomCleanPrompt, kUniversalEnhancePrompt);
+        expect(kZoomCleanPrompt, 'Clean up and sharpen this image, with a natural tone.');
         expect(
           kZoomSourcePrompt,
           startsWith('The first image is a sharp photo'),

@@ -405,7 +405,7 @@ class _VideoScreenState extends State<VideoScreen> with SingleTickerProviderStat
   );
 
   Widget _customView() {
-    final lengths = AiConfig.minimaxEnabled ? kVideoLengths : const [5];
+    final lengths = AiConfig.minimaxEnabled ? kVideoLengths : const <int>[];
     final r = _custom;
     return ValueListenableBuilder<Map<String, int>>(
       valueListenable: _svc.credits,
@@ -435,10 +435,17 @@ class _VideoScreenState extends State<VideoScreen> with SingleTickerProviderStat
           _h('Quality'),
           _chips<String>('video_res', resolutionsFor(_seconds), _res,
               (x) => '$x · 🪙${_svc.creditsForKey(_seconds, x)}', (x) => _res = x),
-          if (r.isMiniMax)
+          if (AiConfig.minimaxEnabled)
             const Padding(
               padding: EdgeInsets.only(top: 10),
               child: Text(kLongVideoWaitNote, key: ValueKey('video_wait_note'),
+                  style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            ),
+          if (!AiConfig.minimaxEnabled)
+            const Padding(
+              padding: EdgeInsets.only(top: 10),
+              child: Text('AI video is not available',
+                  key: ValueKey('video_unavailable'),
                   style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
             ),
           const SizedBox(height: 20),
@@ -529,7 +536,7 @@ class _JobView extends StatelessWidget {
               stream: Stream.periodic(const Duration(seconds: 1), (i) => i),
               builder: (_, _) => Text(
                 '${_elapsed(DateTime.now().difference(job.started))} · '
-                '${r.isMiniMax ? kLongVideoWaitNote : 'Usually ready in 1–3 min'}',
+                '$kLongVideoWaitNote',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),

@@ -10,9 +10,9 @@ import 'zoom_range.dart' show formatZoom;
 // copy. Mirrors enhance-server/prompts.py (parity test in test_server.py).
 // Release builds (no key) never call these (guarded by AiConfig).
 
-// v11.58: the Portrait variant of the universal DSLR prompt (= kPortraitEnhancePrompt).
+// v11.63: the Portrait variant of the simple enhance prompt (= kPortraitEnhancePrompt).
 const String kPortraitPrompt =
-    'Enhance this photo so it looks like a portrait shot on a professional DSLR camera with a fast prime lens at a wide aperture. Recover and sharpen all the real detail of the main subject, making it crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the main subject 100% sharp, including hair strands, fingers, fabric edges and outlines, and blur only the background with smooth, natural, depth-graded lens bokeh, with out-of-focus lights as soft round bokeh. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give the subject a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.';
+    'Clean up and sharpen this image, with a natural tone. Blur only the background with a natural bokeh, and keep the subject sharp.';
 
 /// v11.12 Macro level prompts (sent alone, one image call: the boxed
 /// 2x / 3x / 4x step photos first, the zoomed crop last).

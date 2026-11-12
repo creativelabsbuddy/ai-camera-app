@@ -370,6 +370,27 @@ bound or a synthetic-test result, not a measured clarity gain on any phone.
   report `activePhysicalId`; phones that do not → no lens-switch reset (the tracker's own
   scale/score checks still apply). Band timings on real cheap phones are unmeasured.
 
+## v11.63 (1.11.63+76) — Phosor-only video, simple enhance prompts, last photo always
+
+- **Video:** every length (5/8/10/15 s) goes to Phosor MiniMax H3 Turbo. 8scale Wan
+  is removed (no new submit/status/cancel calls). Resolutions for all lengths are
+  480p and 768p (580p and 720p dropped). Wait note for every video:
+  "Usually ready in 15–20 min". If MiniMax is disabled, video is unavailable.
+- **Credits (user-facing):** 8/10/15 s unchanged. 5 s 480p stays ⚡3
+  (`minimax_5_480p`). New 5 s 768p is ⚡7 (`minimax_5_768p`). Existing `wan_*`
+  admin / VIDEO_CREDITS_JSON overrides no longer apply (keys changed; default 3
+  for 5 s 480p). HMAC of in-flight server job ids is unchanged
+  (`VIDEO_API_KEY + PHOSOR_API_KEY`). Video needs only `PHOSOR_API_KEY`.
+- **Enhance prompts:** Pro Photo (1x–100x, including zoom without Zoom mode)
+  uses "Clean up and sharpen this image, with a natural tone." Pro AI Portrait
+  (1x–100x) uses that line plus "Blur only the background with a natural bokeh,
+  and keep the subject sharp." Macro and Night prompts are unchanged. Model
+  (Flare) and photo credits are unchanged.
+- **Shutter:** the last captured photo is always sent to the AI. Missing root /
+  no clear base no longer blocks capture or replaces the photo. "Hold steady at
+  lower zoom first" and "Tap to capture a clear base photo first" are not shown
+  as blockers. "Beyond clear range, AI-enhanced" remains a label only.
+
 ## v11.62 (1.11.62+75) — Use the tracked root; send the root crop alone
 
 - **Sharpness check skipped for digital crops.** When the final's optical

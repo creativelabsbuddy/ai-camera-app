@@ -49,7 +49,7 @@ void main() {
   });
 
   test('prompt, message, sizes', () {
-    expect(kZoomLadderPrompt, contains('framing')); // v11.39
+    expect(kZoomLadderPrompt.startsWith(kZoomCleanPrompt), isTrue);
     expect(kZoomLadderPrompt, isNot(contains('box')));
     expect(
       aiFailureMessage(AiFailureKind.framingChanged),

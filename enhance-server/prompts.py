@@ -8,15 +8,14 @@ import json
 import re
 from typing import Optional
 
-# v11.58: ONE universal DSLR enhance prompt for every normal, zoom and
-# low-light photo (replaces the old base + zoom emphasis / HIGH_ZOOM_CLARITY /
-# ZOOM_CLEAN / night sentences). Mirrors kUniversalEnhancePrompt in Dart.
+# v11.63: simple one-line enhance for every normal and zoom photo
+# (1x–100x Pro Photo). Mirrors kUniversalEnhancePrompt / kZoomCleanPrompt.
 UNIVERSAL_ENHANCE_PROMPT = (
-    'Enhance this photo so it looks like it was shot on a professional DSLR camera with a high-quality lens. Recover and sharpen all the real detail present in the photo, making everything crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give it a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.'
+    'Clean up and sharpen this image, with a natural tone.'
 )
-# v11.58 Portrait variant (used INSTEAD of the universal prompt).
+# v11.63 Portrait variant (used INSTEAD of the universal prompt), 1x–100x.
 PORTRAIT_ENHANCE_PROMPT = (
-    'Enhance this photo so it looks like a portrait shot on a professional DSLR camera with a fast prime lens at a wide aperture. Recover and sharpen all the real detail of the main subject, making it crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the main subject 100% sharp, including hair strands, fingers, fabric edges and outlines, and blur only the background with smooth, natural, depth-graded lens bokeh, with out-of-focus lights as soft round bokeh. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give the subject a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.'
+    'Clean up and sharpen this image, with a natural tone. Blur only the background with a natural bokeh, and keep the subject sharp.'
 )
 LOCKED_ENHANCE_PROMPT = UNIVERSAL_ENHANCE_PROMPT  # legacy name
 
@@ -683,11 +682,11 @@ def build_prompt(
     context_boxed: bool = False,
     portrait_prompt: Optional[str] = None,
 ) -> str:
-    """v11.58: universal DSLR prompt (or the Portrait variant given as
-    ``portrait_prompt``, used INSTEAD of the base) + optional mode sentence
-    (Macro levels) + context, quality, AI-filter style, colour look, user
-    request. ``zoom`` / ``optical_limit`` / ``night`` no longer change the
-    text (one prompt for normal, zoom and low-light photos)."""
+    """v11.63: simple one-line prompt (or the Portrait bokeh variant given
+    as ``portrait_prompt``, used INSTEAD of the base) + optional mode
+    sentence (Macro levels) + context, quality, AI-filter style, colour
+    look, user request. ``zoom`` / ``optical_limit`` / ``night`` no longer
+    change the text."""
     pp = (portrait_prompt or "").strip()
     parts = [pp or UNIVERSAL_ENHANCE_PROMPT]
     mp = (mode_prompt or "").strip()
@@ -783,11 +782,9 @@ MACRO_CONTEXT_LINE = (
 # v11.30 100x zoom ladder (cheap phones): boxed lower-zoom reference photos
 # first, the final photo (to enhance) last. Hidden; the app sends only a flag.
 # v11.34 high zoom (2x+, all phones): keep the photo, raise its own detail.
-# v11.59: zoom gets its own SAFE prompt (= kZoomCleanPrompt): keep design /
-# identity / text, unrecoverable detail stays soft, no invented texture.
-ZOOM_CLEAN_PROMPT = (
-    'Keep this zoomed photo exactly as it is: same subject, shapes, framing, colours and light. Make the detail that is already there clearer and gently clean light noise, with a real camera-photo look. Keep every visible print, letter, pattern and design exactly as it is. Where detail cannot be seen, leave it soft; do not invent new texture, detail or objects.'
-)
+# v11.63: zoom uses the same simple one-line prompt as Pro Photo
+# (= kZoomCleanPrompt / UNIVERSAL_ENHANCE_PROMPT). Last photo only.
+ZOOM_CLEAN_PROMPT = UNIVERSAL_ENHANCE_PROMPT
 # v11.59 sharp-source zoom (= kZoomSourcePrompt): image 1 = the sharp lower-zoom
 # photo aligned to the zoomed area (content), image 2 = the final zoom (framing only).
 ZOOM_SOURCE_PROMPT = (

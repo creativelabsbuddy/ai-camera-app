@@ -5,18 +5,17 @@ import 'entitlements.dart' show kMaxCustomPromptChars;
 import 'mode_prompts.dart' show kColorFilterTail;
 import 'zoom_range.dart' show formatZoom;
 
-/// v11.58 ONE universal enhance prompt (Ankush, 7 Nov): every normal, zoom
-/// and low-light photo looks shot on a professional DSLR. Replaces the old
-/// base + zoom-emphasis / high-zoom-clarity / zoom-clean / night sentences.
-/// Mirrored verbatim in enhance-server/prompts.py (UNIVERSAL_ENHANCE_PROMPT).
+/// v11.63 simple one-line enhance for every normal and zoom photo
+/// (1x–100x Pro Photo). Mirrored in enhance-server/prompts.py
+/// (UNIVERSAL_ENHANCE_PROMPT / ZOOM_CLEAN_PROMPT).
 const String kUniversalEnhancePrompt =
-    'Enhance this photo so it looks like it was shot on a professional DSLR camera with a high-quality lens. Recover and sharpen all the real detail present in the photo, making everything crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give it a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.';
+    'Clean up and sharpen this image, with a natural tone.';
 
-/// v11.58 Portrait variant of the universal prompt (Pro AI Portrait): same
-/// DSLR look + real lens bokeh on the background only. Used INSTEAD of the
-/// universal prompt (not appended). = prompts.PORTRAIT_ENHANCE_PROMPT.
+/// v11.63 Portrait variant (Pro AI Portrait, 1x–100x): same cleanup plus
+/// natural background bokeh. Used INSTEAD of the universal prompt.
+/// = prompts.PORTRAIT_ENHANCE_PROMPT.
 const String kPortraitEnhancePrompt =
-    'Enhance this photo so it looks like a portrait shot on a professional DSLR camera with a fast prime lens at a wide aperture. Recover and sharpen all the real detail of the main subject, making it crisp, clear and well-defined, with rich natural colours and clean contrast. Keep the main subject 100% sharp, including hair strands, fingers, fabric edges and outlines, and blur only the background with smooth, natural, depth-graded lens bokeh, with out-of-focus lights as soft round bokeh. Keep the same subject, shapes, framing, colours and light. Do not smooth, blur or give the subject a plastic look. Do not add new objects or change the scene. Keep the same people and faces exactly, with real skin and surface texture.';
+    'Clean up and sharpen this image, with a natural tone. Blur only the background with a natural bokeh, and keep the subject sharp.';
 
 /// Legacy name: the base of every enhance (now the universal prompt).
 const String kLockedEnhancePrompt = kUniversalEnhancePrompt;
@@ -35,12 +34,9 @@ const String kHighZoomClarity =
 /// first, the photo to enhance last. Mirrors the server's hidden prompt
 /// (key builds only).
 /// v11.34 high zoom (2x+, all phones): keep the photo, raise its detail.
-/// v11.59 zoom safeguard: zoom photos no longer use the universal DSLR
-/// prompt ("sharpen everything" made the model invent texture on blurry
-/// zooms). Keep what is visible; unrecoverable detail stays soft.
+/// v11.63: zoom uses the same simple one-line prompt as Pro Photo.
 /// Mirrored in enhance-server/prompts.py (ZOOM_CLEAN_PROMPT).
-const String kZoomCleanPrompt =
-    'Keep this zoomed photo exactly as it is: same subject, shapes, framing, colours and light. Make the detail that is already there clearer and gently clean light noise, with a real camera-photo look. Keep every visible print, letter, pattern and design exactly as it is. Where detail cannot be seen, leave it soft; do not invent new texture, detail or objects.';
+const String kZoomCleanPrompt = kUniversalEnhancePrompt;
 
 /// v11.59 sharp-source zoom: image 1 = sharp lower-zoom photo aligned to
 /// the zoomed area (the content), image 2 = the blurry final zoom (framing
@@ -154,11 +150,10 @@ String buildEnhancePrompt({
   bool contextBoxed = false,
   bool portrait = false,
 }) {
-  // v11.58: ONE universal DSLR prompt for normal, zoom and night photos (no
-  // zoom-emphasis / clarity / night sentences); Portrait uses its variant
-  // instead of the base. [zoom], [opticalLimit] and [night] are kept for
-  // callers but no longer change the text. A [modePrompt] (Macro levels)
-  // is still appended.
+  // v11.63: simple one-line prompt for normal / zoom / night photos;
+  // Portrait uses its bokeh variant instead of the base. [zoom],
+  // [opticalLimit] and [night] are kept for callers but no longer change
+  // the text. A [modePrompt] (Macro levels) is still appended.
   final parts = <String>[portrait ? kPortraitEnhancePrompt : kUniversalEnhancePrompt];
   final mp = modePrompt?.trim() ?? '';
   if (mp.isNotEmpty) parts.add(mp);

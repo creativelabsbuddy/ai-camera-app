@@ -226,10 +226,10 @@ def test_pose_media_rejects_traversal(env):
 
 # == hidden prompts ==========================================================
 def test_default_prompts_content():
-    assert P.LOCKED_ENHANCE_PROMPT.startswith("Enhance this photo so it looks like it was shot on a professional DSLR")  # v11.58
+    assert P.LOCKED_ENHANCE_PROMPT == "Clean up and sharpen this image, with a natural tone."  # v11.63
     assert "cells" not in P.LOCKED_ENHANCE_PROMPT
     port = P.PORTRAIT_PROMPT.lower()
-    for k in ["subject", "sharp", "hair", "finger", "bokeh", "do not add"]:
+    for k in ["sharpen", "natural tone", "bokeh", "subject sharp"]:
         assert k in port, k
     night = P.NIGHT_PROMPT.lower()
     for k in ["night", "noise", "shadow", "do not add"]:
@@ -291,7 +291,7 @@ def test_portrait_mode_charges_tier_credits(env):
     assert r.status_code == 200, r.text
     assert r.headers["x-mode"] == "portrait" and r.headers["x-night"] == "0"
     p = up.calls[-1]["prompt"]
-    assert p.startswith(P.PORTRAIT_ENHANCE_PROMPT) and P.UNIVERSAL_ENHANCE_PROMPT not in p  # v11.58
+    assert p.startswith(P.PORTRAIT_ENHANCE_PROMPT) and p != P.UNIVERSAL_ENHANCE_PROMPT  # v11.63: portrait extends the photo line
     assert "x-structure" not in r.headers
     assert r.headers["x-credits-charged"] == "2"  # Pro AI tier credits (Full HD = 2)
     assert before - account(c, "dev_v11")["total"] == 2

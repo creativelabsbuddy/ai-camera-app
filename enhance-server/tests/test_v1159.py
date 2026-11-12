@@ -29,7 +29,7 @@ def test_version():
 def test_prompts_safe_and_match_app():
     import os
     import re
-    assert "do not invent new texture" in P.ZOOM_CLEAN_PROMPT
+    assert P.ZOOM_CLEAN_PROMPT == P.UNIVERSAL_ENHANCE_PROMPT
     assert P.ZOOM_SOURCE_PROMPT.startswith("The first image is a sharp photo")
     assert "only to match the framing" in P.ZOOM_SOURCE_PROMPT
     path = os.path.join(os.path.dirname(__file__), "..", "..", "ai_camera", "lib", "services",
