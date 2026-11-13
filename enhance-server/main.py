@@ -677,6 +677,36 @@ async def macro_part(device_id: str = Form(...), parent: str = Form(...),
             "fill": fill, "whole": whole}
 
 
+@app.post("/v1/macro/micro-name")
+async def macro_micro_name(device_id: str = Form(...), wide: UploadFile = File(...),
+                           zoom: UploadFile = File(...)):
+    """v11.64 Microscope / Extreme / Ultra naming step (flash-lite): 1.5x
+    wide photo + zoomed final photo → {name, part}; look words stripped,
+    name '' when vague. Free."""
+    _check_device(device_id)
+    a, _, _ = prepare(await wide.read(), DETECT_LONG)
+    b, _, _ = prepare(await zoom.read(), DETECT_LONG)
+    text = await _vision_text(detect_payload(P.DETECT_MICRO_NAME_PROMPT, [a, b],
+                                             P.DETECT_MAX_TOKENS))
+    name, part = P.parse_micro_name_reply(text)
+    return {"name": name, "part": part, "model": P.DETECT_MODEL}
+
+
+@app.post("/v1/macro/micro-part")
+async def macro_micro_part(device_id: str = Form(...), parent: str = Form(...),
+                           one_x: UploadFile = File(...), step: UploadFile = File(...)):
+    """v11.64 part step (flash-lite): part / side of the named object only
+    (never a new name) + in_scene. Free."""
+    _check_device(device_id)
+    a, _, _ = prepare(await one_x.read(), DETECT_LONG)
+    b, _, _ = prepare(await step.read(), DETECT_LONG)
+    main = P.sanitize_detected(parent) or "the object"
+    prompt = P.DETECT_MICRO_PART_PROMPT.replace("{parent}", main)
+    text = await _vision_text(detect_payload(prompt, [a, b], P.DETECT_MAX_TOKENS))
+    _, part, ins = P.parse_object_part_reply(text)
+    return {"part": P.micro_part_only(part), "in_scene": ins}
+
+
 @app.post("/v1/macro/spot")
 async def macro_spot(device_id: str = Form(...), subject: str = Form(""),
                      others: str = Form(""),

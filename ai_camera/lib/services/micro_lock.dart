@@ -1,4 +1,4 @@
-import 'mode_prompts.dart' show isVagueDetect, sanitizeDetected;
+import 'mode_prompts.dart' show isVagueDetect, microSpotText, sanitizeDetected;
 import 'zoom_assist.dart' show isSameSubject;
 
 /// v11.58 Microscope / Extreme / Ultra coordinated detection:
@@ -6,6 +6,9 @@ import 'zoom_assist.dart' show isSameSubject;
 ///     and LOCKED (e.g. "red aluminium soda can");
 ///  2. at the high zoom only the PART of that locked object is detected
 ///     (the locked name is never replaced);
+///  v11.64: the name step sends the 1.5x photo + the zoomed final photo
+///  (flash-lite, `<colour> <name>, <part>`, once per shot); the part step
+///  (flash-lite) gives only the part / side; spot = part of the name.
 ///  3. if the high-zoom frame does not match the 1.5x frame → "Hold steady"
 ///     and the shot is retaken (up to [kMicroRetakes] times). Still no
 ///     match → the photo flow without a lock (nothing invented from a
@@ -44,13 +47,10 @@ const String kMicroHoldSteady = 'Hold steady';
 bool microFrameMismatch({required double pixelScore, bool? inScene}) =>
     inScene == false || (!isSameSubject(pixelScore) && inScene != true);
 
-/// The detected PART (≤8 words) or the locked object when the part is
-/// empty / vague. Never replaces the lock.
-String microPartText(String? part, String lock) {
-  final p = sanitizeDetected(part);
-  if (p.isEmpty || isVagueDetect(p)) return sanitizeDetected(lock);
-  return p;
-}
+/// v11.64: the spot = locked NAME + detected part / side (e.g. "surface of
+/// a white paper napkin"). Look words are stripped; the part never
+/// replaces the name (empty part → the name alone).
+String microPartText(String? part, String lock) => microSpotText(lock, part);
 
 /// A usable lock name (clear, not only look / colour words).
 bool isUsableLock(String? name) {

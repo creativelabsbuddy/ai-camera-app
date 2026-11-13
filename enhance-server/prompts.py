@@ -108,7 +108,11 @@ MACRO_MICROSCOPE_PROMPT = (
     "the frame. Show only the real fine structure of its own material up close, for example: "
     "painted metal shows paint grains, printing dots and light scratches; plastic shows fine "
     "moulding marks; fabric shows woven threads and fibres; paper shows pressed fibres; a "
-    "leaf shows veins and tiny plant structure; skin shows pores and fine lines. Do not add "
+    "leaf shows veins and tiny plant structure; skin shows pores and fine lines. "
+    "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
+    "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
+    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "Do not add "
     "anything this material would not really have. One single full-frame image, no text or "
     "labels. Photorealistic."
 )
@@ -126,7 +130,11 @@ MACRO_EXTREME_PROMPT = (
     "filling the frame. Show the very fine structure its own material would really have at "
     "this magnification, for example: painted metal shows paint pigment grains, printing dots "
     "and tiny scratches in the metal; plastic shows its fine surface grain; fabric shows "
-    "single fibres; a leaf shows tiny plant structure. Do not add anything this material "
+    "single fibres; a leaf shows tiny plant structure. "
+    "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
+    "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
+    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "Do not add anything this material "
     "would not really have. One single full-frame image, no text or labels. Photorealistic."
 )
 # v11.20 Ultra (30x): electron microscope (may come out greyscale — intended).
@@ -134,7 +142,11 @@ MACRO_ULTRA_PROMPT = (
     "Close-up of {spot}{on_object} under a scanning electron microscope at 2000x "
     "magnification. Show the true surface structure of its own material, for example: painted "
     "metal shows paint grains, coating cracks and fine scratches; plastic shows its moulded "
-    "surface; fabric shows single fibres. Do not add anything this material would not really "
+    "surface; fabric shows single fibres. "
+    "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
+    "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
+    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "Do not add anything this material would not really "
     "have. One single full-frame image, no text or labels. Photorealistic."
 )
 
@@ -306,7 +318,7 @@ def deep_prompt(template: str, subject: Optional[str] = None,
     part); no spot → subject; neither → "This". The broad subject is NOT
     added when a spot exists. Optional admin {subject}."""
     subj = sanitize_detected(subject)
-    if subj == "the subject":
+    if subj in ("the subject", "close-up"):  # v11.64: general = no name
         subj = ""
     spot = sanitize_detected(part) or subj or "this"
     if template.lstrip().startswith("{spot}"):  # v11.28: capital only at the start
@@ -390,6 +402,9 @@ VAGUE_DETECT_WORDS = {
     "white", "black", "gray", "grey", "red", "green", "blue", "yellow",
     "orange", "purple", "pink", "brown", "beige", "silver", "gold",
     "golden", "colorful", "colourful", "multicolored", "transparent", "clear",
+    # v11.64: shape / look words (never a name on their own).
+    "oval", "rounded", "square", "rectangular", "rectangle", "circular", "triangular",
+    "shaped", "embossed", "wavy", "look", "looking", "appearance",
 }
 
 
@@ -398,6 +413,102 @@ def is_vague_detect(name) -> bool:
     words (no object or material name) → treat as nothing found."""
     words = [w for w in re.split(r"[^a-z0-9'-]+", (name or "").lower()) if w]
     return not words or all(w in VAGUE_DETECT_WORDS for w in words)
+
+
+# v11.64 Microscope / Extreme / Ultra: look words stripped from a detected
+# name / part (shape + texture; colour is allowed and kept).
+LOOK_STRIP_WORDS = {
+    "oval", "round", "rounded", "square", "rectangular", "rectangle", "circular",
+    "circle", "circles", "triangular", "shape", "shaped", "shapes", "texture",
+    "textured", "embossed", "pattern", "patterned", "wavy", "look", "looking",
+    "appearance",
+}
+# v11.64 naming step (flash-lite): 1.5x wide photo + zoomed final photo.
+DETECT_MICRO_NAME_PROMPT = (
+    "Photo 1 is a wider view and photo 2 is zoomed in on the same object. Name the object in "
+    "these photos and which part or side is shown in the zoomed photo. Reply in this form: "
+    "<colour> <common object name>, <part or side>. Example: white paper napkin, surface; "
+    "human hand, back of hand; red soda can, side. Do not describe texture or shape. "
+    + DETECT_DEVICE_RULE + " Reply with that one line only."
+)
+# v11.64 part step (flash-lite): only the part / side of the named object;
+# it never renames the object.
+DETECT_MICRO_PART_PROMPT = (
+    "Photo 1 is a wider view of the {parent}. Photo 2 is zoomed; the red box marks where the "
+    "user is zooming. Which part or side of the {parent} is in the red box? Give only the part "
+    "or side, at most 5 words (e.g. surface, back of hand, palm, side, rim). Do not rename the "
+    "object and do not describe its colour, texture, shape or look. Reply only as JSON "
+    '{"part": "<part or side>", "in_scene": true}. in_scene is false only if photo 2 shows a '
+    "completely different place than photo 1."
+)
+
+
+def strip_look_words(text: Optional[str]) -> str:
+    """v11.64 (= Dart stripLookWords): drop shape / texture words from each
+    comma part; a part left with only filler / look words is dropped."""
+    out = []
+    for seg in re.split(r"[,;]", (text or "").lower()):
+        words = [w for w in re.split(r"[^a-z0-9'-]+", seg) if w and w not in LOOK_STRIP_WORDS]
+        while words and words[-1] in ("with", "and", "of", "a", "an", "the", "in", "on"):
+            words.pop()
+        while words and words[0] in ("with", "and", "of", "in", "on"):
+            words.pop(0)
+        if not words or all(w in VAGUE_DETECT_WORDS and w != "surface" for w in words):
+            continue
+        out.append(" ".join(words))
+    return ", ".join(out)
+
+
+def parse_micro_name_reply(text: Optional[str]) -> tuple[str, str]:
+    """v11.64 "<colour> <name>, <part>" → (name, part), look words stripped.
+    The name is '' when it is vague (only colour / look words)."""
+    j = _json_obj(text)
+    if j is not None:
+        n, pt = j.get("name") or j.get("object") or "", j.get("part") or ""
+        raw = f"{n if isinstance(n, str) else ''}, {pt if isinstance(pt, str) else ''}"
+    else:
+        lines = [l.strip() for l in re.split(r"[\r\n]+", text or "") if l.strip()]
+        raw = re.sub(r"^(answer|name|object)\s*:\s*", "", lines[0], flags=re.I) if lines else ""
+    segs = [x.strip() for x in re.split(r"[,;]", raw)]
+    name = sanitize_detected(strip_look_words(segs[0] if segs else ""))
+    part = sanitize_detected(strip_look_words(segs[1] if len(segs) > 1 else ""))
+    if is_vague_detect(name):
+        name = ""
+    return name, part
+
+
+def micro_part_only(part: Optional[str]) -> str:
+    """v11.64 part step reply → part / side only ('' when none)."""
+    return sanitize_detected(strip_look_words(clean_detected(part)))
+
+
+def micro_spot_text(name: Optional[str], part: Optional[str]) -> str:
+    """v11.64 (= Dart microSpotText): name + part, e.g. "surface of a white
+    paper napkin", "back of a human hand". Never drops the name."""
+    n = sanitize_detected(name)
+    p = sanitize_detected(strip_look_words(part))
+    if not n:
+        return ""
+    if not p or p == n or n in p:
+        spot = p if p and n in p else n
+    else:
+        head = n.split(" ")[-1]
+        art = "an" if n[0] in "aeiou" else "a"
+        m = re.match(r"^(.*\bof)(?: the| a| an)? " + re.escape(head) + r"$", p)
+        if m:
+            spot = f"{m.group(1)} {art} {n}"
+        else:
+            if p.endswith(" " + head) or p == head:
+                p = p[: -len(head)].strip() or "surface"
+            spot = f"{p} of {art} {n}"
+    cands = [spot, n]
+    if _micro_id(n) == "skin" and "skin" not in spot.split(" "):
+        art = "an" if spot[0] in "aeiou" else "a"
+        cands.insert(0, f"skin on {art} {spot}" if spot == n else f"skin on the {spot}")
+    for c in cands:  # the spot must fit sanitize_detected (8 words, 80 chars)
+        if len(c.split(" ")) <= 8 and len(c) <= 80:
+            return c
+    return n
 
 
 def parse_box_reply(text: Optional[str]) -> tuple[str, bool]:

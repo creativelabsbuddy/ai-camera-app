@@ -41,7 +41,11 @@ const String kMacroMicroscopePrompt =
     'the frame. Show only the real fine structure of its own material up close, for example: '
     'painted metal shows paint grains, printing dots and light scratches; plastic shows fine '
     'moulding marks; fabric shows woven threads and fibres; paper shows pressed fibres; a '
-    'leaf shows veins and tiny plant structure; skin shows pores and fine lines. Do not add '
+    'leaf shows veins and tiny plant structure; skin shows pores and fine lines. '
+    'Do not draw the whole object, its outline or its shape; fill the frame with the inner '
+    'structure of its own material, for example: a paper napkin shows pressed paper fibres; '
+    'cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. '
+    'Do not add '
     'anything this material would not really have. One single full-frame image, no text or '
     'labels. Photorealistic.';
 
@@ -55,7 +59,11 @@ const String kMacroExtremePrompt =
     'filling the frame. Show the very fine structure its own material would really have at '
     'this magnification, for example: painted metal shows paint pigment grains, printing dots '
     'and tiny scratches in the metal; plastic shows its fine surface grain; fabric shows '
-    'single fibres; a leaf shows tiny plant structure. Do not add anything this material '
+    'single fibres; a leaf shows tiny plant structure. '
+    'Do not draw the whole object, its outline or its shape; fill the frame with the inner '
+    'structure of its own material, for example: a paper napkin shows pressed paper fibres; '
+    'cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. '
+    'Do not add anything this material '
     'would not really have. One single full-frame image, no text or labels. Photorealistic.';
 
 /// v11.20 Ultra (30x): electron microscope, whole prompt, crop only.
@@ -63,7 +71,11 @@ const String kMacroUltraPrompt =
     'Close-up of {spot}{on_object} under a scanning electron microscope at 2000x '
     'magnification. Show the true surface structure of its own material, for example: painted '
     'metal shows paint grains, coating cracks and fine scratches; plastic shows its moulded '
-    'surface; fabric shows single fibres. Do not add anything this material would not really '
+    'surface; fabric shows single fibres. '
+    'Do not draw the whole object, its outline or its shape; fill the frame with the inner '
+    'structure of its own material, for example: a paper napkin shows pressed paper fibres; '
+    'cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. '
+    'Do not add anything this material would not really '
     'have. One single full-frame image, no text or labels. Photorealistic.';
 
 const String kColorFilterTail =
@@ -476,6 +488,20 @@ const Set<String> kVagueDetectWords = {
   'multicolored',
   'transparent',
   'clear',
+  // v11.64: shape / look words (never a name on their own).
+  'oval',
+  'rounded',
+  'square',
+  'rectangular',
+  'rectangle',
+  'circular',
+  'triangular',
+  'shaped',
+  'embossed',
+  'wavy',
+  'look',
+  'looking',
+  'appearance',
 };
 
 /// v11.49 (= prompts.is_vague_detect): empty, or only appearance / colour
@@ -488,6 +514,140 @@ bool isVagueDetect(String? name) {
       .toList();
   if (words.isEmpty) return true;
   return words.every(kVagueDetectWords.contains);
+}
+
+/// v11.64 Microscope / Extreme / Ultra: look words stripped from a detected
+/// name / part (shape + texture; colour is allowed and kept). Same set as
+/// prompts.LOOK_STRIP_WORDS.
+const Set<String> kLookStripWords = {
+  'oval',
+  'round',
+  'rounded',
+  'square',
+  'rectangular',
+  'rectangle',
+  'circular',
+  'circle',
+  'circles',
+  'triangular',
+  'shape',
+  'shaped',
+  'shapes',
+  'texture',
+  'textured',
+  'embossed',
+  'pattern',
+  'patterned',
+  'wavy',
+  'look',
+  'looking',
+  'appearance',
+};
+
+/// v11.64 naming step (flash-lite): 1.5x wide photo + zoomed final photo
+/// (= prompts.DETECT_MICRO_NAME_PROMPT).
+const String kDetectMicroNamePrompt =
+    'Photo 1 is a wider view and photo 2 is zoomed in on the same object. Name the object in these photos and which part or side is shown in the zoomed photo. Reply in this form: <colour> <common object name>, <part or side>. Example: white paper napkin, surface; human hand, back of hand; red soda can, side. Do not describe texture or shape. If the object is a phone, tablet, laptop, monitor or TV, name the device itself (e.g. black mobile phone screen), never what is shown on its screen (people, clothes, images, text). Reply with that one line only.';
+
+/// v11.64 part step (flash-lite): only the part / side of the named object;
+/// it never renames the object (= prompts.DETECT_MICRO_PART_PROMPT).
+const String kDetectMicroPartPrompt =
+    'Photo 1 is a wider view of the {parent}. Photo 2 is zoomed; the red box marks where the user is zooming. Which part or side of the {parent} is in the red box? Give only the part or side, at most 5 words (e.g. surface, back of hand, palm, side, rim). Do not rename the object and do not describe its colour, texture, shape or look. Reply only as JSON {"part": "<part or side>", "in_scene": true}. in_scene is false only if photo 2 shows a completely different place than photo 1.';
+
+const List<String> _kEdgeFillers = ['with', 'and', 'of', 'a', 'an', 'the', 'in', 'on'];
+const List<String> _kLeadFillers = ['with', 'and', 'of', 'in', 'on'];
+
+/// v11.64 (= prompts.strip_look_words): drop shape / texture words from
+/// each comma part; a part left with only filler / look words is dropped.
+String stripLookWords(String? text) {
+  final out = <String>[];
+  for (final seg in (text ?? '').toLowerCase().split(RegExp(r'[,;]'))) {
+    final words = seg
+        .split(RegExp(r"[^a-z0-9'-]+"))
+        .where((w) => w.isNotEmpty && !kLookStripWords.contains(w))
+        .toList();
+    while (words.isNotEmpty && _kEdgeFillers.contains(words.last)) {
+      words.removeLast();
+    }
+    while (words.isNotEmpty && _kLeadFillers.contains(words.first)) {
+      words.removeAt(0);
+    }
+    if (words.isEmpty ||
+        words.every((w) => kVagueDetectWords.contains(w) && w != 'surface')) {
+      continue;
+    }
+    out.add(words.join(' '));
+  }
+  return out.join(', ');
+}
+
+/// v11.64 (= prompts.parse_micro_name_reply): `<colour> <name>, <part>` →
+/// (name, part), look words stripped; name '' when vague.
+(String, String) parseMicroNameReply(String? text) {
+  final j = _jsonObj(text);
+  String raw;
+  if (j != null) {
+    final n = j['name'] ?? j['object'] ?? '';
+    final pt = j['part'] ?? '';
+    raw = '${n is String ? n : ''}, ${pt is String ? pt : ''}';
+  } else {
+    final lines = (text ?? '')
+        .split(RegExp(r'[\r\n]+'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    raw = lines.isEmpty
+        ? ''
+        : lines.first.replaceFirst(
+            RegExp(r'^(answer|name|object)\s*:\s*', caseSensitive: false),
+            '',
+          );
+  }
+  final segs = raw.split(RegExp(r'[,;]')).map((x) => x.trim()).toList();
+  var name = sanitizeDetected(stripLookWords(segs.isNotEmpty ? segs[0] : ''));
+  final part = sanitizeDetected(stripLookWords(segs.length > 1 ? segs[1] : ''));
+  if (isVagueDetect(name)) name = '';
+  return (name, part);
+}
+
+/// v11.64 (= prompts.micro_part_only): part step reply → part / side only.
+String microPartOnly(String? part) =>
+    sanitizeDetected(stripLookWords(cleanDetected(part)));
+
+/// v11.64 (= prompts.micro_spot_text): name + part, e.g. "surface of a white
+/// paper napkin", "skin on the back of a human hand". Never drops the name.
+String microSpotText(String? name, String? part) {
+  final n = sanitizeDetected(name);
+  var p = sanitizeDetected(stripLookWords(part));
+  if (n.isEmpty) return '';
+  String spot;
+  if (p.isEmpty || p == n || p.contains(n)) {
+    spot = p.isNotEmpty && p.contains(n) ? p : n;
+  } else {
+    final head = n.split(' ').last;
+    final art = 'aeiou'.contains(n[0]) ? 'an' : 'a';
+    final m = RegExp(
+      '^(.*\\bof)(?: the| a| an)? ${RegExp.escape(head)}\$',
+    ).firstMatch(p);
+    if (m != null) {
+      spot = '${m.group(1)} $art $n';
+    } else {
+      if (p.endsWith(' $head') || p == head) {
+        p = p.substring(0, p.length - head.length).trim();
+        if (p.isEmpty) p = 'surface';
+      }
+      spot = '$p of $art $n';
+    }
+  }
+  final cands = <String>[spot, n];
+  if (microKeyFor(n) == 'skin' && !spot.split(' ').contains('skin')) {
+    final art = 'aeiou'.contains(spot[0]) ? 'an' : 'a';
+    cands.insert(0, spot == n ? 'skin on $art $spot' : 'skin on the $spot');
+  }
+  for (final c in cands) {
+    if (c.split(' ').length <= 8 && c.length <= 80) return c;
+  }
+  return n;
 }
 
 /// {"part", "clear"} → (description, clear) (= server parse_box_reply).
@@ -550,7 +710,8 @@ const int kDetectMaxWords = 10;
 /// "This". The broad subject is NOT added when a spot exists.
 String deepPrompt(String template, String? subject, String? part) {
   var subj = sanitizeDetected(subject);
-  if (subj == 'the subject') subj = '';
+  // v11.64: the general close-up subject is no name.
+  if (subj == 'the subject' || subj == kMacroGeneralSubject) subj = '';
   var spot = sanitizeDetected(part);
   if (spot.isEmpty) spot = subj.isEmpty ? 'this' : subj;
   // v11.28: capital only when the spot starts the sentence.

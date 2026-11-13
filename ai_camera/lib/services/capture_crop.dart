@@ -699,3 +699,24 @@ Future<String> writeZoomBoxed(String path, double regionZoom) =>
       File(out).writeAsBytesSync(img.encodeJpg(im, quality: 85), flush: true);
       return out;
     });
+
+/// v11.64 the zoomed area itself (the red-box region of [writeZoomBoxed],
+/// cut out) for the Microscope / Extreme / Ultra naming step.
+Future<String> writeZoomCrop(String path, double regionZoom) =>
+    Isolate.run(() {
+      final raw = img.decodeImage(File(path).readAsBytesSync());
+      if (raw == null) return path;
+      var im = img.bakeOrientation(raw);
+      final r = zoomBoxRect(im.width, im.height, regionZoom);
+      im = img.copyCrop(im, x: r.x, y: r.y, width: r.width, height: r.height);
+      if (math.max(im.width, im.height) > 1024) {
+        im = img.copyResize(
+          im,
+          width: im.width >= im.height ? 1024 : null,
+          height: im.height > im.width ? 1024 : null,
+        );
+      }
+      final out = '${path.replaceFirst(RegExp(r'\.jpg$'), '')}_spot_crop.jpg';
+      File(out).writeAsBytesSync(img.encodeJpg(im, quality: 85), flush: true);
+      return out;
+    });

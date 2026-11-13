@@ -18,6 +18,8 @@ import 'mode_prompts.dart'
         kDetectSpotPrompt,
         kDetectBoxPrompt,
         kDetectBoxWideLine,
+        kDetectMicroNamePrompt,
+        kDetectMicroPartPrompt,
         kDetectJsonMaxTokens,
         objectsText,
         sanitizeDetected;
@@ -477,6 +479,27 @@ class OpenRouterClient {
         .replaceAll('{objects}', objectsText(_main(parent), others)),
     kDetectJsonMaxTokens,
   );
+
+  /// v11.64 Microscope / Extreme / Ultra naming step (flash-lite): 1.5x
+  /// wide photo + zoomed final photo → raw `<colour> <name>, <part>`.
+  Future<String> detectMicroName(File wide, File zoom) => _visionText(
+    [wide, zoom],
+    kDetectMicroNamePrompt,
+    kDetectJsonMaxTokens,
+    requestTimeout: kDetectSubjectRequestTimeout,
+  );
+
+  /// v11.64 part step (flash-lite): part / side of [parent] only →
+  /// raw JSON {"part", "in_scene"}.
+  Future<String> detectMicroPart(File oneX, File boxedStep, String parent) =>
+      _visionText(
+        [oneX, boxedStep],
+        kDetectMicroPartPrompt.replaceAll(
+          '{parent}',
+          sanitizeDetected(parent).isEmpty ? 'the object' : sanitizeDetected(parent),
+        ),
+        kDetectJsonMaxTokens,
+      );
 
   Future<http.Response> _post(String body, AiCancelToken? cancel) async {
     final own = _injected == null;

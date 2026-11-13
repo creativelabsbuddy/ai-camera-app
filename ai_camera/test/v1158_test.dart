@@ -36,8 +36,8 @@ class _SlowBackend implements VideoBackend {
 }
 
 void main() {
-  test('version (v11.63: 1.11.63+76)', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.63+76'));
+  test('version (v11.64: 1.11.64+77)', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.64+77'));
   });
 
   group('microscope: lock at 1.5x, part only, material-aware', () {
@@ -64,7 +64,8 @@ void main() {
       expect(onObjectText('close-up', 'tiny hairs'), '');
       expect(microPartText('', 'red soda can'), 'red soda can');
       expect(microPartText('shiny', 'red soda can'), 'red soda can'); // vague
-      expect(microPartText('ring pull tab', 'red soda can'), 'ring pull tab');
+      // v11.64: the part never replaces the name (spot = part of the name).
+      expect(microPartText('ring pull tab', 'red soda can'), 'ring pull tab of a red soda can');
     });
 
     test('frame mismatch rule', () {
@@ -79,8 +80,9 @@ void main() {
     test('home wiring: 1.5x photo, lock, part, retake', () {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
       expect(h, contains('planZoom(requested: kMacroDetectZoom'));
-      expect(h, contains('_detector.detectSubjectTimed(File(half.path))'));
-      expect(h, contains('_detector.detectPart('));
+      // v11.64: name step (1.5x + zoomed) once, then the part-only step.
+      expect(h, contains('_detector.detectMicroNameTimed('));
+      expect(h, contains('_detector.detectMicroPart('));
       expect(h, contains('_showToast(kMicroHoldSteady)'));
       expect(h, contains('final r = await _takeMacro(c);'));
       expect(h, contains('bool get _macroLowEnd => _cameraClass.lowEnd;'));

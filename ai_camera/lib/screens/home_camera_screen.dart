@@ -2998,35 +2998,52 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   /// v11.58: name + LOCK the object in the 1.5x photo. A recent lock is
   /// reused (no new call) while the 1.5x photo still shows the same thing.
-  Future<String?> _lockMicroObject(ContextSnapshot half) async {
+  /// v11.64: ONE naming call per shot on flash-lite with the 1.5x photo +
+  /// the zoomed final photo → (name, part). name '' = vague / unclear (the
+  /// photo prompt is used, never a text-only prompt); null = failed.
+  Future<(String, String)?> _lockMicroObject(
+    ContextSnapshot half,
+    String shotPath,
+    double crop,
+  ) async {
     final prev = _microLock;
     if (prev != null &&
         DateTime.now().difference(prev.at) < kMicroLockReuse &&
         File(prev.path).existsSync()) {
       try {
         final s = await checkpointMatch(prev.path, prev.cameraZoom, half.path, half.cameraZoom);
-        if (isSameSubject(s)) return prev.name;
+        if (isSameSubject(s)) return (prev.name, '');
       } catch (_) {}
     }
     if (mounted) setState(() => _nightStage = 'Checking…');
+    String? zoomed;
     try {
-      final name = await _detector.detectSubjectTimed(File(half.path));
-      if (!isUsableLock(name)) return null;
+      zoomed = await writeZoomCrop(shotPath, crop);
+      final r = await _detector.detectMicroNameTimed(
+        File(half.path),
+        File(zoomed),
+      );
+      if (r == null) return null;
+      final (name, part) = r;
+      if (!isUsableLock(name)) return ('', part);
       final copy = '${half.path}_lock.jpg';
       await File(half.path).copy(copy);
       _dropMicroLock();
       _microLock = MicroLock(
-        name: name!,
+        name: name,
         path: copy,
         cameraZoom: half.cameraZoom,
         at: DateTime.now(),
-        others: _detector.lastOthers,
       );
-      return name;
+      return (name, part);
     } catch (e) {
       debugPrint('Microscope lock failed: $e');
       return null;
     } finally {
+      final z = zoomed;
+      if (z != null && z != shotPath) {
+        unawaited(File(z).delete().then((_) {}, onError: (_) {}));
+      }
       if (mounted) setState(() => _nightStage = null);
     }
   }
@@ -3055,6 +3072,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     String note,
     double crop,
   ) async {
+    // v11.64: the name step runs ONCE per shot (retakes re-run only the
+    // part step).
+    (String, String)? named;
     for (var attempt = 0; ; attempt++) {
       final half = _microOneHalf;
       if (half == null || !File(half.path).existsSync()) {
@@ -3068,8 +3088,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           fail: kMicroNoLock,
         );
       }
-      final lock = await _lockMicroObject(half);
-      if (lock == null) {
+      named ??= await _lockMicroObject(half, path, crop);
+      if (named == null) {
         _boxDbg = 'lock - (${_detector.lastReason})';
         return (
           path: path,
@@ -3080,6 +3100,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           fail: kMicroNoLock,
         );
       }
+      final (lock, namePart) = named;
       var score = 0.0;
       var matchError = false;
       try {
@@ -3098,11 +3119,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (mounted) setState(() => _nightStage = 'Checking…');
       try {
         boxed = await writeZoomBoxed(path, crop);
-        pr = await _detector.detectPart(
+        pr = await _detector.detectMicroPart(
           File(half.path),
           File(boxed),
-          lock,
-          others: _microLock?.others ?? const [],
+          lock.isEmpty ? 'object' : lock,
         );
       } catch (e) {
         debugPrint('Microscope part check failed: $e');
@@ -3116,16 +3136,19 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           matchError ||
           microFrameMismatch(pixelScore: score, inScene: pr?.sameSubject);
       _boxDbg =
-          'lock $lock · part ${pr?.part ?? '-'} · match ${score.toStringAsFixed(2)}'
+          'lock ${lock.isEmpty ? '(vague)' : lock} · part ${pr?.part ?? '-'} · match ${score.toStringAsFixed(2)}'
           '${mismatch ? ' · retake ${attempt + 1}' : ''}';
       debugPrint('Microscope: $_boxDbg');
       if (!mismatch) {
+        // v11.64: spot = name + part (the part never replaces the name);
+        // vague name → the general subject + no spot (photo prompt).
+        final pp = (pr?.part ?? '').isNotEmpty ? pr!.part : namePart;
         return (
           path: path,
-          note: '$note · locked: $lock',
+          note: '$note · locked: ${lock.isEmpty ? '(vague)' : lock}',
           crop: crop,
-          lock: lock,
-          part: microPartText(pr?.part, lock),
+          lock: lock.isEmpty ? kMacroGeneralSubject : lock,
+          part: lock.isEmpty ? '' : microPartText(pp, lock),
           fail: null,
         );
       }

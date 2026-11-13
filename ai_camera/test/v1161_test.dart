@@ -72,10 +72,10 @@ class FakeEnhance extends EnhanceService {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.63+76', () {
+  test('version 1.11.64+77', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.63+76'),
+      contains('version: 1.11.64+77'),
     );
   });
 
