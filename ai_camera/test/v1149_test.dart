@@ -36,7 +36,9 @@ void main() {
 
   test('3b/3c: sharpest patch + widest step photo for all 3 deep levels', () {
     expect(home, contains('if (level != null && level.isMicroscopic) {'));
-    expect(home, contains('widePath: _macroWidePath(snap.zoom)'));
+    // v11.59 F6: the detect-only fallback is gone (fails closed instead).
+    expect(home, isNot(contains('widePath: _macroWidePath(snap.zoom)')));
+    expect(home, contains('_snack(fail ?? kMicroNoMatch)'));
   });
 
   test('3d: vague names rejected', () {

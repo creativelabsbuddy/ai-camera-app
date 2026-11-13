@@ -58,7 +58,7 @@ Env
                            resolution, aspect_ratio, [image] → {job_id, credits, model_label}
   GET  /v1/video/status/{job_id}?device_id=…   queued|running|done (+video_url, charged once)|failed
   POST /v1/video/cancel/{job_id}               best effort, never charged
-  VIDEO_API_KEY (8scale) / PHOSOR_API_KEY (Phosor) in .env; MINIMAX_ENABLED (1);
+  PHOSOR_API_KEY (Phosor MiniMax H3 Turbo) in .env; VIDEO_API_KEY is HMAC-only;
   VIDEO_CREDITS_JSON overrides; VIDEO_PER_DEVICE_PER_HOUR (10)
 """
 from __future__ import annotations
@@ -106,9 +106,14 @@ SPOT_TIMEOUT = float(os.environ.get("SPOT_TIMEOUT", "6"))
 SPOT_RETRY_TIMEOUT = float(os.environ.get("SPOT_RETRY_TIMEOUT", "3.5"))
 DETECT_LONG = 768  # v11.49: was 512 (box check names the object)
 MODEL = "openai/gpt-image-2.5-flare"
+# v11.58 style models (per style, admin "Model" select; fallback = Custom/Flare).
+KLEIN_MODEL = os.environ.get("KLEIN_MODEL", "black-forest-labs/flux-3-image-klein")
+RUNWARE_URL = "https://api.runware.ai/v1"
+RUNWARE_KLEIN4B_MODEL = os.environ.get("RUNWARE_KLEIN4B_MODEL", "runware:400@4")
+RUNWARE_LONG = 1024  # FLUX.2 Klein 4B ~1 MP output
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-app = FastAPI(title="AI Camera Enhance Server", version="11.1.47")
+app = FastAPI(title="AI Camera Enhance Server", version="11.1.59")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _ledger: Optional[L.Ledger] = None
@@ -267,7 +272,7 @@ def prepare(raw: bytes, max_long: int) -> tuple[bytes, int, int]:
     if max(im.size) > max_long:
         im.thumbnail((max_long, max_long), Image.LANCZOS)
     out = io.BytesIO()
-    im.save(out, "JPEG", quality=90)
+    im.save(out, "JPEG", quality=100)  # v11.58: no lossy q90 re-encode
     return out.getvalue(), im.width, im.height
 
 
@@ -380,6 +385,94 @@ def build_payload(prompt: str, tier: str, aspect: str, image_url: Optional[str],
     if refs:
         out["input_references"] = refs
     return out
+
+
+def klein_payload(prompt: str, aspect: str, image_url: str) -> dict:
+    """v11.58 FLUX Klein (OpenRouter): the user's photo ONLY (no style
+    reference images) and no quality / resolution params (Klein supports
+    neither)."""
+    return {
+        "model": KLEIN_MODEL,
+        "prompt": prompt,
+        "aspect_ratio": aspect,
+        "n": 1,
+        "output_format": "jpeg",
+        "input_references": [{"type": "image_url", "image_url": {"url": image_url}}],
+    }
+
+
+def _runware_key() -> str:
+    return os.environ.get("RUNWARE_API_KEY", "").strip()
+
+
+def runware_size(w: int, h: int, long_side: int = RUNWARE_LONG) -> tuple[int, int]:
+    """Runware wants 128–2048 px, multiples of 16, same aspect as the photo."""
+    s = long_side / max(w, h, 1)
+    def r16(v: float) -> int:
+        return max(128, min(2048, int(round(v / 16.0)) * 16))
+    return r16(w * s), r16(h * s)
+
+
+def runware_payload(prompt: str, image_url: str, w: int, h: int) -> list:
+    import uuid
+    rw, rh = runware_size(w, h)
+    return [{
+        "taskType": "imageInference",
+        "taskUUID": str(uuid.uuid4()),
+        "model": RUNWARE_KLEIN4B_MODEL,
+        "positivePrompt": prompt,
+        "width": rw,
+        "height": rh,
+        "inputs": {"referenceImages": [image_url]},
+        "outputType": "base64Data",
+        "outputFormat": "JPG",
+        "numberResults": 1,
+        "includeCost": True,
+    }]
+
+
+async def call_runware(tasks: list) -> tuple[int, dict | str]:
+    """Runware FLUX.2 Klein 4B (monkeypatched in tests). Key from env
+    RUNWARE_API_KEY, never logged."""
+    if _flag("ENHANCE_MOCK"):
+        ref = tasks[0]["inputs"]["referenceImages"][0].split(",", 1)[1]
+        return 200, {"data": [{"imageBase64Data": ref, "cost": 0}]}
+    key = _runware_key()
+    if not key:
+        return 503, "runware not configured"
+    async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
+        resp = await client.post(RUNWARE_URL, json=tasks, headers={
+            "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    try:
+        return resp.status_code, resp.json()
+    except Exception:
+        return resp.status_code, resp.text
+
+
+async def runware_images(body: dict) -> tuple[list[bytes], float]:
+    out, cost = [], 0.0
+    for d in body.get("data") or []:
+        if not isinstance(d, dict):
+            continue
+        cost += float(d.get("cost") or 0)
+        b64 = d.get("imageBase64Data")
+        if b64:
+            out.append(base64.b64decode(b64.split(",", 1)[-1]))
+        elif d.get("imageURL"):
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.get(d["imageURL"])
+                r.raise_for_status()
+                out.append(r.content)
+    return out, cost
+
+
+def style_model_for(style) -> str:
+    """Model actually used for a style: its admin model, or "custom" when the
+    model is unknown / its provider is not configured (fallback to Custom)."""
+    m = S.normalize_style_model(getattr(style, "model", None)) if style else "custom"
+    if m == "runware_klein4b" and not (_runware_key() or _flag("ENHANCE_MOCK")):
+        return "custom"
+    return m
 
 
 def look_quality(tier: str) -> str:
@@ -584,6 +677,36 @@ async def macro_part(device_id: str = Form(...), parent: str = Form(...),
             "fill": fill, "whole": whole}
 
 
+@app.post("/v1/macro/micro-name")
+async def macro_micro_name(device_id: str = Form(...), wide: UploadFile = File(...),
+                           zoom: UploadFile = File(...)):
+    """v11.64 Microscope / Extreme / Ultra naming step (flash-lite): 1.5x
+    wide photo + zoomed final photo → {name, part}; look words stripped,
+    name '' when vague. Free."""
+    _check_device(device_id)
+    a, _, _ = prepare(await wide.read(), DETECT_LONG)
+    b, _, _ = prepare(await zoom.read(), DETECT_LONG)
+    text = await _vision_text(detect_payload(P.DETECT_MICRO_NAME_PROMPT, [a, b],
+                                             P.DETECT_MAX_TOKENS))
+    name, part = P.parse_micro_name_reply(text)
+    return {"name": name, "part": part, "model": P.DETECT_MODEL}
+
+
+@app.post("/v1/macro/micro-part")
+async def macro_micro_part(device_id: str = Form(...), parent: str = Form(...),
+                           one_x: UploadFile = File(...), step: UploadFile = File(...)):
+    """v11.64 part step (flash-lite): part / side of the named object only
+    (never a new name) + in_scene. Free."""
+    _check_device(device_id)
+    a, _, _ = prepare(await one_x.read(), DETECT_LONG)
+    b, _, _ = prepare(await step.read(), DETECT_LONG)
+    main = P.sanitize_detected(parent) or "the object"
+    prompt = P.DETECT_MICRO_PART_PROMPT.replace("{parent}", main)
+    text = await _vision_text(detect_payload(prompt, [a, b], P.DETECT_MAX_TOKENS))
+    _, part, ins = P.parse_object_part_reply(text)
+    return {"part": P.micro_part_only(part), "in_scene": ins}
+
+
 @app.post("/v1/macro/spot")
 async def macro_spot(device_id: str = Form(...), subject: str = Form(""),
                      others: str = Form(""),
@@ -644,6 +767,7 @@ async def enhance_v1(
     context_boxed: bool = Form(False),
     zoom_ladder: bool = Form(False),
     zoom_clean: bool = Form(False),
+    zoom_source: bool = Form(False),
 ):
     dev = _check_device(device_id)
     mode = (mode or "photo").strip().lower()
@@ -666,9 +790,17 @@ async def enhance_v1(
     # v11.13 Macro: the 1x / 2x / 3x / 4x step photos, each with the zoomed area boxed.
     steps_raw = [b for b in [await f.read() for f in (steps or [])[:4]] if b]
     # v11.30 100x zoom ladder (cheap phones): steps = boxed lower-zoom references.
-    ladder = bool(zoom_ladder) and mode == "photo" and bool(steps_raw)
+    # v11.59 sharp-source zoom: image = the sharp aligned lower-zoom source,
+    # steps[0] = the final zoom (framing only). No framing photo → fail closed.
+    zsrc = bool(zoom_source) and mode == "photo"
+    if zsrc and not steps_raw:
+        raise HTTPException(status_code=422, detail={
+            "reason": "no_sharp_source",
+            "message": "Hold steady and retake the zoom. No credits used."})
+    ladder = bool(zoom_ladder) and mode == "photo" and bool(steps_raw) and not zsrc
     # v11.34: 2x+ photo (flagship single / ladder with no matching refs).
-    zoom_only = (bool(zoom_clean) or bool(zoom_ladder)) and mode == "photo" and not ladder
+    zoom_only = ((bool(zoom_clean) or bool(zoom_ladder)) and mode == "photo"
+                 and not ladder and not zsrc)
 
     filt = P.FILTER_PROMPTS.get(filter_id or "")
     macro_credits = None
@@ -687,6 +819,7 @@ async def enhance_v1(
     # hidden admin prompt is appended right after the locked enhance prompt.
     prompts_store = get_mode_prompts()
     mode_text = ""
+    portrait_text = ""
     level = None
     if mode == "macro":
         # v11.1: the level comes from the zoom at shutter time (the app also
@@ -696,8 +829,10 @@ async def enhance_v1(
                                        part=part)
         if level in ("microscope", "extreme", "ultra"):
             color_filter = None  # v11.9: no colour filter at Microscope / Extreme
-    elif mode in ("portrait", "night"):
-        mode_text = prompts_store.get(mode)
+    elif mode == "portrait":
+        # v11.58: the Portrait variant of the universal prompt REPLACES the
+        # base; Night uses the universal prompt alone (no night sentence).
+        portrait_text = prompts_store.get("portrait")
     color_text = prompts_store.get(f"filter:{color_filter}") if color_filter else ""
     is_night = mode == "night"
 
@@ -725,6 +860,8 @@ async def enhance_v1(
             _max_steps, _crop_long = P.macro_input_plan(level) if level else (0, None)
             if ladder:
                 _crop_long = P.ZOOM_LADDER_MAIN_LONG  # v11.31: final photo 1536 px
+            if zsrc:
+                _crop_long = P.ZOOM_SOURCE_MAIN_LONG  # v11.59: the sharp source
             main_jpg, w, h = prepare(raw, _crop_long or ENHANCE_INPUT_LONG)
             if level is not None and not _text_only:
                 main_jpg = CM.soften_chroma(main_jpg)  # v11.39 colour-noise clean-up
@@ -744,6 +881,13 @@ async def enhance_v1(
                 raise HTTPException(status_code=400, detail=f"bad image: {e}") from e
         else:
             step_jpgs_ladder = []
+        framing_jpg = None
+        if zsrc:
+            ctx_raw, ctx_jpg = b"", None
+            try:
+                framing_jpg = prepare(steps_raw[0], P.ZOOM_FRAMING_LONG)[0]
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"bad image: {e}") from e
         # v11.40: Extreme / Ultra with no detected spot → the zoomed photo (+ context
         # photos) instead of the spot-text-only call.
         # v11.47: Microscope too (detected spot only).
@@ -787,6 +931,15 @@ async def enhance_v1(
                 # detected spot only (aspect still follows the crop).
                 img = None if deep_text_only else data_url(main_jpg)
                 return build_payload(mt, quality, aspect, img, None, leading_urls=firsts)
+            if zsrc and with_ctx:
+                # v11.59: the sharp source FIRST (content), the final zoom after it (framing).
+                return build_payload(P.zoom_source_prompt(filt, color_text), quality, aspect,
+                                     data_url(main_jpg), None,
+                                     extra_urls=[data_url(framing_jpg)])
+            if zsrc:
+                # one-image fallback: the sharp source alone, the safe zoom prompt.
+                return build_payload(P.zoom_ladder_prompt(filt, color_text, refs=False), quality,
+                                     aspect, data_url(main_jpg), None)
             if ladder and with_ctx:
                 # v11.31: the final photo FIRST, reference crops after it.
                 return build_payload(P.zoom_ladder_prompt(filt, color_text), quality, aspect,
@@ -799,11 +952,12 @@ async def enhance_v1(
             prompt = P.build_prompt(
                 has_context=with_ctx, zoom=zoom, optical_limit=optical_limit, tier=quality,
                 style_prompt=filt, mode_prompt=mode_text, color_prompt=color_text,
-                context_boxed=context_boxed,
+                context_boxed=context_boxed, portrait_prompt=portrait_text,
             )
             return build_payload(prompt, quality, aspect, data_url(main_jpg), ctx_url)
 
-        with_ctx = ctx_jpg is not None or bool(step_jpgs) or bool(step_jpgs_ladder)
+        with_ctx = (ctx_jpg is not None or bool(step_jpgs) or bool(step_jpgs_ladder)
+                    or framing_jpg is not None)
         try:
             status, body = await call_openrouter(payload(with_ctx))
             if with_ctx and status != 200 and is_multi_image_rejection(status):
@@ -849,16 +1003,28 @@ async def enhance_v1(
                     "reason": "framing_changed",
                     "message": "Couldn't enhance this zoom — credit refunded",
                     "similarity": round(similarity, 3)})
+        if zsrc or zoom_only:
+            # v11.59: every zoom result is checked against its SOURCE area (the
+            # sharp source when sent, else the final zoom) — changed → rejected.
+            try:
+                ok, similarity = G.zoom_output_ok(main_jpg, out,
+                                                  check_colour=not filt and not color_text)
+            except Exception as e:
+                raise ai_failure(502, "upstream", f"bad upstream image: {e}") from e
+            if not ok:
+                log.warning("zoom result rejected: output check %.3f (%s)", similarity, dev)
+                raise HTTPException(status_code=422, detail={
+                    "reason": "structure_changed",
+                    "message": "AI changed the scene, so the result was rejected. No credits used.",
+                    "similarity": round(similarity, 3)})
         if is_macro and not color_text and level not in P.MACRO_DEEP_LEVELS and not deep_text_only:
             # v11.5: colours follow the real source crop (e.g. leaf hue).
             try:
                 out = CM.match_colors(out, main_jpg)
             except Exception as e:
                 log.warning("macro colour match skipped: %s", e)
-        try:
-            out = ensure_min_long_side(out, L.TIERS[quality][4])
-        except Exception as e:
-            raise ai_failure(502, "upstream", f"bad upstream image: {e}") from e
+        # v11.58: the AI image is delivered at its native size (no 1920 /
+        # tier upscale, no re-encode).
 
         # The phone gave up (Cancel / its own timeout) → don't charge.
         if request is not None and await request.is_disconnected():
@@ -978,8 +1144,10 @@ async def apply_look(
             main_jpg, w, h = prepare(raw, LOOK_INPUT_LONG)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"bad image: {e}") from e
+        style_model = style_model_for(style)
         ref_urls = []
-        for f in (style.ref_images if style else []):
+        # v11.58: Klein / Runware get only the user's photo (no references).
+        for f in (style.ref_images if style and style_model == "custom" else []):
             b = get_styles().read_file(f, private=True)
             if b:
                 ref_urls.append(data_url(prepare(b, 1024)[0]))
@@ -996,6 +1164,37 @@ async def apply_look(
         images: list[bytes] = []
         total_cost = 0.0
         failure: Optional[HTTPException] = None
+
+        async def styled_call() -> list[bytes]:
+            """v11.58 Klein (OpenRouter) or FLUX.2 Klein 4B (Runware)."""
+            nonlocal total_cost, failure
+            try:
+                if style_model == "klein":
+                    status, body = await call_openrouter(klein_payload(prompt, aspect, data_url(main_jpg)))
+                else:
+                    status, body = await call_runware(runware_payload(prompt, data_url(main_jpg), w, h))
+            except httpx.TimeoutException:
+                failure = ai_failure(504, "timeout", f"upstream timeout after {UPSTREAM_TIMEOUT:g}s")
+                return []
+            except httpx.HTTPError as e:
+                failure = ai_failure(502, "upstream", f"upstream request failed: {e}")
+                return []
+            if status != 200 or not isinstance(body, dict):
+                failure = upstream_failure(status, body)
+                return []
+            try:
+                if style_model == "klein":
+                    total_cost += float((body.get("usage") or {}).get("cost") or 0)
+                    got = await extract_images(body)
+                else:
+                    got, c = await runware_images(body)
+                    total_cost += c
+            except Exception as e:  # noqa: BLE001
+                failure = ai_failure(502, "no_image", f"bad image payload: {e}")
+                return []
+            if not got:
+                failure = upstream_failure(200, body)
+            return got[:1]
 
         async def one_call(n: int) -> list[bytes]:
             nonlocal total_cost, failure
@@ -1016,7 +1215,21 @@ async def apply_look(
                 failure = upstream_failure(200, body)
             return got
 
-        images = await one_call(variations)
+        used_model = MODEL
+        if style_model in ("klein", "runware_klein4b"):
+            images = await styled_call()
+            if images and variations > 1:  # Klein returns one image per call
+                for extra in await asyncio.gather(*[styled_call() for _ in range(variations - 1)]):
+                    images += extra[:1]
+            if images:
+                used_model = KLEIN_MODEL if style_model == "klein" else RUNWARE_KLEIN4B_MODEL
+            else:  # v11.58: the style's model failed → fall back to Custom (Flare)
+                log.info("style %s: %s failed (%s) — falling back to Custom", style.id, style_model,
+                         getattr(failure, "detail", failure))
+                failure = None
+                images = await one_call(variations)
+        else:
+            images = await one_call(variations)
         # Providers that return fewer than n → top up with single calls IN
         # PARALLEL (only when variations > 1; a single look is one request).
         missing = variations - len(images)
@@ -1049,14 +1262,14 @@ async def apply_look(
         "trials_used": list(charged.trials),
         "account": L.state_header(state),
         "cost": total_cost,
-        "model": MODEL,
+        "model": used_model,
         "style_id": style.id if style else None,
         "references_used": len(ref_urls),
     })
 
 
 # ---------------------------------------------------------------------------
-# v11.53 video: 8scale Wan 2.2 14B (≤5 s) / Phosor MiniMax H3 Turbo (>5 s).
+# v11.63 video: Phosor MiniMax H3 Turbo only (5/8/10/15 s).
 # Keys stay on the server. Credits (provisional, VIDEO_CREDITS_JSON) are
 # checked at submit and charged ONCE, only when the finished video is first
 # reported done (failed / cancelled / abandoned jobs are never charged).
@@ -1104,8 +1317,6 @@ async def video_styles():
 @app.get("/v1/video/options")
 async def video_options():
     return {"credits": VP.credit_table(_video_override()), "minimax_enabled": VP.minimax_enabled(),
-            "wan": {"seconds": list(VP.WAN_SECONDS), "resolutions": list(VP.WAN_RES),
-                    "aspect_ratios": list(VP.WAN_ASPECTS)},
             "minimax": {"seconds": list(VP.MM_SECONDS), "resolutions": list(VP.MM_RES),
                         "aspect_ratios": list(VP.MM_ASPECTS), "label": "MiniMax H3"}}
 
@@ -1123,7 +1334,7 @@ async def video_generate(
         if st is None or not st.enabled or st.media_type != "video":
             raise HTTPException(status_code=404, detail="video style not found")
         text = st.prompt
-        kind, seconds, aspect_ratio = "i2v", 5, "9:16"  # presets: I2V · 9:16 · 5 s (Wan)
+        kind, seconds, aspect_ratio = "i2v", 5, "9:16"  # presets: I2V · 9:16 · 5 s (MiniMax)
     elif P.blocked_custom_prompt(prompt):
         raise HTTPException(status_code=400, detail="Blocked by the safety list")
     try:

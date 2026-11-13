@@ -1,13 +1,13 @@
-"""v11.53 video generation: 8scale Wan 2.2 14B (≤5 s) and Phosor MiniMax H3
-Turbo (>5 s). Server-side keys (VIDEO_API_KEY, PHOSOR_API_KEY) never leave
-the server; errors are key-redacted.
+"""v11.63 video generation: Phosor MiniMax H3 Turbo only (5/8/10/15 s).
+VIDEO_API_KEY is read only for HMAC of existing job ids; new jobs need
+PHOSOR_API_KEY. Server-side keys never leave the server; errors are
+key-redacted.
 
 Job ids handed to the app are stateless signed tokens
 `<provider>~<request_id>.<sig>` (sig = HMAC(device_id|provider|request_id)).
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -22,24 +22,21 @@ import httpx
 
 log = logging.getLogger("enhance.video")
 
-WAN = "wan"          # 8scale Wan 2.2 14B
-MINIMAX = "minimax"  # Phosor MiniMax H3 Turbo
+WAN = "wan"          # legacy job-id provider tag (HMAC / in-flight only)
+MINIMAX = "minimax"  # Phosor MiniMax H3 Turbo (all new jobs)
 
-EIGHTSCALE_BASE = "https://8scale.run"
 PHOSOR_BASE = "https://phosor.ai/api/v1"
 
-WAN_SECONDS = (3, 5)
-WAN_RES = ("480p", "580p", "720p")
-WAN_ASPECTS = ("16:9", "9:16", "1:1")
-MM_SECONDS = (6, 8, 10, 15)          # app chips; provider accepts 4..15
+# App chips are 5, 8, 10, 15 s. Phosor accepts duration 4..15, so 5 s is valid.
+# Unused 3 s (old Wan) and 6 s (old server-only) are dropped.
+MM_SECONDS = (5, 8, 10, 15)
 MM_RES = ("480p", "768p")
 MM_ASPECTS = ("16:9", "9:16")
 MAX_PROMPT = 1500
 TIMEOUT = float(os.environ.get("VIDEO_HTTP_TIMEOUT", "60"))
 
 USD_INR = 95.0
-# Provider cost in ₹ (published / measured, $1 = ₹95).
-WAN_COST_INR_5S = {"480p": 1.43, "580p": 2.28, "720p": 4.18}
+# Provider cost in ₹ (published / measured, $1 = ₹95). Unchanged.
 MM_COST_INR_PER_S = {"480p": 0.57, "768p": 0.855}
 # Provisional (NOT approved): credits = ceil(cost_₹ × MARGIN / ₹ per credit
 # at the cheapest credit price, Pro ₹99/100 credits).
@@ -59,12 +56,14 @@ def _key(provider: str) -> str:
     return os.environ.get("VIDEO_API_KEY" if provider == WAN else "PHOSOR_API_KEY", "").strip()
 
 
-def configured(provider: str) -> bool:
-    return bool(_key(provider))
+def configured(provider: str = MINIMAX) -> bool:
+    """Video needs the Phosor key only. VIDEO_API_KEY is unused except HMAC."""
+    return bool(_key(MINIMAX))
 
 
 def minimax_enabled() -> bool:
-    """Licence region policy switch (undecided → default allow everywhere)."""
+    """Licence region policy switch (undecided → default allow everywhere).
+    When off, all video is unavailable (everything is MiniMax)."""
     return os.environ.get("MINIMAX_ENABLED", "1").strip() not in ("0", "false", "no")
 
 
@@ -73,20 +72,21 @@ def provisional_credits(cost_inr: float) -> int:
 
 
 def cost_inr(provider: str, seconds: int, resolution: str) -> float:
-    if provider == WAN:
-        return round(WAN_COST_INR_5S[resolution] * (seconds / 5.0), 3)
     return round(MM_COST_INR_PER_S[resolution] * seconds, 3)
 
 
 def credit_table(override: Optional[dict] = None) -> dict:
-    """Defaults ← VIDEO_CREDITS_JSON env ← admin override {"wan_5_480p": 3, ...}."""
+    """Defaults ← VIDEO_CREDITS_JSON env ← admin override {"minimax_5_480p": 3, ...}.
+
+    wan_* override keys no longer apply (provider keys changed in v11.63).
+    minimax_5_480p is hard-set to 3 (do not use the provisional formula, which
+    would be 5). Other MiniMax cells use the existing provisional formula.
+    """
     t = {}
-    for r in WAN_RES:
-        for s in WAN_SECONDS:
-            t[f"wan_{s}_{r}"] = provisional_credits(cost_inr(WAN, s, r))
     for r in MM_RES:
         for s in MM_SECONDS:
             t[f"minimax_{s}_{r}"] = provisional_credits(cost_inr(MINIMAX, s, r))
+    t["minimax_5_480p"] = 3
     try:
         ov = json.loads(os.environ.get("VIDEO_CREDITS_JSON", "") or "{}")
         for k, v in ov.items():
@@ -117,7 +117,7 @@ class VideoSpec:
 
     @property
     def model_label(self) -> str:
-        return "Wan 2.2" if self.provider == WAN else "MiniMax H3"
+        return "MiniMax H3" if self.provider == MINIMAX else "Wan 2.2"
 
 
 def route(kind: str, prompt: str, seconds: int, resolution: str, aspect_ratio: str) -> VideoSpec:
@@ -128,18 +128,10 @@ def route(kind: str, prompt: str, seconds: int, resolution: str, aspect_ratio: s
         raise VideoError(f"prompt too long (max {MAX_PROMPT} chars)", 422)
     if kind not in ("t2v", "i2v"):
         raise VideoError("kind must be t2v or i2v", 422)
-    if seconds <= 5:
-        if seconds not in WAN_SECONDS:
-            raise VideoError(f"seconds must be one of {list(WAN_SECONDS + MM_SECONDS)}", 422)
-        if resolution not in WAN_RES:
-            raise VideoError(f"resolution for {seconds}s must be one of {list(WAN_RES)}", 422)
-        if aspect_ratio not in WAN_ASPECTS:
-            raise VideoError(f"aspect_ratio must be one of {list(WAN_ASPECTS)}", 422)
-        return VideoSpec(WAN, kind, p, seconds, resolution, aspect_ratio)
     if not minimax_enabled():
-        raise VideoError("videos longer than 5 s are not available", 403)
+        raise VideoError("AI video is not available", 403)
     if seconds not in MM_SECONDS:
-        raise VideoError(f"seconds must be one of {list(WAN_SECONDS + MM_SECONDS)}", 422)
+        raise VideoError(f"seconds must be one of {list(MM_SECONDS)}", 422)
     if resolution not in MM_RES:
         raise VideoError(f"resolution for {seconds}s must be one of {list(MM_RES)}", 422)
     if aspect_ratio not in MM_ASPECTS:
@@ -191,11 +183,11 @@ def _fail(what: str, r: httpx.Response) -> VideoError:
     return VideoError(msg, 400 if 400 <= r.status_code < 500 else 502)
 
 
-def _headers(provider: str) -> dict:
-    k = _key(provider)
+def _headers(provider: str = MINIMAX) -> dict:
+    k = _key(MINIMAX)
     if not k:
         raise VideoError("video generation is not configured", 503)
-    return {"Authorization": f"Bearer {k}"} if provider == WAN else {"X-API-Key": k}
+    return {"X-API-Key": k}
 
 
 def _client(transport) -> httpx.AsyncClient:
@@ -209,29 +201,16 @@ async def submit(spec: VideoSpec, image: Optional[bytes] = None, image_mime: str
         raise VideoError("image is required for image-to-video", 422)
     async with _client(transport) as c:
         try:
-            if spec.provider == WAN:
-                body = {"prompt": spec.prompt, "resolution": spec.resolution,
-                        "aspect_ratio": spec.aspect_ratio, "seconds": spec.seconds}
-                path = "/wan-2.2/14b/text-to-video"
-                if spec.kind == "i2v":
-                    body["image"] = f"data:{image_mime};base64," + base64.b64encode(image).decode()
-                    path = "/wan-2.2/14b/image-to-video"
-                r = await c.post(EIGHTSCALE_BASE + path, json=body, headers=_headers(WAN))
-                if r.status_code >= 400:
-                    raise _fail("Wan 2.2 submit", r)
-                js = r.json() or {}
-                rid = js.get("requestId") or js.get("request_id") or js.get("id")
-            else:
-                body = {"prompt": spec.prompt, "resolution_tier": spec.resolution,
-                        "aspect_ratio": spec.aspect_ratio, "duration": spec.seconds,
-                        "model": f"minimax/h3/{'image' if spec.kind == 'i2v' else 'text'}-to-video/turbo"}
-                if spec.kind == "i2v":
-                    body["image_url"] = await _phosor_upload(c, image, image_mime)
-                r = await c.post(PHOSOR_BASE + "/inference/submit", json=body, headers=_headers(MINIMAX))
-                if r.status_code >= 400:
-                    raise _fail("MiniMax submit", r)
-                js = r.json() or {}
-                rid = js.get("request_id") or js.get("id")
+            body = {"prompt": spec.prompt, "resolution_tier": spec.resolution,
+                    "aspect_ratio": spec.aspect_ratio, "duration": spec.seconds,
+                    "model": f"minimax/h3/{'image' if spec.kind == 'i2v' else 'text'}-to-video/turbo"}
+            if spec.kind == "i2v":
+                body["image_url"] = await _phosor_upload(c, image, image_mime)
+            r = await c.post(PHOSOR_BASE + "/inference/submit", json=body, headers=_headers(MINIMAX))
+            if r.status_code >= 400:
+                raise _fail("MiniMax submit", r)
+            js = r.json() or {}
+            rid = js.get("request_id") or js.get("id")
         except httpx.TimeoutException as e:
             # Never resubmit blindly: the job may exist and be billed.
             raise VideoError("provider timed out during submit — not retried (job may still run)", 504) from e
@@ -284,11 +263,11 @@ def _find_url(js) -> Optional[str]:
 async def status(provider: str, rid: str, transport=None) -> dict:
     """→ {"status": queued|running|done|failed, "video_url"?, "progress"?, "error"?}"""
     async with _client(transport) as c:
+        if provider != MINIMAX:
+            # Legacy 8scale job ids still HMAC-verify; no 8scale API calls.
+            return {"status": "failed", "error": "This video job is no longer available"}
         try:
-            if provider == WAN:
-                r = await c.get(f"{EIGHTSCALE_BASE}/status/{rid}", headers=_headers(WAN))
-            else:
-                r = await c.get(f"{PHOSOR_BASE}/inference/status/{rid}", headers=_headers(MINIMAX))
+            r = await c.get(f"{PHOSOR_BASE}/inference/status/{rid}", headers=_headers(MINIMAX))
             if r.status_code == 404:
                 raise VideoError("unknown job id", 404)
             if r.status_code >= 400:
@@ -302,11 +281,17 @@ async def status(provider: str, rid: str, transport=None) -> dict:
                 return {"status": "queued" if st in ("in_queue", "queued", "pending") else "running",
                         "progress": prog}
             url = _find_url(js)
-            if not url and provider == MINIMAX:
+            if not url:
                 rr = await c.get(f"{PHOSOR_BASE}/inference/result/{rid}", headers=_headers(MINIMAX))
+                # v11.58: 202 = result not published yet (status may say
+                # "completed" a moment early) → still running, keep polling.
+                if rr.status_code == 202:
+                    return {"status": "running", "progress": prog}
                 if rr.status_code >= 400:
                     return {"status": "failed", "error": f"result failed (HTTP {rr.status_code}): {error_text(rr)}"}
                 url = _find_url(rr.json() or {})
+                if not url:
+                    return {"status": "running", "progress": prog}
         except httpx.HTTPError as e:
             raise VideoError(f"provider unreachable: {type(e).__name__}") from e
     if not url:
@@ -315,12 +300,5 @@ async def status(provider: str, rid: str, transport=None) -> dict:
 
 
 async def cancel(provider: str, rid: str, transport=None) -> bool:
-    """Best effort (8scale only while queued). Never raises."""
-    if provider != WAN:
-        return False
-    try:
-        async with _client(transport) as c:
-            r = await c.post(f"{EIGHTSCALE_BASE}/cancel/{rid}", headers=_headers(WAN))
-            return r.status_code < 300
-    except Exception:
-        return False
+    """Phosor has no cancel API. Never raises; always a no-op."""
+    return False

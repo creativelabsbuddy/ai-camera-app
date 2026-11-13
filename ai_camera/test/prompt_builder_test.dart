@@ -18,8 +18,8 @@ void main() {
   test('locked prompt unchanged and always first', () {
     expect(
       kLockedEnhancePrompt,
-      startsWith('Enhance this real photo and keep it the same photo'),
-    ); // v11.39
+      'Clean up and sharpen this image, with a natural tone.',
+    ); // v11.63 simple enhance prompt
     final v6Locked = kLockedEnhancePrompt;
     expect(buildEnhancePrompt(), v6Locked);
     expect(

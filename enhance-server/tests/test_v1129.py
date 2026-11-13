@@ -68,8 +68,8 @@ def test_part_and_subject_stay_lite_without_reasoning():
 
 
 def test_prompts_and_version():
-    assert P.MACRO_ULTRA_PROMPT.startswith("Close-up of {spot} under a scanning electron microscope at 2000x")
-    assert P.MACRO_EXTREME_PROMPT.startswith("A tiny area of {spot} under a light microscope at 1000x")
+    assert P.MACRO_ULTRA_PROMPT.startswith("Close-up of {spot}{on_object} under a scanning electron microscope at 2000x")
+    assert P.MACRO_EXTREME_PROMPT.startswith("A tiny area of {spot}{on_object} under a light microscope at 1000x")
     assert P.DEFAULT_MODE_PROMPTS["macro_extreme"] == P.MACRO_EXTREME_PROMPT
     assert P.DEFAULT_MODE_PROMPTS["macro_ultra"] == P.MACRO_ULTRA_PROMPT
     assert tuple(map(int, main.app.version.split("."))) >= (11, 1, 24)

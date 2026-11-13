@@ -167,9 +167,11 @@ void main() {
       expect(r.trialsUsed, isEmpty);
       expect(r.creditsCharged, 2);
       final p = payloads.last;
-      expect(p['model'], 'openai/gpt-image-2.5-flare');
-      expect(p['quality'], 'medium'); // styles render at Full HD params
-      expect(p['resolution'], '1.5K');
+      // v11.58: styles render on FLUX Klein (photo only, no quality/res).
+      expect(p['model'], 'black-forest-labs/flux-3-image-klein');
+      expect(p.containsKey('quality'), isFalse);
+      expect(p.containsKey('resolution'), isFalse);
+      expect(p['input_references'], hasLength(1));
       expect(p['n'], 1);
       expect((p['prompt'] as String).startsWith(kLookIdentityPrompt), isTrue);
       expect(

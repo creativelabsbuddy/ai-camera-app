@@ -3,7 +3,10 @@ import 'dart:math' as math;
 
 import 'package:image/image.dart' as img;
 
+import 'image_register.dart' show Similarity;
+
 import 'macro.dart' show isClearPhoto;
+import 'zoom_root.dart' show RefZoomLabel;
 
 /// v11.30 100x zoom ladder (cheap phones): while the user zooms, a normal
 /// camera photo (free, no AI) is kept at each checkpoint passed. At the
@@ -78,7 +81,29 @@ class LadderShot {
     required this.path,
     required this.cameraZoom,
     required this.sharpness,
+    this.rootToRef,
+    this.stillRot = 0,
+    this.optical = 1.0,
+    this.root = false,
   });
+
+  /// v11.61: optical-quality part of [cameraZoom] (lens / in-sensor crop);
+  /// the rest is a digital crop (no real pixels added).
+  final double optical;
+
+  /// v11.61: the low-zoom ROOT reference of this chain.
+  final bool root;
+
+  /// v11.61: real zoom label (optical vs digital crop).
+  RefZoomLabel get zoomLabel => RefZoomLabel(cameraZoom, optical);
+
+  /// v11.60: the photo = the analysis view rotated clockwise by
+  /// [stillRot]·90° (device orientation, image-verified).
+  final int stillRot;
+
+  /// v11.60: tracked root → this photo's view (analysis coords) when the
+  /// photo was taken; null = untracked (never a source on the ladder).
+  final Similarity? rootToRef;
 
   final double checkpoint;
   final String path;
@@ -128,6 +153,14 @@ class ZoomLadder {
   }
 
   void add(LadderShot s) => _shots[s.checkpoint] = s;
+
+  /// v11.61: the chain's low-zoom ROOT reference (null = none yet).
+  LadderShot? get root {
+    for (final s in shots) {
+      if (s.root) return s;
+    }
+    return null;
+  }
 
   /// v11.34 checkpoints that already have a photo.
   Set<double> get takenCheckpoints => _shots.keys.toSet();
@@ -191,6 +224,56 @@ class ZoomLadder {
     }
     return pick.toList()..sort((a, b) => a.cameraZoom.compareTo(b.cameraZoom));
   }
+
+  /// v11.59: lowest-checkpoint sharpness (the chain's clear reference).
+  double get refSharpness => _ref;
+
+  /// v11.59 nearest CLEAR photo below [cp] (subject checks compare clear
+  /// photos only; a blurry checkpoint never breaks the chain).
+  LadderShot? lastClearBelow(double cp) {
+    LadderShot? best;
+    for (final s in shots) {
+      if (s.checkpoint < cp - 0.01 && isClear(s)) best = s;
+    }
+    return best;
+  }
+
+  /// v11.59 sharp-source candidates for a shutter at [finalZoom]: CLEAR
+  /// photos only, clearly wider than the final, best first (highest zoom =
+  /// most real pixels on the final area; tie → sharper), at most [max].
+  List<LadderShot> sourceCandidates(
+    double finalZoom, {
+    int max = kLadderMaxRefs,
+  }) {
+    final c =
+        [
+          for (final s in shots)
+            if (isClear(s) && finalZoom / math.max(0.3, s.cameraZoom) >= 1.05)
+              s,
+        ]..sort((a, b) {
+          final z = b.cameraZoom.compareTo(a.cameraZoom);
+          return z != 0 ? z : b.sharpness.compareTo(a.sharpness);
+        });
+    final out = c.take(max).toList();
+    // v11.61: the ROOT (if usable) is always among the candidates (last:
+    // the strict check tries the closer tracked steps first).
+    final r = root;
+    if (r != null && c.contains(r) && !out.contains(r) && out.isNotEmpty) {
+      out[out.length - 1] = r;
+    }
+    return out;
+  }
+
+  /// v11.61 key builds: every reference with its real zoom, e.g.
+  /// "root 1x opt 1x ✓ · 4x opt 1x + dig 4.0x ✓".
+  String refsLabelText() => shots.isEmpty
+      ? 'refs none'
+      : shots
+            .map(
+              (s) =>
+                  '${s.root ? 'root ' : ''}${_x(s.checkpoint)} ${s.zoomLabel.text} ${isClear(s) ? '✓' : '✗'}',
+            )
+            .join(' · ');
 
   /// Key builds: "Ladder: 2x✓ 3x✓ 4x✗ · last clear 3x · sent 3x, 4x + final".
   String debugText({List<LadderShot>? sent}) {

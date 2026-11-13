@@ -343,63 +343,236 @@ class _QuickCard extends StatelessWidget {
   );
 }
 
-/// v11.54 first-run "Styles are here" tooltip (tail points down at the
-/// four-dot button). Tap to dismiss.
-class StylesHereTooltip extends StatelessWidget {
-  const StylesHereTooltip({super.key, required this.onTap});
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-    key: const ValueKey('styles_here_tooltip'),
-    onTap: onTap,
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: AppColors.proGold,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: const [BoxShadow(blurRadius: 8, color: Colors.black45)],
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.auto_awesome, size: 16, color: Colors.black),
-              SizedBox(width: 6),
-              Text(
-                'Styles are here',
-                style: TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(right: 22),
-          child: CustomPaint(size: const Size(14, 8), painter: _Tail()),
-        ),
-      ],
-    ),
+/// v11.59: where the "Styles are here" bubble goes for [anchor] (the real
+/// four-dot button, in the hint layer's coordinates) inside [viewport].
+/// Above the button when it fits, else below; always clamped inside the
+/// viewport; [tailX] (from the bubble's left) points at the button centre.
+({double left, double top, double tailX, bool below}) placeStylesHint({
+  required Size viewport,
+  required Rect anchor,
+  required Size bubble,
+  double margin = 8,
+  double gap = 2,
+  double tail = kStylesHintTail,
+}) {
+  final maxLeft = math.max(margin, viewport.width - margin - bubble.width);
+  final left = (anchor.center.dx - bubble.width / 2).clamp(margin, maxLeft);
+  var top = anchor.top - gap - tail - bubble.height;
+  var below = false;
+  if (top < margin) {
+    below = true;
+    top = anchor.bottom + gap;
+  }
+  final maxTop = math.max(
+    margin,
+    viewport.height - margin - bubble.height - tail,
+  );
+  top = top.clamp(margin, maxTop);
+  final tailX = (anchor.center.dx - left).clamp(
+    kStylesHintTailW / 2 + 2,
+    math.max(kStylesHintTailW / 2 + 2, bubble.width - kStylesHintTailW / 2 - 2),
+  );
+  return (
+    left: left.toDouble(),
+    top: top.toDouble(),
+    tailX: tailX.toDouble(),
+    below: below,
   );
 }
 
+const double kStylesHintTail = 8;
+const double kStylesHintTailW = 14;
+
+/// v11.54 first-run "Styles are here" tooltip; v11.59: the tail points at
+/// the button from [tailX] (null → near the right edge, the old look).
+/// Tap to dismiss.
+class StylesHereTooltip extends StatelessWidget {
+  const StylesHereTooltip({
+    super.key,
+    required this.onTap,
+    this.tailX,
+    this.below = false,
+  });
+  final VoidCallback onTap;
+  final double? tailX;
+  final bool below;
+
+  @override
+  Widget build(BuildContext context) {
+    final bubble = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.proGold,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: const [BoxShadow(blurRadius: 8, color: Colors.black45)],
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.auto_awesome, size: 16, color: Colors.black),
+          SizedBox(width: 6),
+          Text(
+            'Styles are here',
+            style: TextStyle(
+              color: Colors.black,
+              fontWeight: FontWeight.w800,
+              fontSize: 14,
+            ),
+          ),
+        ],
+      ),
+    );
+    final tail = CustomPaint(
+      key: const ValueKey('styles_here_tail'),
+      size: const Size(kStylesHintTailW, kStylesHintTail),
+      painter: _Tail(up: below),
+    );
+    final x = tailX;
+    final tailRow = x == null
+        ? Padding(padding: const EdgeInsets.only(right: 22), child: tail)
+        : Padding(
+            padding: EdgeInsets.only(
+              left: math.max(0, x - kStylesHintTailW / 2),
+            ),
+            child: tail,
+          );
+    return GestureDetector(
+      key: const ValueKey('styles_here_tooltip'),
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: x == null
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: below ? [tailRow, bubble] : [bubble, tailRow],
+      ),
+    );
+  }
+}
+
+/// v11.59: the hint anchored to the REAL four-dot button ([anchorKey]) —
+/// measured after layout, re-measured on every rebuild / size change
+/// (phone, tablet, rotation, window width) and hidden when the button
+/// can't be measured. Fill the camera Stack with it.
+class AnchoredStylesHint extends StatefulWidget {
+  const AnchoredStylesHint({
+    super.key,
+    required this.anchorKey,
+    required this.onTap,
+  });
+  final GlobalKey anchorKey;
+  final VoidCallback onTap;
+
+  @override
+  State<AnchoredStylesHint> createState() => _AnchoredStylesHintState();
+}
+
+class _AnchoredStylesHintState extends State<AnchoredStylesHint> {
+  final _bubbleKey = GlobalKey();
+  Rect? _anchor;
+  Size? _bubble;
+  bool _scheduled = false;
+
+  void _schedule() {
+    if (_scheduled) return;
+    _scheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scheduled = false;
+      if (!mounted) return;
+      final me = context.findRenderObject();
+      final a = widget.anchorKey.currentContext?.findRenderObject();
+      Rect? rect;
+      if (me is RenderBox &&
+          a is RenderBox &&
+          me.hasSize &&
+          a.hasSize &&
+          a.attached) {
+        // Global → this layer (the button is not inside this subtree).
+        final o = a.localToGlobal(Offset.zero) - me.localToGlobal(Offset.zero);
+        rect = o & a.size;
+      }
+      final b = _bubbleKey.currentContext?.findRenderObject();
+      final bs = b is RenderBox && b.hasSize ? b.size : null;
+      if (rect != _anchor || bs != _bubble) {
+        setState(() {
+          _anchor = rect;
+          _bubble = bs;
+        });
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    MediaQuery.sizeOf(context); // rebuild (→ re-measure) on size changes
+    _schedule();
+    return LayoutBuilder(
+      builder: (context, c) {
+        final a = _anchor;
+        final b = _bubble;
+        final view = Size(c.maxWidth, c.maxHeight);
+        if (a == null || b == null || !view.isFinite) {
+          // Measure first (invisible, no taps).
+          return Stack(
+            children: [
+              Positioned(
+                left: 0,
+                top: 0,
+                child: IgnorePointer(
+                  child: Opacity(
+                    opacity: 0,
+                    child: KeyedSubtree(
+                      key: _bubbleKey,
+                      child: StylesHereTooltip(onTap: widget.onTap, tailX: 20),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+        final pl = placeStylesHint(viewport: view, anchor: a, bubble: b);
+        return Stack(
+          children: [
+            Positioned(
+              left: pl.left,
+              top: pl.top,
+              child: KeyedSubtree(
+                key: _bubbleKey,
+                child: StylesHereTooltip(
+                  onTap: widget.onTap,
+                  tailX: pl.tailX,
+                  below: pl.below,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 class _Tail extends CustomPainter {
+  const _Tail({this.up = false});
+  final bool up;
+
   @override
   void paint(Canvas canvas, Size size) {
-    final p = Path()
-      ..moveTo(0, 0)
-      ..lineTo(size.width, 0)
-      ..lineTo(size.width / 2, size.height)
-      ..close();
+    final p = up
+        ? (Path()
+            ..moveTo(0, size.height)
+            ..lineTo(size.width, size.height)
+            ..lineTo(size.width / 2, 0)
+            ..close())
+        : (Path()
+            ..moveTo(0, 0)
+            ..lineTo(size.width, 0)
+            ..lineTo(size.width / 2, size.height)
+            ..close());
     canvas.drawPath(p, Paint()..color = AppColors.proGold);
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _Tail oldDelegate) => oldDelegate.up != up;
 }

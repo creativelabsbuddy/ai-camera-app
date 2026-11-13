@@ -109,6 +109,10 @@ class LiveVisionEngine extends ValueNotifier<LiveVision> {
   /// centre 1/cropZoom of the camera frame.
   double cropZoom = 1;
 
+  /// v11.60: add the whole-frame tracking proxy to frame stats (cheap-phone
+  /// zoom tracking only; off = no extra work).
+  bool trackFrames = false;
+
   /// v11.42: user zoom; above [kThrottleZoom] frames are analysed at most
   /// every [kThrottleGapMs] ms (~6–7 per second).
   double zoom = 1;
@@ -253,6 +257,7 @@ class LiveVisionEngine extends ValueNotifier<LiveVision> {
             bytesPerRow: plane.bytesPerRow,
             rotation: _rotation.rawValue,
             cropZoom: cropZoom,
+            track: trackFrames,
           ),
         );
       }

@@ -115,16 +115,15 @@ void main() {
   });
 
   test('zoom prompt + wiring', () {
-    expect(
-      kZoomCleanPrompt,
-      startsWith('Keep this zoomed photo exactly as it is'),
-    ); // v11.39
+    // v11.63: zoom uses the same simple prompt as Pro Photo.
+    expect(kZoomCleanPrompt, kUniversalEnhancePrompt);
     expect(kZoomLadderPrompt.startsWith(kZoomCleanPrompt), isTrue);
     final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
     expect(h, contains('zoomClean: zoomFlow != ZoomFlow.normal'));
     expect(h, contains('_walkCheckpoints()'));
     expect(h, contains('_captureAtClearLimit()'));
-    expect(h, contains('if (isSameSubject(m)) keep.add(r);'));
+    // v11.59: refs are matched to the final AREA (aligned, sharpness-aware).
+    expect(h, contains('await pickZoomSource('));
     final e = File('lib/services/enhance_service.dart').readAsStringSync();
     expect(e, contains('framingCheckApplies(')); // v11.42
   });

@@ -33,7 +33,7 @@ void main() {
 
   test('version 1.11.5x and bolt credit icon assets 1x/2x/3x', () {
     final pub = File('pubspec.yaml').readAsStringSync();
-    expect(pub, matches(RegExp(r'version: 1\.11\.5[4-9]\+')));
+    expect(pub, matches(RegExp(r'version: 1\.11\.(5[4-9]|6\d)\+')));
     expect(pub, contains('- assets/icons/'));
     for (final p in [
       'assets/icons/credit_bolt.png',
@@ -91,7 +91,7 @@ void main() {
   test('video "from" price is the lowest resolution; labels use the bolt', () {
     final svc = VideoService();
     final from = videoFromCredits(svc);
-    for (final r in kWanResolutions) {
+    for (final r in kMiniMaxResolutions) {
       expect(from, lessThanOrEqualTo(svc.creditsForKey(5, r)));
     }
     expect(videoFromLabel(3), 'from ${kCreditGlyph}3');
@@ -178,6 +178,7 @@ void main() {
   testWidgets('tooltip tap dismisses and stores it', (t) async {
     await t.pumpWidget(const AiCameraApp());
     await t.pump(const Duration(milliseconds: 300));
+    await t.pump(); // v11.59: anchored after one layout pass
     await t.tap(find.byKey(const ValueKey('styles_here_tooltip')));
     await t.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const ValueKey('styles_here_tooltip')), findsNothing);
@@ -230,12 +231,12 @@ void main() {
         .isNotEmpty;
     expect(btn('480p'), isTrue);
     expect(t.widget<ChoiceChip>(find.byKey(const ValueKey('preset_res_480p'))).selected, isTrue);
-    await t.tap(find.byKey(const ValueKey('preset_res_720p')));
+    await t.tap(find.byKey(const ValueKey('preset_res_768p')));
     await t.pump();
-    expect(btn('720p'), isTrue);
+    expect(btn('768p'), isTrue);
     await t.tap(find.byKey(const ValueKey('preset_go')));
     await _settle(t, 4);
-    expect(res, '720p');
+    expect(res, '768p');
   });
 
   testWidgets('custom window (AI Video): text → video asks for no image', (t) async {

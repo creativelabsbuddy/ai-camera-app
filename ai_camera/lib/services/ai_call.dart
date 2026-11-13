@@ -69,6 +69,14 @@ Future<T> raceCancel<T>(Future<T> f, AiCancelToken? token) {
   return c.future;
 }
 
+/// v11.59 offline message (= network_check.kCheckInternet).
+const String kCheckInternetMessage = 'Check your internet connection';
+
+/// v11.59 (= zoom_source.kZoomNoSharpSource).
+const String kNoSharpSourceMessage =
+    'Hold steady: no sharp photo matched this zoom. Zoom in slowly and try '
+    'again. No credits used.';
+
 /// Why an AI call produced no image (nothing is ever charged for these).
 /// v11.31 shown when the zoom result framing check fails.
 const String kFramingChangedMessage =
@@ -107,6 +115,10 @@ enum AiFailureKind {
   /// photo (model copied a reference) → not shown, nothing charged.
   framingChanged,
 
+  /// v11.59 zoom past the clear limit with no matching sharp source → AI
+  /// not called (nothing charged).
+  noSharpSource,
+
   /// Anything else (HTTP 5xx, bad JSON …).
   other,
 }
@@ -132,6 +144,7 @@ AiFailureKind classifyAiError(Object e) {
   if (e is AiFailure) return e.kind;
   if (e is AiCancelledException) return AiFailureKind.cancelled;
   if (e is TimeoutException) return AiFailureKind.timeout;
+  if (e.toString() == kCheckInternetMessage) return AiFailureKind.network;
   if (e is SocketException || e is HandshakeException) {
     return AiFailureKind.network;
   }
@@ -164,8 +177,8 @@ String aiFailureMessage(AiFailureKind kind, {bool isStyle = false}) {
     case AiFailureKind.enhanceOnly:
       return kEnhanceOnlyTip;
     case AiFailureKind.network:
-      return 'No connection to the AI — check your internet. '
-          'No credits used — tap Retry.';
+      // v11.59: exact wording (no credits are ever used offline).
+      return kCheckInternetMessage;
     case AiFailureKind.cancelled:
       return 'Cancelled — no credits used.';
     case AiFailureKind.tooDark:
@@ -175,6 +188,8 @@ String aiFailureMessage(AiFailureKind kind, {bool isStyle = false}) {
           'No credits used — tap Retry.';
     case AiFailureKind.framingChanged:
       return kFramingChangedMessage;
+    case AiFailureKind.noSharpSource:
+      return kNoSharpSourceMessage;
     case AiFailureKind.other:
       return 'Could not apply — no credits used. Tap Retry.';
   }

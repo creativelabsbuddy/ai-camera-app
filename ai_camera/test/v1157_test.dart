@@ -50,9 +50,9 @@ void main() {
     AccountService.resetForTest();
   });
 
-  test('version 1.11.57+70', () {
+  test('version (v11.64: 1.11.64+77)', () {
     expect(File('pubspec.yaml').readAsStringSync(),
-        contains('version: 1.11.57+70'));
+        contains('version: 1.11.64+77'));
   });
 
   group('no Free labels / no free-first style', () {
@@ -185,8 +185,9 @@ void main() {
       expect(find.text('Choose from gallery'), findsNothing);
       expect(find.text('Take video'), findsNothing);
       expect(find.byKey(const ValueKey('preset_res_480p')), findsOneWidget);
-      expect(find.byKey(const ValueKey('preset_res_580p')), findsOneWidget);
-      expect(find.byKey(const ValueKey('preset_res_720p')), findsOneWidget);
+      expect(find.byKey(const ValueKey('preset_res_768p')), findsOneWidget);
+      expect(find.byKey(const ValueKey('preset_res_580p')), findsNothing);
+      expect(find.byKey(const ValueKey('preset_res_720p')), findsNothing);
       // Default 480p selected.
       final chip480 =
           t.widget<ChoiceChip>(find.byKey(const ValueKey('preset_res_480p')));

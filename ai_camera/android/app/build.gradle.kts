@@ -11,6 +11,9 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        // v11.58: flutter_local_notifications (video-ready notification) needs
+        // core library desugaring.
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
@@ -85,6 +88,7 @@ configurations.all {
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     // v11 Portrait (Normal): CameraX vendor BOKEH extension. Same CameraX
     // version as camera_android_camerax 0.7.2 (core/camera2/lifecycle are
     // already in the APK through the plugin; declared here for compiling).

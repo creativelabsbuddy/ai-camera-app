@@ -38,6 +38,8 @@ class VideoDeps {
 }
 
 /// Long side ≤1280 px JPEG (keeps uploads small; providers resize anyway).
+/// v11.58: an upright JPEG that already fits is sent as is; otherwise q100
+/// (no lossy q90 re-encode).
 Future<File> prepareVideoImage(File f) async {
   try {
     final out = await compute(_shrink, await f.readAsBytes());
@@ -54,6 +56,9 @@ Future<File> prepareVideoImage(File f) async {
 Uint8List? _shrink(Uint8List b) {
   final d = img.decodeImage(b);
   if (d == null) return null;
+  final rotated = d.exif.imageIfd.hasOrientation && (d.exif.imageIfd.orientation ?? 1) != 1;
+  final jpeg = b.length > 2 && b[0] == 0xFF && b[1] == 0xD8;
+  if (jpeg && !rotated && (d.width > d.height ? d.width : d.height) <= 1280) return null;
   final o = img.bakeOrientation(d);
   final long = o.width > o.height ? o.width : o.height;
   final r = long > 1280
@@ -61,7 +66,7 @@ Uint8List? _shrink(Uint8List b) {
           width: o.width >= o.height ? 1280 : null,
           height: o.height > o.width ? 1280 : null)
       : o;
-  return Uint8List.fromList(img.encodeJpg(r, quality: 90));
+  return Uint8List.fromList(img.encodeJpg(r, quality: 100));
 }
 
 class VideoScreen extends StatefulWidget {
@@ -400,7 +405,7 @@ class _VideoScreenState extends State<VideoScreen> with SingleTickerProviderStat
   );
 
   Widget _customView() {
-    final lengths = AiConfig.minimaxEnabled ? kVideoLengths : const [5];
+    final lengths = AiConfig.minimaxEnabled ? kVideoLengths : const <int>[];
     final r = _custom;
     return ValueListenableBuilder<Map<String, int>>(
       valueListenable: _svc.credits,
@@ -430,8 +435,19 @@ class _VideoScreenState extends State<VideoScreen> with SingleTickerProviderStat
           _h('Quality'),
           _chips<String>('video_res', resolutionsFor(_seconds), _res,
               (x) => '$x · 🪙${_svc.creditsForKey(_seconds, x)}', (x) => _res = x),
-          if (r.isMiniMax)
-            const Padding(padding: EdgeInsets.only(top: 10), child: MiniMaxLabel()),
+          if (AiConfig.minimaxEnabled)
+            const Padding(
+              padding: EdgeInsets.only(top: 10),
+              child: Text(kLongVideoWaitNote, key: ValueKey('video_wait_note'),
+                  style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            ),
+          if (!AiConfig.minimaxEnabled)
+            const Padding(
+              padding: EdgeInsets.only(top: 10),
+              child: Text('AI video is not available',
+                  key: ValueKey('video_unavailable'),
+                  style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            ),
           const SizedBox(height: 20),
           FilledButton.icon(
             key: const ValueKey('video_generate'),
@@ -448,16 +464,17 @@ class _VideoScreenState extends State<VideoScreen> with SingleTickerProviderStat
   }
 }
 
-class MiniMaxLabel extends StatelessWidget {
-  const MiniMaxLabel({super.key});
+/// v11.58: "AI-generated" chip on every AI video (replaces the model chip).
+class AiGeneratedLabel extends StatelessWidget {
+  const AiGeneratedLabel({super.key});
   @override
   Widget build(BuildContext context) => Align(
     alignment: Alignment.centerLeft,
     child: Container(
-      key: const ValueKey('minimax_label'),
+      key: const ValueKey('ai_generated_label'),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(6)),
-      child: const Text(kMiniMaxLabel, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+      child: const Text(kAiGeneratedLabel, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
     ),
   );
 }
@@ -472,6 +489,9 @@ class _FromChip extends StatelessWidget {
     child: CreditText(videoFromLabel(credits), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800)),
   );
 }
+
+String _elapsed(Duration d) =>
+    d.inMinutes >= 1 ? '${d.inMinutes} min ${d.inSeconds % 60} s' : '${d.inSeconds} s';
 
 class _JobView extends StatelessWidget {
   const _JobView({required this.job, required this.svc, required this.onLeave});
@@ -515,17 +535,28 @@ class _JobView extends StatelessWidget {
             StreamBuilder<int>(
               stream: Stream.periodic(const Duration(seconds: 1), (i) => i),
               builder: (_, _) => Text(
-                '${DateTime.now().difference(job.started).inSeconds} s · usually 1–3 min',
+                '${_elapsed(DateTime.now().difference(job.started))} · '
+                '$kLongVideoWaitNote',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),
             ),
           ],
-          if (r.isMiniMax) const Padding(padding: EdgeInsets.only(top: 10), child: Center(child: MiniMaxLabel())),
+          if (job.active) ...[
+            const SizedBox(height: 8),
+            const Text(
+              "You can leave this screen. We'll send a notification when your video is ready. "
+              'If it is not ready in 30 min, your credits are refunded.',
+              key: ValueKey('video_background_note'),
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
+          ],
           if (job.error != null) ...[
             const SizedBox(height: 10),
             Text(job.error!, key: const ValueKey('video_error'), textAlign: TextAlign.center),
-            const Text('No credits were used.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.success)),
+            if (job.error != kVideoTimeoutMessage)
+              const Text('No credits were used.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.success)),
           ],
           const SizedBox(height: 24),
           if (job.active) ...[
@@ -611,7 +642,7 @@ class _ResultViewState extends State<_ResultView> {
                   )
                 else
                   const SizedBox(key: ValueKey('video_result'), width: 120, height: 120, child: Icon(Icons.movie, size: 64)),
-                if (j.request.isMiniMax) const Positioned(right: 8, bottom: 8, child: MiniMaxLabel()),
+                const Positioned(right: 8, bottom: 8, child: AiGeneratedLabel()),
               ],
             ),
           ),

@@ -8,9 +8,16 @@ import json
 import re
 from typing import Optional
 
-LOCKED_ENHANCE_PROMPT = (
-    'Enhance this real photo and keep it the same photo: same framing, same people and faces, same objects and same scene, with nothing added. Make it clean and naturally sharp, with balanced light, true natural colours and real skin and surface texture.'
+# v11.63: simple one-line enhance for every normal and zoom photo
+# (1x–100x Pro Photo). Mirrors kUniversalEnhancePrompt / kZoomCleanPrompt.
+UNIVERSAL_ENHANCE_PROMPT = (
+    'Clean up and sharpen this image, with a natural tone.'
 )
+# v11.63 Portrait variant (used INSTEAD of the universal prompt), 1x–100x.
+PORTRAIT_ENHANCE_PROMPT = (
+    'Clean up and sharpen this image, with a natural tone. Blur only the background with a natural bokeh, and keep the subject sharp.'
+)
+LOCKED_ENHANCE_PROMPT = UNIVERSAL_ENHANCE_PROMPT  # legacy name
 
 CONTEXT_IMAGE_SENTENCE = (
     "Use the second image only to understand the scene; enhance and upscale "
@@ -61,16 +68,7 @@ NIGHT_PROMPT = (  # v11.48: general, no scene-specific words
     "A natural night photograph of the last image: gently reduce noise, recover shadow detail and keep the real lighting and mood. Keep every object, light and colour as in the photo and do not add anything new. Photorealistic."
 )
 
-PORTRAIT_PROMPT = (
-    "Turn this into a natural portrait-mode photo with DSLR-like background blur. First "
-    "identify the main in-focus subject (a person, hand, pet, object, product or food). Keep "
-    "the subject 100% sharp and unchanged, including fine edges such as hair strands, fingers, "
-    "fabric edges and object outlines; do not blur any part of the subject and do not leave "
-    "pieces of the background sharp. Blur the background with depth-graded lens blur, farther "
-    "areas blurrier than nearer ones, and render out-of-focus lights as soft, natural, round "
-    "lens bokeh. Do not add, remove, move or alter anything; keep the same framing, colors, "
-    "lighting and identity."
-)
+PORTRAIT_PROMPT = PORTRAIT_ENHANCE_PROMPT  # v11.58: admin key 'portrait' = the variant
 
 # v11.6 Macro + AI Microscope (two images). The app sends the FIRST image =
 # a sharp crop, at real pixels, of the small region the user zoomed into
@@ -100,11 +98,22 @@ MACRO_PROMPT = (
 MACRO_CLOSE_PROMPT = (
     "A real close-up macro photograph of this photo: keep the same framing and the same subject shape. Make it clearly sharp and crisp, remove blur and noise, and bring out the fine natural texture and tiny detail that is already there. Keep the subject's own natural colours and soft natural light. Photorealistic."
 )
+# v11.58 Microscope / Extreme / Ultra: material-aware (never hardcoded
+# "cells"); {spot} = the PART detected at the shutter, {on_object} = " on the
+# <object locked at 1.5x>" (empty when the part already names it).
 # v11.47 Microscope: detect first, then TEXT ONLY at 100x (admin key
 # macro_microscope). No spot → the photo prompt below (fallback).
 MACRO_MICROSCOPE_PROMPT = (
-    "A tiny area of {spot} under a light microscope at 100x magnification, microscopic "
-    "cells and structure filling the frame. One single full-frame image, no text or "
+    "A tiny area of {spot}{on_object} under a light microscope at 100x magnification, filling "
+    "the frame. Show only the real fine structure of its own material up close, for example: "
+    "painted metal shows paint grains, printing dots and light scratches; plastic shows fine "
+    "moulding marks; fabric shows woven threads and fibres; paper shows pressed fibres; a "
+    "leaf shows veins and tiny plant structure; skin shows pores and fine lines. "
+    "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
+    "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
+    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "Do not add "
+    "anything this material would not really have. One single full-frame image, no text or "
     "labels. Photorealistic."
 )
 # v11.47: the old photo-based Microscope prompt, used only when no spot.
@@ -117,14 +126,28 @@ MACRO_MICROSCOPE_PHOTO_PROMPT = (
 # (fallback: the label). No framing / truth / colour rules, no colour match.
 # v11.18: Extreme is ONLY this line (no prefix / suffix / hint line).
 MACRO_EXTREME_PROMPT = (
-    "A tiny area of {spot} under a light microscope at 1000x magnification, microscopic "
-    "cells and structure filling the frame. One single full-frame image, no text or "
-    "labels. Photorealistic."
+    "A tiny area of {spot}{on_object} under a light microscope at 1000x magnification, "
+    "filling the frame. Show the very fine structure its own material would really have at "
+    "this magnification, for example: painted metal shows paint pigment grains, printing dots "
+    "and tiny scratches in the metal; plastic shows its fine surface grain; fabric shows "
+    "single fibres; a leaf shows tiny plant structure. "
+    "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
+    "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
+    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "Do not add anything this material "
+    "would not really have. One single full-frame image, no text or labels. Photorealistic."
 )
 # v11.20 Ultra (30x): electron microscope (may come out greyscale — intended).
 MACRO_ULTRA_PROMPT = (
-    "Close-up of {spot} under a scanning electron microscope at 2000x magnification. "
-    "Show how it looks. One single full-frame image, no text or labels. Photorealistic."
+    "Close-up of {spot}{on_object} under a scanning electron microscope at 2000x "
+    "magnification. Show the true surface structure of its own material, for example: painted "
+    "metal shows paint grains, coating cracks and fine scratches; plastic shows its moulded "
+    "surface; fabric shows single fibres. "
+    "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
+    "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
+    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "Do not add anything this material would not really "
+    "have. One single full-frame image, no text or labels. Photorealistic."
 )
 
 _DESC_FALLBACK = {
@@ -295,13 +318,24 @@ def deep_prompt(template: str, subject: Optional[str] = None,
     part); no spot → subject; neither → "This". The broad subject is NOT
     added when a spot exists. Optional admin {subject}."""
     subj = sanitize_detected(subject)
-    if subj == "the subject":
+    if subj in ("the subject", "close-up"):  # v11.64: general = no name
         subj = ""
     spot = sanitize_detected(part) or subj or "this"
     if template.lstrip().startswith("{spot}"):  # v11.28: capital only at the start
         spot = spot[0].upper() + spot[1:]
     t = template.replace("{subject}", subj or "this")
+    t = t.replace("{on_object}", on_object_text(subj, spot))
     return t.replace("{spot}", spot).strip()
+
+
+def on_object_text(obj: Optional[str], spot: Optional[str]) -> str:
+    """v11.58: " on the <locked object>" after the part, or "" when there is
+    no object, it is the general "close-up" or the part already names it."""
+    o = sanitize_detected(obj)
+    sp = sanitize_detected(spot)
+    if not o or o in ("the subject", "close-up", "this") or o == sp or o in sp:
+        return ""
+    return f" on the {o}"
 
 
 def macro_prompt(template: str, subject: Optional[str] = None, level: str = "macro",
@@ -316,7 +350,7 @@ def macro_prompt(template: str, subject: Optional[str] = None, level: str = "mac
         if macro_text_only(level, subject, part):
             if "{spot}" not in (template or ""):
                 template = MACRO_MICROSCOPE_PROMPT  # old saved photo prompt
-            return deep_prompt(template, None, part)
+            return deep_prompt(template, subject, part)  # v11.58: + locked object
         template = MACRO_MICROSCOPE_PHOTO_PROMPT
     name = MACRO_LEVELS.get(level, MACRO_LEVELS["macro"])[1]
     desc = sanitize_detected(subject)  # v11.33: the box description as is
@@ -368,6 +402,9 @@ VAGUE_DETECT_WORDS = {
     "white", "black", "gray", "grey", "red", "green", "blue", "yellow",
     "orange", "purple", "pink", "brown", "beige", "silver", "gold",
     "golden", "colorful", "colourful", "multicolored", "transparent", "clear",
+    # v11.64: shape / look words (never a name on their own).
+    "oval", "rounded", "square", "rectangular", "rectangle", "circular", "triangular",
+    "shaped", "embossed", "wavy", "look", "looking", "appearance",
 }
 
 
@@ -376,6 +413,102 @@ def is_vague_detect(name) -> bool:
     words (no object or material name) → treat as nothing found."""
     words = [w for w in re.split(r"[^a-z0-9'-]+", (name or "").lower()) if w]
     return not words or all(w in VAGUE_DETECT_WORDS for w in words)
+
+
+# v11.64 Microscope / Extreme / Ultra: look words stripped from a detected
+# name / part (shape + texture; colour is allowed and kept).
+LOOK_STRIP_WORDS = {
+    "oval", "round", "rounded", "square", "rectangular", "rectangle", "circular",
+    "circle", "circles", "triangular", "shape", "shaped", "shapes", "texture",
+    "textured", "embossed", "pattern", "patterned", "wavy", "look", "looking",
+    "appearance",
+}
+# v11.64 naming step (flash-lite): 1.5x wide photo + zoomed final photo.
+DETECT_MICRO_NAME_PROMPT = (
+    "Photo 1 is a wider view and photo 2 is zoomed in on the same object. Name the object in "
+    "these photos and which part or side is shown in the zoomed photo. Reply in this form: "
+    "<colour> <common object name>, <part or side>. Example: white paper napkin, surface; "
+    "human hand, back of hand; red soda can, side. Do not describe texture or shape. "
+    + DETECT_DEVICE_RULE + " Reply with that one line only."
+)
+# v11.64 part step (flash-lite): only the part / side of the named object;
+# it never renames the object.
+DETECT_MICRO_PART_PROMPT = (
+    "Photo 1 is a wider view of the {parent}. Photo 2 is zoomed; the red box marks where the "
+    "user is zooming. Which part or side of the {parent} is in the red box? Give only the part "
+    "or side, at most 5 words (e.g. surface, back of hand, palm, side, rim). Do not rename the "
+    "object and do not describe its colour, texture, shape or look. Reply only as JSON "
+    '{"part": "<part or side>", "in_scene": true}. in_scene is false only if photo 2 shows a '
+    "completely different place than photo 1."
+)
+
+
+def strip_look_words(text: Optional[str]) -> str:
+    """v11.64 (= Dart stripLookWords): drop shape / texture words from each
+    comma part; a part left with only filler / look words is dropped."""
+    out = []
+    for seg in re.split(r"[,;]", (text or "").lower()):
+        words = [w for w in re.split(r"[^a-z0-9'-]+", seg) if w and w not in LOOK_STRIP_WORDS]
+        while words and words[-1] in ("with", "and", "of", "a", "an", "the", "in", "on"):
+            words.pop()
+        while words and words[0] in ("with", "and", "of", "in", "on"):
+            words.pop(0)
+        if not words or all(w in VAGUE_DETECT_WORDS and w != "surface" for w in words):
+            continue
+        out.append(" ".join(words))
+    return ", ".join(out)
+
+
+def parse_micro_name_reply(text: Optional[str]) -> tuple[str, str]:
+    """v11.64 "<colour> <name>, <part>" → (name, part), look words stripped.
+    The name is '' when it is vague (only colour / look words)."""
+    j = _json_obj(text)
+    if j is not None:
+        n, pt = j.get("name") or j.get("object") or "", j.get("part") or ""
+        raw = f"{n if isinstance(n, str) else ''}, {pt if isinstance(pt, str) else ''}"
+    else:
+        lines = [l.strip() for l in re.split(r"[\r\n]+", text or "") if l.strip()]
+        raw = re.sub(r"^(answer|name|object)\s*:\s*", "", lines[0], flags=re.I) if lines else ""
+    segs = [x.strip() for x in re.split(r"[,;]", raw)]
+    name = sanitize_detected(strip_look_words(segs[0] if segs else ""))
+    part = sanitize_detected(strip_look_words(segs[1] if len(segs) > 1 else ""))
+    if is_vague_detect(name):
+        name = ""
+    return name, part
+
+
+def micro_part_only(part: Optional[str]) -> str:
+    """v11.64 part step reply → part / side only ('' when none)."""
+    return sanitize_detected(strip_look_words(clean_detected(part)))
+
+
+def micro_spot_text(name: Optional[str], part: Optional[str]) -> str:
+    """v11.64 (= Dart microSpotText): name + part, e.g. "surface of a white
+    paper napkin", "back of a human hand". Never drops the name."""
+    n = sanitize_detected(name)
+    p = sanitize_detected(strip_look_words(part))
+    if not n:
+        return ""
+    if not p or p == n or n in p:
+        spot = p if p and n in p else n
+    else:
+        head = n.split(" ")[-1]
+        art = "an" if n[0] in "aeiou" else "a"
+        m = re.match(r"^(.*\bof)(?: the| a| an)? " + re.escape(head) + r"$", p)
+        if m:
+            spot = f"{m.group(1)} {art} {n}"
+        else:
+            if p.endswith(" " + head) or p == head:
+                p = p[: -len(head)].strip() or "surface"
+            spot = f"{p} of {art} {n}"
+    cands = [spot, n]
+    if _micro_id(n) == "skin" and "skin" not in spot.split(" "):
+        art = "an" if spot[0] in "aeiou" else "a"
+        cands.insert(0, f"skin on {art} {spot}" if spot == n else f"skin on the {spot}")
+    for c in cands:  # the spot must fit sanitize_detected (8 words, 80 chars)
+        if len(c.split(" ")) <= 8 and len(c) <= 80:
+            return c
+    return n
 
 
 def parse_box_reply(text: Optional[str]) -> tuple[str, bool]:
@@ -658,21 +791,20 @@ def build_prompt(
     mode_prompt: Optional[str] = None,
     color_prompt: Optional[str] = None,
     context_boxed: bool = False,
+    portrait_prompt: Optional[str] = None,
 ) -> str:
-    """Locked base + mode sentence (night / portrait / macro; v11 text comes
-    from the admin store, ``night=True`` without one uses the default) +
-    context, zoom, quality, AI-filter style, color look, user request."""
-    parts = [LOCKED_ENHANCE_PROMPT]
-    mp = (mode_prompt or "").strip() or (NIGHT_PROMPT if night else "")
+    """v11.63: simple one-line prompt (or the Portrait bokeh variant given
+    as ``portrait_prompt``, used INSTEAD of the base) + optional mode
+    sentence (Macro levels) + context, quality, AI-filter style, colour
+    look, user request. ``zoom`` / ``optical_limit`` / ``night`` no longer
+    change the text."""
+    pp = (portrait_prompt or "").strip()
+    parts = [pp or UNIVERSAL_ENHANCE_PROMPT]
+    mp = (mode_prompt or "").strip()
     if mp:
         parts.append(mp)
     if has_context:
         parts.append(CONTEXT_BOXED_SENTENCE if context_boxed else CONTEXT_IMAGE_SENTENCE)
-    zs = zoom_sentence(zoom, optical_limit)
-    if zs:
-        parts.append(zs)
-    if high_zoom_clarity(zoom, optical_limit):
-        parts.append(HIGH_ZOOM_CLARITY)
     qs = QUALITY_SENTENCES.get(tier, "")
     if qs:
         parts.append(qs)
@@ -761,9 +893,16 @@ MACRO_CONTEXT_LINE = (
 # v11.30 100x zoom ladder (cheap phones): boxed lower-zoom reference photos
 # first, the final photo (to enhance) last. Hidden; the app sends only a flag.
 # v11.34 high zoom (2x+, all phones): keep the photo, raise its own detail.
-ZOOM_CLEAN_PROMPT = (
-    'Keep this zoomed photo exactly as it is: same subject, shapes, framing, colours and light. Make the detail that is already there clearer, gently clean light noise, and keep natural fine texture and a real camera-photo look.'
+# v11.63: zoom uses the same simple one-line prompt as Pro Photo
+# (= kZoomCleanPrompt / UNIVERSAL_ENHANCE_PROMPT). Last photo only.
+ZOOM_CLEAN_PROMPT = UNIVERSAL_ENHANCE_PROMPT
+# v11.59 sharp-source zoom (= kZoomSourcePrompt): image 1 = the sharp lower-zoom
+# photo aligned to the zoomed area (content), image 2 = the final zoom (framing only).
+ZOOM_SOURCE_PROMPT = (
+    "The first image is a sharp photo of exactly the area to show. The second image is a blurrier, more zoomed photo of the same area; use it only to match the framing. Show the first image's real content at that framing as a clear, natural camera photo. Keep every visible shape, colour, print, letter, pattern and design exactly as in the first image. Where detail is not visible in the first image, leave it soft; do not invent new texture, detail or objects."
 )
+ZOOM_SOURCE_MAIN_LONG = 1536
+ZOOM_FRAMING_LONG = 768
 # Cheap phones with matching checkpoint photos: final photo first, then refs.
 ZOOM_LADDER_REFS_LINE = (
     "The other images are clearer close-up views of the same area; use them for detail."
@@ -795,3 +934,13 @@ def parse_fill(text: Optional[str]) -> tuple[Optional[float], Optional[bool]]:
     except (TypeError, ValueError):
         fill = None
     return fill, (w if isinstance(w, bool) else None)
+
+
+def zoom_source_prompt(style_prompt: str | None = None, color_prompt: str | None = None) -> str:
+    """v11.59: the sharp source first, the final zoom (framing) second."""
+    parts = [ZOOM_SOURCE_PROMPT]
+    if style_prompt and style_prompt.strip():
+        parts.append(f"Style: {style_prompt.strip()}")
+    if color_prompt and color_prompt.strip():
+        parts.append(f"Color look: {color_prompt.strip()} {COLOR_FILTER_TAIL}")
+    return " ".join(parts)

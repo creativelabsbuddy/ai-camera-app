@@ -11,43 +11,55 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/ai_config.dart';
 import 'account_service.dart';
 import 'entitlements.dart';
+import 'network_check.dart';
 import 'server_api_client.dart' show decodeAccountBlob;
+import 'video_notifier.dart';
 
-/// v11.53 AI video: 8scale Wan 2.2 14B for ≤5 s, Phosor MiniMax H3 Turbo for
-/// longer clips. Key TEST builds call the providers directly (like the image
-/// AI); server builds go through `/v1/video/*`. Credits are charged only when
-/// a video is delivered.
+/// v11.63 AI video: Phosor MiniMax H3 Turbo for every length (5/8/10/15 s).
+/// Key TEST builds call Phosor directly (like the image AI); server builds
+/// go through `/v1/video/*`. Credits are charged only when a video is delivered.
+/// [VideoProvider.wan] remains only so legacy job ids still parse.
 enum VideoProvider { wan, minimax }
 
 enum VideoKind { t2v, i2v }
 
-const kWanSeconds = [5];
-const kVideoLengths = [5, 8, 10, 15]; // 5 = Wan, longer = MiniMax
-const kWanResolutions = ['480p', '580p', '720p'];
+const kVideoLengths = [5, 8, 10, 15];
 const kMiniMaxResolutions = ['480p', '768p'];
 const kVideoAspects = ['9:16', '16:9'];
 const kMiniMaxLabel = 'MiniMax H3';
 
+/// v11.58: the user-facing chip on AI videos (replaces the model chip).
+const kAiGeneratedLabel = 'AI-generated';
+
+/// v11.58: a video that is not ready after this long is given up and its
+/// credits refunded (nothing is charged before delivery).
+const kVideoTimeout = Duration(minutes: 30);
+const kVideoTimeoutMessage =
+    'No video after 30 min. Your credits were refunded. Please try again later.';
+
+/// v11.58 / v11.63: wait note shown while any AI video is made (all lengths).
+const kLongVideoWaitNote = 'Usually ready in 15–20 min';
+
 // Provider cost (₹, $1 = ₹95) → PROVISIONAL credits =
-// ceil(cost × 1.5 / ₹0.99). Same numbers as the server; admin can override.
-const _wanCost5s = {'480p': 1.43, '580p': 2.28, '720p': 4.18};
+// ceil(cost × 1.5 / ₹0.99). Same numbers as the server for 8/10/15 s;
+// minimax_5_480p is hard-set to 3 (the formula would be 5).
 const _mmCostPerS = {'480p': 0.57, '768p': 0.855};
 
 int _prov(double inr) => math.max(1, (inr * 1.5 / 0.99 - 1e-9).ceil());
 
-/// Provisional credit table, keyed like the server (`wan_5_480p`).
-Map<String, int> defaultVideoCredits() => {
-  for (final r in kWanResolutions)
-    for (final s in [3, 5]) 'wan_${s}_$r': _prov(_wanCost5s[r]! * s / 5),
-  for (final r in kMiniMaxResolutions)
-    for (final s in [6, 8, 10, 15]) 'minimax_${s}_$r': _prov(_mmCostPerS[r]! * s),
-};
+/// Credit table, keyed like the server (`minimax_5_480p`).
+Map<String, int> defaultVideoCredits() {
+  final t = <String, int>{
+    for (final r in kMiniMaxResolutions)
+      for (final s in kVideoLengths) 'minimax_${s}_$r': _prov(_mmCostPerS[r]! * s),
+  };
+  t['minimax_5_480p'] = 3;
+  return t;
+}
 
-VideoProvider providerFor(int seconds) =>
-    seconds <= 5 ? VideoProvider.wan : VideoProvider.minimax;
+VideoProvider providerFor(int seconds) => VideoProvider.minimax;
 
-List<String> resolutionsFor(int seconds) =>
-    providerFor(seconds) == VideoProvider.wan ? kWanResolutions : kMiniMaxResolutions;
+List<String> resolutionsFor(int seconds) => kMiniMaxResolutions;
 
 class VideoRequest {
   const VideoRequest({
@@ -78,7 +90,7 @@ class VideoRequest {
     if (!kVideoLengths.contains(seconds)) return 'Unsupported length';
     if (!resolutionsFor(seconds).contains(resolution)) return 'Unsupported resolution';
     if (!kVideoAspects.contains(aspect)) return 'Unsupported aspect ratio';
-    if (isMiniMax && !AiConfig.minimaxEnabled) return 'Videos longer than 5 s are not available';
+    if (!AiConfig.minimaxEnabled) return 'AI video is not available';
     return null;
   }
 }
@@ -109,7 +121,7 @@ class VideoJob {
 
   bool get active =>
       phase != VideoPhase.done && phase != VideoPhase.failed && phase != VideoPhase.cancelled;
-  String get modelLabel => request.isMiniMax ? kMiniMaxLabel : 'Wan 2.2';
+  String get modelLabel => kMiniMaxLabel;
 
   VideoJob copy({VideoPhase? phase, String? jobId, File? file, String? error, int? creditsCharged}) =>
       VideoJob(
@@ -179,7 +191,8 @@ String? findVideoUrl(Object? j) {
 const _done = {'completed', 'succeeded', 'success', 'done'};
 const _failed = {'failed', 'error', 'cancelled', 'canceled'};
 
-/// Key test build: calls 8scale / Phosor directly. Job id = `provider~rid`.
+/// Key test build: calls Phosor directly. Job id = `provider~rid`.
+/// Needs only PHOSOR_API_KEY (VIDEO_API_KEY is unused).
 class DirectVideoBackend implements VideoBackend {
   DirectVideoBackend({http.Client? client}) : _http = client ?? http.Client();
   final http.Client _http;
@@ -188,13 +201,9 @@ class DirectVideoBackend implements VideoBackend {
   @override
   bool get chargesLocally => true;
 
-  Map<String, String> _h(VideoProvider p) => p == VideoProvider.wan
-      ? {'Authorization': 'Bearer ${AiConfig.videoApiKey}'}
-      : {'X-API-Key': AiConfig.phosorApiKey};
+  Map<String, String> _h([VideoProvider? p]) => {'X-API-Key': AiConfig.phosorApiKey};
 
-  static bool configured(VideoProvider p) => p == VideoProvider.wan
-      ? AiConfig.videoApiKey.isNotEmpty
-      : AiConfig.phosorApiKey.isNotEmpty;
+  static bool configured(VideoProvider p) => AiConfig.phosorApiKey.isNotEmpty;
 
   VideoException _fail(String what, http.Response r) {
     var msg = r.body;
@@ -211,42 +220,21 @@ class DirectVideoBackend implements VideoBackend {
     final p = r.provider;
     String? rid;
     try {
-      if (p == VideoProvider.wan) {
-        final body = <String, Object?>{
-          'prompt': r.prompt,
-          'resolution': r.resolution,
-          'aspect_ratio': r.aspect,
-          'seconds': r.seconds,
-        };
-        var path = '/wan-2.2/14b/text-to-video';
-        if (r.kind == VideoKind.i2v) {
-          body['image'] = 'data:image/jpeg;base64,${base64Encode(await r.image!.readAsBytes())}';
-          path = '/wan-2.2/14b/image-to-video';
-        }
-        final res = await _http
-            .post(Uri.parse('${AiConfig.wanBaseUrl}$path'),
-                headers: {..._h(p), 'Content-Type': 'application/json'}, body: jsonEncode(body))
-            .timeout(_t);
-        if (res.statusCode >= 400) throw _fail('Wan 2.2 submit', res);
-        final j = (jsonDecode(res.body) as Map);
-        rid = '${j['requestId'] ?? j['request_id'] ?? j['id'] ?? ''}';
-      } else {
-        final body = <String, Object?>{
-          'prompt': r.prompt,
-          'resolution_tier': r.resolution,
-          'aspect_ratio': r.aspect,
-          'duration': r.seconds,
-          'model': 'minimax/h3/${r.kind == VideoKind.i2v ? 'image' : 'text'}-to-video/turbo',
-        };
-        if (r.kind == VideoKind.i2v) body['image_url'] = await _upload(r.image!);
-        final res = await _http
-            .post(Uri.parse('${AiConfig.phosorBaseUrl}/inference/submit'),
-                headers: {..._h(p), 'Content-Type': 'application/json'}, body: jsonEncode(body))
-            .timeout(_t);
-        if (res.statusCode >= 400) throw _fail('MiniMax submit', res);
-        final j = (jsonDecode(res.body) as Map);
-        rid = '${j['request_id'] ?? j['id'] ?? ''}';
-      }
+      final body = <String, Object?>{
+        'prompt': r.prompt,
+        'resolution_tier': r.resolution,
+        'aspect_ratio': r.aspect,
+        'duration': r.seconds,
+        'model': 'minimax/h3/${r.kind == VideoKind.i2v ? 'image' : 'text'}-to-video/turbo',
+      };
+      if (r.kind == VideoKind.i2v) body['image_url'] = await _upload(r.image!);
+      final res = await _http
+          .post(Uri.parse('${AiConfig.phosorBaseUrl}/inference/submit'),
+              headers: {..._h(p), 'Content-Type': 'application/json'}, body: jsonEncode(body))
+          .timeout(_t);
+      if (res.statusCode >= 400) throw _fail('MiniMax submit', res);
+      final j = (jsonDecode(res.body) as Map);
+      rid = '${j['request_id'] ?? j['id'] ?? ''}';
     } on TimeoutException {
       // Never resubmit: the job may exist and be billed.
       throw VideoException('The video service timed out — not retried');
@@ -279,9 +267,11 @@ class DirectVideoBackend implements VideoBackend {
   @override
   Future<VideoStatus> status(String jobId) async {
     final (p, rid) = _parse(jobId);
-    final url = p == VideoProvider.wan
-        ? '${AiConfig.wanBaseUrl}/status/$rid'
-        : '${AiConfig.phosorBaseUrl}/inference/status/$rid';
+    if (p != VideoProvider.minimax) {
+      // Legacy 8scale job ids still parse; no 8scale API calls.
+      return const VideoStatus('failed', error: 'This video job is no longer available');
+    }
+    final url = '${AiConfig.phosorBaseUrl}/inference/status/$rid';
     final res = await _http.get(Uri.parse(url), headers: _h(p)).timeout(_t);
     if (res.statusCode >= 400) throw _fail('Status', res);
     final j = jsonDecode(res.body);
@@ -293,27 +283,24 @@ class DirectVideoBackend implements VideoBackend {
       return VideoStatus(const {'in_queue', 'queued', 'pending'}.contains(st) ? 'queued' : 'running');
     }
     var u = findVideoUrl(j);
-    if (u == null && p == VideoProvider.minimax) {
+    if (u == null) {
       final rr = await _http
           .get(Uri.parse('${AiConfig.phosorBaseUrl}/inference/result/$rid'), headers: _h(p))
           .timeout(_t);
+      // v11.58: Phosor answers 202 while the result is not published yet
+      // (status can say "completed" a moment before) → keep polling.
+      if (rr.statusCode == 202) return const VideoStatus('running');
       if (rr.statusCode >= 400) throw _fail('Result', rr);
       u = findVideoUrl(jsonDecode(rr.body));
+      if (u == null) return const VideoStatus('running');
     }
-    return u == null
-        ? const VideoStatus('failed', error: 'The video service returned no video')
-        : VideoStatus('done', url: u);
+    return VideoStatus('done', url: u);
   }
 
   @override
   Future<void> cancel(String jobId) async {
-    final (p, rid) = _parse(jobId);
-    if (p != VideoProvider.wan) return;
-    try {
-      await _http
-          .post(Uri.parse('${AiConfig.wanBaseUrl}/cancel/$rid'), headers: _h(p))
-          .timeout(const Duration(seconds: 10));
-    } catch (_) {}
+    // Phosor has no cancel API.
+    return;
   }
 }
 
@@ -406,7 +393,7 @@ class VideoService {
     Future<VideoBackend?> Function(VideoProvider p)? backend,
     Future<File> Function(String url)? download,
     this.pollEvery = const Duration(seconds: 4),
-    this.maxWait = const Duration(minutes: 12),
+    this.maxWait = kVideoTimeout,
   }) : _backendFor = backend ?? _defaultBackend,
        _download = download ?? _defaultDownload;
 
@@ -483,7 +470,12 @@ class VideoService {
     if (bad != null) throw VideoException(bad);
     final be = await _backendFor(r.provider);
     if (be == null) throw VideoException('AI video is not set up in this build');
+    // v11.59: no working internet → nothing submitted, nothing charged.
+    if (!await NetworkCheck.instance.online()) {
+      throw VideoException(kCheckInternet);
+    }
     _cancelled = false;
+    unawaited(VideoNotifier.instance.requestPermission());
     job.value = VideoJob(
       request: r,
       phase: VideoPhase.submitting,
@@ -503,12 +495,14 @@ class VideoService {
       }
       job.value = j = j.copy(phase: VideoPhase.queued, jobId: id);
       await _savePending(j);
-      final deadline = DateTime.now().add(maxWait);
+      // v11.58: 30 min from the start (also across an app restart).
+      final deadline = j.started.add(maxWait);
       while (true) {
         await Future<void>.delayed(pollEvery);
         if (_cancelled) return;
         if (DateTime.now().isAfter(deadline)) {
-          throw VideoException('The video is taking too long — try again later (no credits used)');
+          await be.cancel(id);
+          throw VideoException(kVideoTimeoutMessage);
         }
         VideoStatus st;
         try {
@@ -540,12 +534,22 @@ class VideoService {
         if (_cancelled) return;
         job.value = j.copy(phase: VideoPhase.done, file: f, creditsCharged: charged);
         await _clearPending();
+        unawaited(VideoNotifier.instance.show('Your AI video is ready', 'Tap to open AI Camera and watch it.'));
         return;
       }
     } catch (e) {
       if (_cancelled) return;
-      job.value = j.copy(phase: VideoPhase.failed, error: e is VideoException ? e.message : _redact('$e'));
+      final msg = e is VideoException
+          ? e.message
+          : isOfflineError(e)
+          ? kCheckInternet
+          : _redact('$e');
+      job.value = j.copy(phase: VideoPhase.failed, error: msg);
       await _clearPending();
+      unawaited(VideoNotifier.instance.show(
+        'Your AI video could not be made',
+        msg == kVideoTimeoutMessage ? msg : 'No credits were used. Please try again.',
+      ));
     }
   }
 
@@ -600,7 +604,8 @@ class VideoService {
       if (raw == null) return;
       final m = (jsonDecode(raw) as Map).cast<String, Object?>();
       final started = DateTime.parse('${m['started']}');
-      if (DateTime.now().difference(started) > const Duration(hours: 2)) {
+      // v11.58: past the 30 min window → given up, nothing was charged.
+      if (DateTime.now().difference(started) > maxWait) {
         await _clearPending();
         return;
       }

@@ -5,13 +5,21 @@ import 'entitlements.dart' show kMaxCustomPromptChars;
 import 'mode_prompts.dart' show kColorFilterTail;
 import 'zoom_range.dart' show formatZoom;
 
-/// v11.39 enhance prompt (short, positive, faithful; approved by Ankush). Everything
-/// else is appended as separate sentences. Mirrored verbatim in
-/// enhance-server/prompts.py.
-const String kLockedEnhancePrompt =
-    'Enhance this real photo and keep it the same photo: same framing, same people and faces, same objects and same scene, with nothing added. Make it clean and naturally sharp, with balanced light, true natural colours and real skin and surface texture.';
+/// v11.63 simple one-line enhance for every normal and zoom photo
+/// (1x–100x Pro Photo). Mirrored in enhance-server/prompts.py
+/// (UNIVERSAL_ENHANCE_PROMPT / ZOOM_CLEAN_PROMPT).
+const String kUniversalEnhancePrompt =
+    'Clean up and sharpen this image, with a natural tone.';
 
-/// Sent when a second (context) image is attached.
+/// v11.63 Portrait variant (Pro AI Portrait, 1x–100x): same cleanup plus
+/// natural background bokeh. Used INSTEAD of the universal prompt.
+/// = prompts.PORTRAIT_ENHANCE_PROMPT.
+const String kPortraitEnhancePrompt =
+    'Clean up and sharpen this image, with a natural tone. Blur only the background with a natural bokeh, and keep the subject sharp.';
+
+/// Legacy name: the base of every enhance (now the universal prompt).
+const String kLockedEnhancePrompt = kUniversalEnhancePrompt;
+
 const String kContextBoxedSentence =
     'The second image is a sharp, lower-zoom photo of the same '
     'scene taken just before; the red box marks exactly where the '
@@ -26,8 +34,15 @@ const String kHighZoomClarity =
 /// first, the photo to enhance last. Mirrors the server's hidden prompt
 /// (key builds only).
 /// v11.34 high zoom (2x+, all phones): keep the photo, raise its detail.
-const String kZoomCleanPrompt =
-    'Keep this zoomed photo exactly as it is: same subject, shapes, framing, colours and light. Make the detail that is already there clearer, gently clean light noise, and keep natural fine texture and a real camera-photo look.';
+/// v11.63: zoom uses the same simple one-line prompt as Pro Photo.
+/// Mirrored in enhance-server/prompts.py (ZOOM_CLEAN_PROMPT).
+const String kZoomCleanPrompt = kUniversalEnhancePrompt;
+
+/// v11.59 sharp-source zoom: image 1 = sharp lower-zoom photo aligned to
+/// the zoomed area (the content), image 2 = the blurry final zoom (framing
+/// only). = prompts.ZOOM_SOURCE_PROMPT.
+const String kZoomSourcePrompt =
+    'The first image is a sharp photo of exactly the area to show. The second image is a blurrier, more zoomed photo of the same area; use it only to match the framing. Show the first image\'s real content at that framing as a clear, natural camera photo. Keep every visible shape, colour, print, letter, pattern and design exactly as in the first image. Where detail is not visible in the first image, leave it soft; do not invent new texture, detail or objects.';
 const String kZoomLadderRefsLine =
     'The other images are clearer close-up views of the same area; use them '
     'for detail.';
@@ -133,20 +148,18 @@ String buildEnhancePrompt({
   String? modePrompt,
   String? colorPrompt,
   bool contextBoxed = false,
+  bool portrait = false,
 }) {
-  final parts = <String>[kLockedEnhancePrompt];
+  // v11.63: simple one-line prompt for normal / zoom / night photos;
+  // Portrait uses its bokeh variant instead of the base. [zoom],
+  // [opticalLimit] and [night] are kept for callers but no longer change
+  // the text. A [modePrompt] (Macro levels) is still appended.
+  final parts = <String>[portrait ? kPortraitEnhancePrompt : kUniversalEnhancePrompt];
   final mp = modePrompt?.trim() ?? '';
-  if (mp.isNotEmpty) {
-    parts.add(mp);
-  } else if (night) {
-    parts.add(kNightPrompt);
-  }
+  if (mp.isNotEmpty) parts.add(mp);
   if (hasContextImage) {
     parts.add(contextBoxed ? kContextBoxedSentence : kContextImageSentence);
   }
-  final zs = zoomSentence(zoom: zoom, opticalLimit: opticalLimit);
-  if (zs.isNotEmpty) parts.add(zs);
-  if (highZoomClarity(zoom, opticalLimit)) parts.add(kHighZoomClarity);
   final qs = qualitySentence(tier);
   if (qs.isNotEmpty) parts.add(qs);
   final st = stylePrompt?.trim() ?? '';

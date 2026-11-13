@@ -268,6 +268,40 @@ in Pro AI). See enhance-server/README.md for the API.
 - Credits icon: gold lightning bolt PNG `assets/icons/credit_bolt.png` (+2.0x/3.0x); `CreditText` renders the `🪙` token in labels as the bolt. Credit values unchanged.
 - Screens rendered offscreen: `flutter test tool_shots/v1154_shots_test.dart --update-goldens` → `tool_shots/out/`.
 
+## v11.59 (1.11.59+72) — Sharp-source zoom, fail-closed microscope, offline handling, anchored Styles hint
+
+- **Zoom (cheap phones, ladder flow):** the sharpest CLEAR, matching lower-zoom checkpoint photo,
+  cut at the final area x1.6 and aligned to the final area (edge NCC, every offset; strict - no
+  evidence = no match), becomes the AI's primary image; the final zoom is sent after it as the
+  framing reference only (`kZoomSourcePrompt` / `ZOOM_SOURCE_PROMPT`). A source must match
+  (>= 0.45), keep >= 96 px and be >= 1.15x sharper than the final at the same resolution.
+  (Superseded in v11.61: real-pixel gate of 32 px, fair noise-corrected comparison at equal
+  scale, and no "final is sharp enough → final alone" exemption — see v11.61.)
+  Past the phone's own clear limit (observed per phone, else optical) with no usable source the
+  app does NOT fall back to final-only: "Hold steady and retake", no AI call, no credits.
+  Blurry checkpoints no longer break the chain (subject checks compare clear photos only).
+  Every zoom result is checked against its source area (structure + colours without a look) on
+  the key path and the server (`zoom_source` form field, `no_sharp_source` 422). Zoom uses a safe
+  prompt (keep design / identity / text; unrecoverable detail stays soft, no invented texture).
+  Key-build overlay: `chain ... · last zoom <refs tried / sent>`; diagnostics reset per session.
+- **Microscope:** missing 1.5x photo, failed lock, a comparison error or a mismatch after the
+  retakes fail closed (no AI call, nothing charged); the old detect-only fallback is removed.
+- **Offline:** short multi-endpoint TCP probe (not connectivity only) before Pro AI shutter,
+  enhance, styles / custom and video; "Check your internet connection", no spinner, no charge.
+  A watchdog cancels a running AI call within ~8 s when the network drops; DNS / socket errors
+  are classified as network, not provider errors. Normal photo is untouched.
+- **Styles are here hint:** anchored to the real four-dot button (measured after layout,
+  re-measured on rotation / width change), clamped inside the camera area, tail points at it.
+
+## v11.58 (1.11.58+71) — Coordinated microscope, background video, DSLR enhance, per-style models
+- Microscope / Extreme / Ultra: the object is locked from a 1.5x shot (`lib/services/micro_lock.dart`, reused for 3 min while the frame still matches); higher zooms detect only a PART of that object ("{part} on the {object}"). Frame mismatch → "Hold steady" + automatic retake (up to 2). Prompts are material-aware (no hardcoded "cells"). Bad result → "Bad result? Refund ⚡N" on the preview (local-ledger builds).
+- Video: ≤5 s → 8scale Wan, >5 s → Phosor MiniMax H3 Turbo (unchanged routing). Jobs run in the background with a system notification when done/failed; long jobs show "Usually ready in 15–20 min"; 30-min timeout cancels at the provider ("Your credits were refunded" — nothing is charged before delivery). Phosor result HTTP 202 = still running. "AI-generated" label replaces the MiniMax chip. Video style cards read credit_cost + samples.
+- Enhance: one universal DSLR prompt for all modes (+ Portrait bokeh variant). Upload JPEG q100, no 1920 upscale (app + server).
+- Camera class: macro low-end flag now comes from the camera classifier (`_cameraClass.lowEnd`).
+- Styles model routing: `styles.model` (Supabase column, default 'klein'; filters 'custom'; anon grant). `klein` = FLUX Klein (user photo only), `runware_klein4b` = Runware FLUX.2 Klein 4B (for violent/bloody looks; env/dart-define `RUNWARE_API_KEY`), `custom` = the Custom model. Any failure / missing key → falls back to Custom. Admin style editor has a "Model" select; API field `model`.
+- Vercel env added: VIDEO_API_KEY, PHOSOR_API_KEY, RUNWARE_API_KEY (sensitive). Admin redeployed (Vercel `ai-camera-admin`, bundle `deploy-v1158.zip`).
+- Test APK: `--dart-define-from-file` (OPENROUTER_API_KEY, RUNWARE_API_KEY, VIDEO_API_KEY, PHOSOR_API_KEY) from a temp file deleted after the build; keys never committed.
+
 ## v11.57 (1.11.57+70) — No Free styles; video cards = last photo → Generate
 - Free labels and the free-first library-style trial are gone. Every photo/video style card shows ⚡N (admin credit_cost). Apply button is always "Apply · ⚡N". Backend `decide_look` charges the style cost on every apply.
 - Video style cards are image-to-video only: tap uses the last captured photo and opens the confirm sheet (9:16 preview, 480/580/720p default 480p, "Generate · ⚡N"). No Take photo / gallery / Take video. No photo → "Take a photo first". Text-to-video stays in Custom only.
@@ -280,3 +314,161 @@ in Pro AI). See enhance-server/README.md for the API.
 - Custom card → Custom window directly (no "photo or video?"): segments "AI Photo" | "AI Video" (Photo tab → AI Photo, Video tab → AI Video). AI Video = previous custom video (image→video / text→video, 9:16/16:9, 5/8/10/15 s, provider resolutions).
 - Real before/after samples: `styles.sample_before_url` / `sample_after_url` (nullable; video uses after only). Public bucket `style-samples`; prompt-free anon view `public.style_samples_public` (app reads it with the publishable key). `/v1/styles` exposes both fields. Admin style editor: upload/replace/remove BEFORE + AFTER (video: AFTER); API `POST /admin/api/styles/{id}/images` fields `sample_before`, `sample_after`, `remove_samples`. Cards show the AFTER image; the apply sheet shows a draggable before/after slider above the photo selection. Uploaded for germany_street, paris_eiffel, santorini, rainy_mumbai, studio_headshot.
 - Admin redeployed (Vercel `ai-camera-admin`, bundle `deploy-v1156.zip`).
+
+## v11.60 (1.11.60+73) — Calmer zoom preview, wide→close tracking, aligned zoom burst
+
+No hardware validation yet (no physical device in the build loop): every number below is a
+bound or a synthetic-test result, not a measured clarity gain on any phone.
+
+- **Live preview (cheap phones):** no centre-AF pass per zoom step any more. One centre AF
+  nudge only when the zoom has rested 1.2 s AND the camera itself reports out-of-focus
+  (CONTROL_AF_STATE 5/6), at most once per 5 s, never over a tap/lock, back to continuous AF
+  after 2.5 s (`zoomAfNudgeDue`). Metering region `clamp(0.5/digital, 0.10, 0.15)` of the
+  camera frame (`meteringSizeForZoom`, was down to 0.05). Preview stays `ResolutionPreset.max`.
+  The bright latch (dark scenes only) is unchanged.
+- **Reference stills instead of per-checkpoint photos:** a full-res reference only when the zoom
+  rested 0.7 s, gyro steady, tracked, view motion < 0.02, ≥1.5x the last reference, ≤ the
+  camera's own max zoom, ≤3 per session, flash off (`shouldCaptureReference`).
+- **Wide→close tracking (`zoom_tracker.dart`, `image_register.dart`):** analysis frames
+  (upright 72-px-wide grey proxy of the whole camera frame, 3×3 box-averaged, every 250 ms) are
+  registered to a keyframe with a similarity transform (pyramid NCC search seeded by the zoom
+  ratio, then Huber-weighted Gauss–Newton; scored at matched pixel density). Transforms chain
+  root→key→current; blurry frames never become keyframes and never reset the chain; 8 misses,
+  implausible motion (scale ±35 % vs zoom, rotation > 8°), leaving the reference or a different
+  subject → lost → references dropped (hint) → a shot needing a source fails closed (no AI
+  call, nothing charged). Registration runs in a worker isolate (`zoom_tracker_worker.dart`):
+  one update in flight, a newer frame replaces a pending one (stale frames dropped), an epoch
+  makes replies from before a reset count for nothing. Device rotation or a physical-lens switch
+  (`activePhysicalId`, polled ~1 s) → references dropped, tracker reset, a new root only after
+  0.6 s + a steady phone. Stills follow the device orientation while analysis frames do not: each
+  reference records k (still = analysis view turned k·90° clockwise) — portrait/landscape from
+  `deviceOrientation`, the exact k (incl. upside-down) by matching the still against the live
+  analysis frame (score ≥ 0.80, margin ≥ 0.10 over the other candidate), else the reference is
+  discarded. Aspect change → tracking off. Each
+  reference stores its tracked view; at the shutter the final region is mapped cur→root→ref,
+  cut at ×1.3 (native region decode) and must still pass the strict v11.59 `pickZoomSource`
+  match + sharper check. No whole-frame-similarity fallback.
+- **Zoom burst (`burst_merge.dart`):** cheap phones, digitally zoomed shots (digital > 1.2;
+  Normal, offline too) AND — the v11.9 coverage kept — Pro AI Zoom-mode shots at 2x … the
+  camera's native max (`shouldMergeZoom`), region ≤ 16 MP: 2–4 sequential stills within 1.8 s
+  (a capture > 0.7 s ends it), merged in a killable isolate in row BANDS of ≤ 1.5 MP output
+  (native sampled BitmapRegionDecoder reads per band + EXIF rotation; Dart fallback): memory
+  stays at a few band-sized buffers even for full 12 MP frames. Bands end on the tile grid so
+  the result equals a single-band merge (tested). 15 s budget; over it → the sharpest frame's
+  own full photo (never a half merge). Anchor = sharpest; frames with other exposure (±10 %) or that do not register
+  (median tile NCC < 0.85) left out; similarity warp; 16-px ghost tiles (anchor only); robust
+  per-pixel weights from the anchor's noise σ; mild halo-clamped sharpen only after a real
+  merge. An aligned multi-frame DENOISE merge, not super-resolution. Temp files deleted.
+- The merged region / tracked source feed the existing v11.59 payload (source first, final
+  framing only) for both the direct key and the server; no server change, same model/prompts.
+- Tests: `test/v1160_test.dart`, `test/v1160_rotation_worker_test.dart` (synthetic scenes with
+  known transforms; portrait / landscape both ways / upside-down ROI mapping + crop content;
+  worker single-in-flight / drop / epoch).
+- **Limits:** no device run yet. The rotation check relies on the still and the analysis frame
+  seeing the same view (same aspect); a 16:9 still vs a 4:3 analysis stream → references
+  rejected (fails closed, reported 'rotation unverified'). Lens identity needs the camera to
+  report `activePhysicalId`; phones that do not → no lens-switch reset (the tracker's own
+  scale/score checks still apply). Band timings on real cheap phones are unmeasured.
+
+## v11.63 (1.11.63+76) — Phosor-only video, simple enhance prompts, last photo always
+
+- **Video:** every length (5/8/10/15 s) goes to Phosor MiniMax H3 Turbo. 8scale Wan
+  is removed (no new submit/status/cancel calls). Resolutions for all lengths are
+  480p and 768p (580p and 720p dropped). Wait note for every video:
+  "Usually ready in 15–20 min". If MiniMax is disabled, video is unavailable.
+- **Credits (user-facing):** 8/10/15 s unchanged. 5 s 480p stays ⚡3
+  (`minimax_5_480p`). New 5 s 768p is ⚡7 (`minimax_5_768p`). Existing `wan_*`
+  admin / VIDEO_CREDITS_JSON overrides no longer apply (keys changed; default 3
+  for 5 s 480p). HMAC of in-flight server job ids is unchanged
+  (`VIDEO_API_KEY + PHOSOR_API_KEY`). Video needs only `PHOSOR_API_KEY`.
+- **Enhance prompts:** Pro Photo (1x–100x, including zoom without Zoom mode)
+  uses "Clean up and sharpen this image, with a natural tone." Pro AI Portrait
+  (1x–100x) uses that line plus "Blur only the background with a natural bokeh,
+  and keep the subject sharp." Macro and Night prompts are unchanged. Model
+  (Flare) and photo credits are unchanged.
+- **Shutter:** the last captured photo is always sent to the AI. Missing root /
+  no clear base no longer blocks capture or replaces the photo. "Hold steady at
+  lower zoom first" and "Tap to capture a clear base photo first" are not shown
+  as blockers. "Beyond clear range, AI-enhanced" remains a label only.
+
+## v11.62 (1.11.62+75) — Use the tracked root; send the root crop alone
+
+- **Sharpness check skipped for digital crops.** When the final's optical
+  part (lens / in-sensor crop) is no higher than the matched reference's —
+  always on a single-lens phone — the final is a digital crop that cannot
+  hold more real detail, and its sensor noise only *looks* like edges. The
+  tracked + matched root / reference is used without a sharpness
+  comparison. A genuine optical-vs-optical case (e.g. a real telephoto
+  final vs a 1x root) still runs the fair sharpness check.
+- **Root crop sent alone.** When the source is used this way, only the
+  aligned root ROI crop goes to the AI (framing came from tracking); the
+  blurry final is not sent. Existing single-image zoom prompt / server
+  `zoom_clean` path and output check; no prompt, model or credit changes.
+- Unchanged: strict content match, `< 32 px` real-ROI refusal, fail-closed
+  with no matched source (no AI call, no credits), "Beyond clear range,
+  AI-enhanced" label.
+- Debug overlay: e.g. `src root 2x roi 94px match 0.83 (sharpness skipped:
+  digital crop)` and `sent source crop only (framing from tracking)`.
+
+## v11.61 (1.11.61+74) — Low-zoom root reference, real-pixel gate, no final-only exemption
+
+No hardware validation yet (no physical device in the build loop): every number below is a
+design bound or a synthetic-test result, not a measured clarity gain on any phone. AI model,
+prompts, credits, prices, video routing and style previews are unchanged.
+
+- **ROOT reference (`zoom_root.dart`, `zoom_preview_policy.dart`):** the FIRST reference of a
+  zoom chain must be taken at a low camera zoom — 1x–2x, or the device's true optical zoom
+  (`opticalLimit`: a real telephoto or the 2x in-sensor crop of a ≥40 MP main sensor) — while the
+  zoom has rested, the gyro is steady (gyro now also runs in the ladder below 10x; the "Hold
+  steady" hint / shutter wait stay > 10x only) and the view is tracked. Deep zoom without a root
+  takes no reference. Up to 3 more tracked step references (≥ 1.5x apart, ≤ hardware max); max 4.
+  The old comment/assumption that refs up to the camera's hardware max are "optically new" was
+  wrong: camera zoom above the optical part is a DIGITAL crop (ISP crop included). Every
+  reference is labelled `opt Nx` or `opt Nx + dig Mx` (`refZoomLabel`) and only REAL sensor
+  pixels are counted (`realScale = optical / camera zoom`). The root is the chain's sharpness
+  baseline. Live hint without a root past 2x: "Tap to capture a clear base photo first" (tap →
+  eased zoom to 1x, fresh tracking chain, root photo, back to the user's zoom).
+- **Tracking past blur (`zoom_tracker.dart`):** a blurry frame that misses the normal match is
+  retried at half resolution (coarse structure) and accepted at NCC ≥ 0.70 when it stays within
+  0.08 / ×1.15 of the zoom-predicted view; if the gyro reports the phone still, unmatched frames
+  coast on the zoom-predicted view (scale = zoom ratio, last position) for ≤ 20 frames instead of
+  losing the chain. Coarse/coasted frames never become keyframes, and a coasted region is never
+  trusted blindly — the strict source match against the final still has to pass.
+- **Sources at the shutter:** the root ROI (+ clearer tracked steps, best first, root always
+  included) are cut at their tracked region and sent as the AI's primary image with the merged
+  final as framing (existing payload/prompt). Gate: ≥ 32 REAL px on the ROI's long side (was 96
+  still px). Sharpness is compared fairly (`fairSharpRatio`): both crops box-resized to the SAME
+  size (the smaller real resolution, ≤ 256 px) so neither gets a downscale advantage and the
+  burst's 3×3 sharpen is averaged away; Laplacian variance minus the noise part (20σ², σ from the
+  low tail of Immerkær's noise filter). A matched source is used when its detail is ≥ 0.8× the
+  final's at that scale; clearly blurrier → `sourceBlurrier` (no usable source).
+- **No final-only exemption:** `ZoomSourceReason.finalSharp` and the `failClosed` exemption are
+  removed. Past the phone's clear limit with no usable sharp source → no AI call, no credits,
+  message "Hold steady at lower zoom first. No credits used." (no root) or the v11.59 "no sharp
+  photo matched" message (root present). The final can only count as clear inside the pixel
+  clear range.
+- **Real-pixel gate:** real ROI px = root still long side × root optical part ÷ final zoom.
+  Per-device clear limit = still long side × root optical part ÷ 384 px (≈ 10x for a 4000-px 1x
+  root; never below the optical limit; the last root's still size is remembered for the live
+  label). Beyond it the camera shows "Beyond clear range, AI-enhanced" live and on the result —
+  capture is NOT blocked. ROI < 32 real px → fail closed ("Zoomed too far for this phone to
+  capture real detail. Zoom out a little. No credits used.").
+- **Burst merge (`burst_merge.dart`):** ghost test per 16-px tile now removes the tile's own
+  brightness offset first (exposure flicker is not a ghost; the offset is also removed from the
+  merged pixels), adds edge tolerance 0.35 × the anchor's local gradient (sub-pixel
+  misregistration), floors noise σ at 1.5 (ISP-denoised stills reported a tiny σ), offset alone
+  > 6σ + 4 → ghost. Sharpening (0.3) is applied per pixel in proportion to how much really merged
+  there: anchor-only areas are not sharpened (a mostly anchor-only burst is no longer
+  over-sharpened). Same rule in every band (no seams; banded = single-band test still passes).
+- Key-build overlay: `refs root 1x opt 1x ✓ · 4x opt 1x + dig 4.0x ✓ · tracked … · src … ·
+  clear ≤10.4x roi 80px beyond · sent …`.
+- Tests: `test/v1161_test.dart` (root rule, optical vs digital labels, real-pixel gate, live note,
+  fail-closed verdict + messages, fair sharpness incl. noise, coarse/coasted tracking + bound,
+  burst offset/anchor-only/moving patch, wiring, result label widget); v1159/v1160 updated
+  (finalSharp → sourceBlurrier, 32-px real gate, root-first reference rule, max 4 refs).
+- **Limits:** no device run yet. A single-lens phone cannot produce optical-like 30–50x: beyond
+  the clear range the result is labelled AI-enhanced and fine detail (small text, faces) is the
+  model's estimate. The root needs one steady moment at ≤ 2x; zooming straight in without it
+  ends in the base-photo hint / fail closed. Coasting assumes the phone is still (gyro) and only
+  the zoom changed. Known open item (unchanged): a server-side completion/charge followed by a
+  network drop has no automatic refund.
