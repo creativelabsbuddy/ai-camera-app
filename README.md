@@ -24,6 +24,7 @@ export ANDROID_HOME=/home/box/devtools/android-sdk ANDROID_SDK_ROOT=/home/box/de
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ```
 
+
 ## v10 (free on-device modes, live AI-look preview, pose guide, enhance only at capture)
 
 > Status: code complete + tested; **APK not built yet** (Ankush: one combined build after more features).
