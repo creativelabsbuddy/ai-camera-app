@@ -27,14 +27,18 @@ jobs:
           channel: 'stable'
 
       - name: Get dependencies
-        run: flutter pub get
+        run: |
+          cd ai_camera
+          flutter pub get
 
       - name: Build APK
-        run: flutter build apk --release
+        run: |
+          cd ai_camera
+          flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: ai_camera/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 7
