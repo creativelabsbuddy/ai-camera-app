@@ -59,6 +59,15 @@ class AiConfig {
   );
   static const String phosorBaseUrl = 'https://phosor.ai/api/v1';
 
+  /// v11.65 Fast ⚡ video: fal.ai MiniMax H3 Max Turbo (key TEST builds
+  /// only via `--dart-define=FAL_KEY=…`; server builds keep it server-side).
+  static const String falApiKey = String.fromEnvironment(
+    'FAL_KEY',
+    defaultValue: '',
+  );
+  static const String falQueueUrl = 'https://queue.fal.run';
+  static const String falApp = 'minimax/h3-max-turbo';
+
   /// MiniMax region switch (default: allowed everywhere; no geo detection).
   static const bool minimaxEnabled = bool.fromEnvironment(
     'MINIMAX_ENABLED',
@@ -82,6 +91,12 @@ class AiConfig {
   );
   static const String runwareUrl = 'https://api.runware.ai/v1';
   static const String runwareKlein4bModel = 'runware:400@4';
+
+  /// v11.65 tier upscale: Real-ESRGAN (BSD-3) on Runware, 2x, Full HD /
+  /// Ultra HD only. Same RUNWARE_API_KEY as Klein 4B.
+  static const String runwareUpscaleModel = 'runware:504@1';
+  static const int runwareUpscaleFactor = 2;
+  static const Duration upscaleTimeout = Duration(seconds: 45);
 
   /// v11.15 Macro subject detection (cheap vision chat call, no credits).
   static const String openRouterChatUrl =

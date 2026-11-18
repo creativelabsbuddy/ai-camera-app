@@ -860,7 +860,8 @@ def build_video_admin_router(get_store: Callable[[], ModePromptStore], get_log: 
         for k, v in t.items():
             prov, secs, res = k.split("_")
             cost = _VP.cost_inr(prov, int(secs), res)
-            label = "MiniMax H3 Turbo (Phosor)" if prov == _VP.MINIMAX else "legacy"
+            label = {_VP.MINIMAX: "MiniMax H3 Turbo (Phosor) · Standard",
+                     _VP.FAL: "MiniMax H3 Max Turbo (fal) · Fast ⚡ (credits TBD)"}.get(prov, "legacy")
             rows.append(f"<tr><td>{label}</td><td>{secs} s</td><td>{res}</td><td>₹{cost:.2f}</td>"
                         f'<td><input name="{_esc(k)}" type="number" min="0" max="500" value="{v}" style="width:70px"></td></tr>')
         msg = '<p style="color:#9be59b">Saved.</p>' if saved else ""

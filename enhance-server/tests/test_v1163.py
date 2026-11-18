@@ -8,10 +8,12 @@ from tests.test_v11 import env, enc, scene  # noqa: F401
 from tests.test_v1130 import _post  # noqa: F401
 
 
-PHOTO = "Clean up and sharpen this image, with a natural tone."
+PHOTO = "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
 PORTRAIT = (
     "Clean up and sharpen this image, with a natural tone. "
-    "Blur only the background with a natural bokeh, and keep the subject sharp."
+    "Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. "
+    "Blur only the background with a natural bokeh, and keep the subject sharp. "
+    "Do not change, add or remove anything else."
 )
 
 

@@ -18,7 +18,7 @@ void main() {
   test('locked prompt unchanged and always first', () {
     expect(
       kLockedEnhancePrompt,
-      'Clean up and sharpen this image, with a natural tone.',
+      'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.',
     ); // v11.63 simple enhance prompt
     final v6Locked = kLockedEnhancePrompt;
     expect(buildEnhancePrompt(), v6Locked);

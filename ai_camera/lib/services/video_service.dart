@@ -13,13 +13,17 @@ import 'account_service.dart';
 import 'entitlements.dart';
 import 'network_check.dart';
 import 'server_api_client.dart' show decodeAccountBlob;
+import 'upload_prep.dart' show prepareUpload;
 import 'video_notifier.dart';
 
 /// v11.63 AI video: Phosor MiniMax H3 Turbo for every length (5/8/10/15 s).
 /// Key TEST builds call Phosor directly (like the image AI); server builds
 /// go through `/v1/video/*`. Credits are charged only when a video is delivered.
 /// [VideoProvider.wan] remains only so legacy job ids still parse.
-enum VideoProvider { wan, minimax }
+/// v11.65: [VideoProvider.fal] = Fast ⚡ (fal.ai MiniMax H3 Max Turbo, ready
+/// in seconds). Standard stays Phosor. Fast credits = the matching Standard
+/// cell for now (credits TBD).
+enum VideoProvider { wan, minimax, fal }
 
 enum VideoKind { t2v, i2v }
 
@@ -27,6 +31,45 @@ const kVideoLengths = [5, 8, 10, 15];
 const kMiniMaxResolutions = ['480p', '768p'];
 const kVideoAspects = ['9:16', '16:9'];
 const kMiniMaxLabel = 'MiniMax H3';
+const kFastVideoLabel = 'MiniMax H3 Max Turbo';
+
+/// v11.65 speed options shown before a video is made (English UI).
+const kStandardVideoTitle = 'Standard';
+const kStandardVideoNote = 'May take 10–15 min';
+const kFastVideoTitle = 'Fast ⚡';
+const kFastVideoNote = 'Ready in seconds';
+
+/// v11.65: wait note while a Fast job runs.
+const kFastVideoWaitNote = 'Usually ready in under a minute';
+
+/// v11.65: a Standard job still not ready after this long shows "Make it Fast".
+const kMakeItFastAfter = Duration(minutes: 3);
+const kMakeItFastLabel = 'Make it Fast ⚡';
+
+/// v11.65 fal MiniMax H3 Max Turbo endpoints (queue API).
+String falModelPath(VideoKind k) =>
+    '${AiConfig.falApp}/${k == VideoKind.i2v ? 'image' : 'text'}-to-video';
+const kFalResolutions = {'480p': '480P', '768p': '768P'};
+
+/// fal input (llms.txt, Nov 2026): prompt, duration (s), resolution
+/// 480P/768P, prompt_expansion_mode (required), image_url (i2v: first frame,
+/// the canvas follows the photo), aspect_ratio (t2v only).
+Map<String, Object?> buildFalBody(
+  VideoKind kind, {
+  required String prompt,
+  required int seconds,
+  required String resolution,
+  required String aspect,
+  String? imageUrl,
+}) => {
+  'prompt': prompt,
+  'duration': seconds,
+  'resolution': kFalResolutions[resolution] ?? '480P',
+  'prompt_expansion_mode': 'disabled',
+  'enable_safety_checker': true,
+  if (kind == VideoKind.i2v) 'image_url': imageUrl,
+  if (kind == VideoKind.t2v) 'aspect_ratio': aspect,
+};
 
 /// v11.58: the user-facing chip on AI videos (replaces the model chip).
 const kAiGeneratedLabel = 'AI-generated';
@@ -54,6 +97,12 @@ Map<String, int> defaultVideoCredits() {
       for (final s in kVideoLengths) 'minimax_${s}_$r': _prov(_mmCostPerS[r]! * s),
   };
   t['minimax_5_480p'] = 3;
+  // v11.65 Fast ⚡: credits TBD — same as the matching Standard cell for now.
+  for (final r in kMiniMaxResolutions) {
+    for (final s in kVideoLengths) {
+      t['fal_${s}_$r'] = t['minimax_${s}_$r']!;
+    }
+  }
   return t;
 }
 
@@ -70,6 +119,7 @@ class VideoRequest {
     this.aspect = '9:16',
     this.image,
     this.styleId,
+    this.fast = false,
   });
 
   final VideoKind kind;
@@ -80,9 +130,23 @@ class VideoRequest {
   final File? image;
   final String? styleId;
 
-  VideoProvider get provider => providerFor(seconds);
+  /// v11.65 Fast ⚡ (fal) instead of Standard (Phosor).
+  final bool fast;
+
+  VideoProvider get provider => fast ? VideoProvider.fal : providerFor(seconds);
   String get creditKey => '${provider.name}_${seconds}_$resolution';
-  bool get isMiniMax => provider == VideoProvider.minimax;
+  bool get isMiniMax => provider == VideoProvider.minimax || provider == VideoProvider.fal;
+
+  VideoRequest asFast() => VideoRequest(
+    kind: kind,
+    prompt: prompt,
+    seconds: seconds,
+    resolution: resolution,
+    aspect: aspect,
+    image: image,
+    styleId: styleId,
+    fast: true,
+  );
 
   String? validate() {
     if (prompt.trim().isEmpty) return 'Describe the video';
@@ -121,7 +185,13 @@ class VideoJob {
 
   bool get active =>
       phase != VideoPhase.done && phase != VideoPhase.failed && phase != VideoPhase.cancelled;
-  String get modelLabel => kMiniMaxLabel;
+  String get modelLabel => request.fast ? kFastVideoLabel : kMiniMaxLabel;
+
+  /// v11.65: Standard job failed or still waiting after [kMakeItFastAfter].
+  bool canMakeFast(DateTime now) =>
+      !request.fast &&
+      (phase == VideoPhase.failed ||
+          (active && phase != VideoPhase.downloading && now.difference(started) >= kMakeItFastAfter));
 
   VideoJob copy({VideoPhase? phase, String? jobId, File? file, String? error, int? creditsCharged}) =>
       VideoJob(
@@ -162,7 +232,7 @@ abstract class VideoBackend {
 }
 
 String _redact(String s) {
-  for (final k in [AiConfig.videoApiKey, AiConfig.phosorApiKey]) {
+  for (final k in [AiConfig.videoApiKey, AiConfig.phosorApiKey, AiConfig.falApiKey]) {
     if (k.isNotEmpty) s = s.replaceAll(k, '<redacted>');
   }
   s = s.replaceAll(RegExp(r'\s+'), ' ');
@@ -201,9 +271,12 @@ class DirectVideoBackend implements VideoBackend {
   @override
   bool get chargesLocally => true;
 
-  Map<String, String> _h([VideoProvider? p]) => {'X-API-Key': AiConfig.phosorApiKey};
+  Map<String, String> _h([VideoProvider? p]) => p == VideoProvider.fal
+      ? {'Authorization': 'Key ${AiConfig.falApiKey}'}
+      : {'X-API-Key': AiConfig.phosorApiKey};
 
-  static bool configured(VideoProvider p) => AiConfig.phosorApiKey.isNotEmpty;
+  static bool configured(VideoProvider p) =>
+      p == VideoProvider.fal ? AiConfig.falApiKey.isNotEmpty : AiConfig.phosorApiKey.isNotEmpty;
 
   VideoException _fail(String what, http.Response r) {
     var msg = r.body;
@@ -218,6 +291,7 @@ class DirectVideoBackend implements VideoBackend {
   @override
   Future<String> submit(VideoRequest r) async {
     final p = r.provider;
+    if (p == VideoProvider.fal) return _falSubmit(r);
     String? rid;
     try {
       final body = <String, Object?>{
@@ -241,6 +315,54 @@ class DirectVideoBackend implements VideoBackend {
     }
     if (rid.isEmpty || rid == 'null') throw VideoException('The video service returned no job');
     return '${p.name}~$rid';
+  }
+
+  // -- v11.65 Fast ⚡: fal queue API ----------------------------------------
+  String get _falBase => '${AiConfig.falQueueUrl}/${AiConfig.falApp}/requests';
+
+  Future<String> _falSubmit(VideoRequest r) async {
+    String? rid;
+    try {
+      String? img;
+      if (r.kind == VideoKind.i2v) {
+        // Base64 data URI (fal accepts it), ≤1536 px.
+        img = (await prepareUpload(await r.image!.readAsBytes(), maxLong: 1536)).dataUrl;
+      }
+      final body = buildFalBody(r.kind,
+          prompt: r.prompt, seconds: r.seconds, resolution: r.resolution, aspect: r.aspect, imageUrl: img);
+      final res = await _http
+          .post(Uri.parse('${AiConfig.falQueueUrl}/${falModelPath(r.kind)}'),
+              headers: {..._h(VideoProvider.fal), 'Content-Type': 'application/json'}, body: jsonEncode(body))
+          .timeout(_t);
+      if (res.statusCode >= 400) throw _fail('Fast video submit', res);
+      rid = '${(jsonDecode(res.body) as Map)['request_id'] ?? ''}';
+    } on TimeoutException {
+      throw VideoException('The video service timed out — not retried');
+    }
+    if (rid.isEmpty || rid == 'null') throw VideoException('The video service returned no job');
+    return '${VideoProvider.fal.name}~$rid';
+  }
+
+  Future<VideoStatus> _falStatus(String rid) async {
+    final h = _h(VideoProvider.fal);
+    final res = await _http.get(Uri.parse('$_falBase/$rid/status'), headers: h).timeout(_t);
+    if (res.statusCode >= 400) throw _fail('Status', res);
+    final j = jsonDecode(res.body);
+    final st = '${j is Map ? j['status'] : ''}'.toUpperCase();
+    if (st == 'IN_QUEUE') return const VideoStatus('queued');
+    if (st != 'COMPLETED') return const VideoStatus('running');
+    if (j is Map && j['error'] != null) return VideoStatus('failed', error: _redact('${j['error']}'));
+    final rr = await _http.get(Uri.parse('$_falBase/$rid'), headers: h).timeout(_t);
+    if (rr.statusCode == 202) return const VideoStatus('running');
+    if (rr.statusCode >= 400) {
+      // Failed generation (e.g. 422 / safety) → failed, never charged.
+      return VideoStatus('failed', error: _fail('Fast video', rr).message);
+    }
+    final out = jsonDecode(rr.body);
+    final v = out is Map ? out['video'] : null;
+    final u = (v is Map ? v['url'] as String? : null) ?? findVideoUrl(out);
+    if (u == null || !u.startsWith('http')) return const VideoStatus('failed', error: 'No video returned');
+    return VideoStatus('done', url: u);
   }
 
   Future<String> _upload(File f) async {
@@ -267,6 +389,7 @@ class DirectVideoBackend implements VideoBackend {
   @override
   Future<VideoStatus> status(String jobId) async {
     final (p, rid) = _parse(jobId);
+    if (p == VideoProvider.fal) return _falStatus(rid);
     if (p != VideoProvider.minimax) {
       // Legacy 8scale job ids still parse; no 8scale API calls.
       return const VideoStatus('failed', error: 'This video job is no longer available');
@@ -299,8 +422,14 @@ class DirectVideoBackend implements VideoBackend {
 
   @override
   Future<void> cancel(String jobId) async {
-    // Phosor has no cancel API.
-    return;
+    // Phosor has no cancel API. fal: cancel works only while IN_QUEUE.
+    try {
+      final (p, rid) = _parse(jobId);
+      if (p != VideoProvider.fal) return;
+      await _http
+          .put(Uri.parse('$_falBase/$rid/cancel'), headers: _h(VideoProvider.fal))
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
   }
 }
 
@@ -338,6 +467,7 @@ class ServerVideoBackend implements VideoBackend {
         'resolution': r.resolution,
         'aspect_ratio': r.aspect,
         if (r.styleId != null) 'style_id': r.styleId!,
+        if (r.fast) 'speed': 'fast',
       });
     if (r.kind == VideoKind.i2v) {
       req.files.add(await http.MultipartFile.fromPath('image', r.image!.path, filename: 'photo.jpg'));
@@ -410,11 +540,17 @@ class VideoService {
   /// Credits table (provisional defaults ← server `/v1/video/options`).
   final ValueNotifier<Map<String, int>> credits = ValueNotifier(defaultVideoCredits());
 
+  /// v11.65 Fast ⚡: available (fal key in this build, or the server says
+  /// so) and the user's last speed pick (Standard by default).
+  final ValueNotifier<bool> fastAvailable = ValueNotifier(AiConfig.falApiKey.isNotEmpty);
+  final ValueNotifier<bool> preferFast = ValueNotifier(false);
+
   int creditsFor(VideoRequest r) => credits.value[r.creditKey] ?? 0;
-  int creditsForKey(int seconds, String res) =>
-      credits.value['${providerFor(seconds).name}_${seconds}_$res'] ?? 0;
+  int creditsForKey(int seconds, String res, {bool fast = false}) =>
+      credits.value['${fast ? VideoProvider.fal.name : providerFor(seconds).name}_${seconds}_$res'] ?? 0;
 
   bool _cancelled = false;
+  int _gen = 0;
   static const _pendingKey = 'video_pending_v1';
 
   static Future<VideoBackend?> _defaultBackend(VideoProvider p) async {
@@ -444,7 +580,10 @@ class VideoService {
           .get(Uri.parse('${url.replaceAll(RegExp(r'/+$'), '')}/v1/video/options'))
           .timeout(const Duration(seconds: 8));
       if (r.statusCode != 200) return;
-      final c = (jsonDecode(r.body) as Map)['credits'];
+      final js = jsonDecode(r.body) as Map;
+      final fast = js['fast'];
+      if (AiConfig.falApiKey.isEmpty && fast is Map) fastAvailable.value = fast['enabled'] == true;
+      final c = js['credits'];
       if (c is Map) {
         credits.value = {
           ...defaultVideoCredits(),
@@ -486,10 +625,11 @@ class VideoService {
   }
 
   Future<void> _run(VideoBackend be, {String? resumeId}) async {
+    final g = ++_gen; // v11.65: a newer run (e.g. Make it Fast) wins
     var j = job.value!;
     try {
       final id = resumeId ?? await be.submit(j.request);
-      if (_cancelled) {
+      if (_cancelled || g != _gen) {
         await be.cancel(id);
         return;
       }
@@ -499,7 +639,7 @@ class VideoService {
       final deadline = j.started.add(maxWait);
       while (true) {
         await Future<void>.delayed(pollEvery);
-        if (_cancelled) return;
+        if (_cancelled || g != _gen) return;
         if (DateTime.now().isAfter(deadline)) {
           await be.cancel(id);
           throw VideoException(kVideoTimeoutMessage);
@@ -512,7 +652,7 @@ class VideoService {
         } catch (_) {
           continue; // transient network error: keep polling
         }
-        if (_cancelled) return;
+        if (_cancelled || g != _gen) return;
         if (st.state == 'failed') {
           throw VideoException(st.error?.isNotEmpty == true ? st.error! : 'The video failed');
         }
@@ -531,14 +671,14 @@ class VideoService {
         } else if (st.account != null) {
           await AccountService.instance.onServerResult(st.account);
         }
-        if (_cancelled) return;
+        if (_cancelled || g != _gen) return;
         job.value = j.copy(phase: VideoPhase.done, file: f, creditsCharged: charged);
         await _clearPending();
         unawaited(VideoNotifier.instance.show('Your AI video is ready', 'Tap to open AI Camera and watch it.'));
         return;
       }
     } catch (e) {
-      if (_cancelled) return;
+      if (_cancelled || g != _gen) return;
       final msg = e is VideoException
           ? e.message
           : isOfflineError(e)
@@ -567,6 +707,16 @@ class VideoService {
     }
   }
 
+  /// v11.65 "Make it Fast": the Standard job failed or is taking too long →
+  /// stop waiting for it (never charged) and start the same video on Fast ⚡.
+  Future<void> makeFast() async {
+    final j = job.value;
+    if (j == null || j.request.fast) return;
+    if (j.active) await cancel();
+    job.value = null;
+    await start(j.request.asFast());
+  }
+
   void dismiss() {
     if (job.value?.active != true) job.value = null;
   }
@@ -583,6 +733,7 @@ class VideoService {
           'seconds': j.request.seconds,
           'res': j.request.resolution,
           'aspect': j.request.aspect,
+          'fast': j.request.fast,
           'credits': j.credits,
           'started': j.started.toIso8601String(),
         }),
@@ -615,6 +766,7 @@ class VideoService {
         seconds: (m['seconds'] as num).toInt(),
         resolution: '${m['res']}',
         aspect: '${m['aspect']}',
+        fast: m['fast'] == true,
       );
       final be = await _backendFor(r.provider);
       if (be == null) return;

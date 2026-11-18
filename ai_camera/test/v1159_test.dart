@@ -76,10 +76,10 @@ NetworkCheck fakeNet(bool online) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version (v11.64: 1.11.64+77)', () {
+  test('version (v11.65: 1.11.65+78)', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.64+77'),
+      contains('version: 1.11.65+78'),
     );
   });
 
@@ -419,7 +419,7 @@ void main() {
       'prompts: no invented texture; source prompt explains both images',
       () {
         expect(kZoomCleanPrompt, kUniversalEnhancePrompt);
-        expect(kZoomCleanPrompt, 'Clean up and sharpen this image, with a natural tone.');
+        expect(kZoomCleanPrompt, 'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.');
         expect(
           kZoomSourcePrompt,
           startsWith('The first image is a sharp photo'),

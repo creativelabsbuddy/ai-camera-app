@@ -36,8 +36,8 @@ class _SlowBackend implements VideoBackend {
 }
 
 void main() {
-  test('version (v11.64: 1.11.64+77)', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.64+77'));
+  test('version (v11.65: 1.11.65+78)', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.65+78'));
   });
 
   group('microscope: lock at 1.5x, part only, material-aware', () {
@@ -215,7 +215,7 @@ void main() {
 
   group('enhance prompt + upload', () {
     test('one simple enhance prompt; Portrait variant replaces it', () {
-      expect(kUniversalEnhancePrompt, 'Clean up and sharpen this image, with a natural tone.');
+      expect(kUniversalEnhancePrompt, 'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.');
       expect(buildEnhancePrompt(zoom: 30, opticalLimit: 3, night: true), kUniversalEnhancePrompt);
       final p = buildEnhancePrompt(portrait: true);
       expect(p, kPortraitEnhancePrompt);

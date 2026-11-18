@@ -25,10 +25,10 @@ http.Response _reply(String text) => http.Response(
 );
 
 void main() {
-  test('version 1.11.64+77', () {
+  test('version 1.11.65+78', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.64+77'),
+      contains('version: 1.11.65+78'),
     );
   });
 
@@ -102,7 +102,7 @@ void main() {
     for (final t in [kMacroMicroscopePrompt, kMacroExtremePrompt, kMacroUltraPrompt]) {
       expect(t, contains('Do not draw the whole object, its outline or its shape; fill the frame with the inner structure of its own material'));
       expect(t, contains('a paper napkin shows pressed paper fibres'));
-      expect(t, contains('cotton fabric shows woven threads and fibres'));
+      expect(t, contains('skin shows its fine ridges and pores'));
       expect(t.toLowerCase(), isNot(contains('cells')));
     }
   });

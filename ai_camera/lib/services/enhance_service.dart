@@ -18,6 +18,8 @@ import 'mode_prompts.dart';
 import 'openrouter_client.dart';
 import 'premium_filters.dart';
 import 'prompt_builder.dart';
+import 'runware_client.dart';
+import 'tier_upscale.dart';
 import 'server_api_client.dart';
 import 'network_check.dart';
 import 'zoom_ladder.dart'
@@ -361,7 +363,9 @@ class EnhanceService {
     AccountService? account,
     Future<Directory> Function()? tempDir,
     NetworkCheck? net,
+    RunwareClient? runware,
   }) : _openRouter = openRouter ?? OpenRouterClient(),
+       _runware = runware,
        _server = server ?? ServerApiClient(),
        _accountOverride = account,
        _netOverride = net,
@@ -371,6 +375,7 @@ class EnhanceService {
   NetworkCheck get _net => _netOverride ?? NetworkCheck.instance;
 
   final OpenRouterClient _openRouter;
+  final RunwareClient? _runware;
   final ServerApiClient _server;
   final AccountService? _accountOverride;
   final Future<Directory> Function() _tempDir;
@@ -590,6 +595,11 @@ class EnhanceService {
             debugPrint('Macro colour match skipped: $e');
           }
         }
+        // v11.65: Full HD / Ultra HD → Real-ESRGAN 2x + resize to the tier
+        // (fallback: resize only, never fails the shot). HD as-is.
+        final up = await upscaleForTier(bytes, job.tier, runware: _runware, cancel: cancel);
+        bytes = up.bytes;
+        debugPrint('Tier ${job.tier.id}: upscale ${up.outcome.name}');
         final file = await _writeBytes(bytes, 'flare');
         // Charge only now that the AI result is in hand.
         final charged = await _account.commitLocal(spec);

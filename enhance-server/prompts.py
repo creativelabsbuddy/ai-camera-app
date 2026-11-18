@@ -11,11 +11,11 @@ from typing import Optional
 # v11.63: simple one-line enhance for every normal and zoom photo
 # (1x–100x Pro Photo). Mirrors kUniversalEnhancePrompt / kZoomCleanPrompt.
 UNIVERSAL_ENHANCE_PROMPT = (
-    'Clean up and sharpen this image, with a natural tone.'
+    'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.'
 )
 # v11.63 Portrait variant (used INSTEAD of the universal prompt), 1x–100x.
 PORTRAIT_ENHANCE_PROMPT = (
-    'Clean up and sharpen this image, with a natural tone. Blur only the background with a natural bokeh, and keep the subject sharp.'
+    'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Blur only the background with a natural bokeh, and keep the subject sharp. Do not change, add or remove anything else.'
 )
 LOCKED_ENHANCE_PROMPT = UNIVERSAL_ENHANCE_PROMPT  # legacy name
 
@@ -111,7 +111,7 @@ MACRO_MICROSCOPE_PROMPT = (
     "leaf shows veins and tiny plant structure; skin shows pores and fine lines. "
     "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
     "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
-    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "cotton fabric shows three or four threads and their weave filling the whole frame; hair shows three or four strands filling the whole frame; skin shows its fine ridges and pores. "
     "Do not add "
     "anything this material would not really have. One single full-frame image, no text or "
     "labels. Photorealistic."
@@ -130,10 +130,10 @@ MACRO_EXTREME_PROMPT = (
     "filling the frame. Show the very fine structure its own material would really have at "
     "this magnification, for example: painted metal shows paint pigment grains, printing dots "
     "and tiny scratches in the metal; plastic shows its fine surface grain; fabric shows "
-    "single fibres; a leaf shows tiny plant structure. "
+    "one single thread up close; a leaf shows tiny plant structure. "
     "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
     "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
-    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "cotton fabric shows one single thread filling the whole frame, with no weave visible; hair shows one single strand filling the whole frame; skin shows its fine ridges and pores. "
     "Do not add anything this material "
     "would not really have. One single full-frame image, no text or labels. Photorealistic."
 )
@@ -142,10 +142,10 @@ MACRO_ULTRA_PROMPT = (
     "Close-up of {spot}{on_object} under a scanning electron microscope at 2000x "
     "magnification. Show the true surface structure of its own material, for example: painted "
     "metal shows paint grains, coating cracks and fine scratches; plastic shows its moulded "
-    "surface; fabric shows single fibres. "
+    "surface; fabric shows two or three fibres with their surface scales. "
     "Do not draw the whole object, its outline or its shape; fill the frame with the inner "
     "structure of its own material, for example: a paper napkin shows pressed paper fibres; "
-    "cotton fabric shows woven threads and fibres; skin shows its fine ridges and pores. "
+    "cotton fabric shows two or three fibres with their fine SEM-style surface scales filling the whole frame; hair shows two or three strands with their surface scales filling the whole frame; skin shows its fine ridges and pores. "
     "Do not add anything this material would not really "
     "have. One single full-frame image, no text or labels. Photorealistic."
 )

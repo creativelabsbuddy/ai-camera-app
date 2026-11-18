@@ -206,6 +206,7 @@ class _VideoScreenState extends State<VideoScreen> with SingleTickerProviderStat
       aspect: '9:16',
       image: p,
       styleId: s.id,
+      fast: wantsFast(_svc),
     ));
   }
 
@@ -217,6 +218,7 @@ class _VideoScreenState extends State<VideoScreen> with SingleTickerProviderStat
     resolution: _res,
     aspect: _aspect,
     image: _kind == VideoKind.i2v ? _photo : null,
+    fast: wantsFast(_svc),
   );
 
   Future<void> _go(VideoRequest r) async {
@@ -434,12 +436,13 @@ class _VideoScreenState extends State<VideoScreen> with SingleTickerProviderStat
           }),
           _h('Quality'),
           _chips<String>('video_res', resolutionsFor(_seconds), _res,
-              (x) => '$x · 🪙${_svc.creditsForKey(_seconds, x)}', (x) => _res = x),
+              (x) => '$x · 🪙${_svc.creditsForKey(_seconds, x, fast: r.fast)}', (x) => _res = x),
+          if (AiConfig.minimaxEnabled) VideoSpeedChips(svc: _svc, onChanged: () => setState(() {})),
           if (AiConfig.minimaxEnabled)
-            const Padding(
-              padding: EdgeInsets.only(top: 10),
-              child: Text(kLongVideoWaitNote, key: ValueKey('video_wait_note'),
-                  style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(r.fast ? kFastVideoWaitNote : kLongVideoWaitNote, key: const ValueKey('video_wait_note'),
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
             ),
           if (!AiConfig.minimaxEnabled)
             const Padding(
@@ -499,6 +502,16 @@ class _JobView extends StatelessWidget {
   final VideoService svc;
   final VoidCallback onLeave;
 
+  Widget _makeFastButton() => Padding(
+    padding: const EdgeInsets.only(top: 12),
+    child: FilledButton.icon(
+      key: const ValueKey('video_make_fast'),
+      onPressed: () => unawaited(svc.makeFast().catchError((Object _) {})),
+      icon: const Icon(Icons.bolt),
+      label: const Text(kMakeItFastLabel),
+    ),
+  );
+
   String get _phaseText => switch (job.phase) {
     VideoPhase.submitting => 'Sending…',
     VideoPhase.queued => 'Waiting in line…',
@@ -534,14 +547,24 @@ class _JobView extends StatelessWidget {
             const SizedBox(height: 4),
             StreamBuilder<int>(
               stream: Stream.periodic(const Duration(seconds: 1), (i) => i),
-              builder: (_, _) => Text(
-                '${_elapsed(DateTime.now().difference(job.started))} · '
-                '$kLongVideoWaitNote',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              builder: (_, _) => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '${_elapsed(DateTime.now().difference(job.started))} · '
+                    '${r.fast ? kFastVideoWaitNote : kLongVideoWaitNote}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                  ),
+                  // v11.65: Standard still waiting after 3 min → offer Fast.
+                  if (svc.fastAvailable.value && job.canMakeFast(DateTime.now()))
+                    _makeFastButton(),
+                ],
               ),
             ),
           ],
+          if (!job.active && svc.fastAvailable.value && job.canMakeFast(DateTime.now()))
+            _makeFastButton(),
           if (job.active) ...[
             const SizedBox(height: 8),
             const Text(

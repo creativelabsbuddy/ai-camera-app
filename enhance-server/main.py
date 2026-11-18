@@ -111,6 +111,12 @@ KLEIN_MODEL = os.environ.get("KLEIN_MODEL", "black-forest-labs/flux-3-image-klei
 RUNWARE_URL = "https://api.runware.ai/v1"
 RUNWARE_KLEIN4B_MODEL = os.environ.get("RUNWARE_KLEIN4B_MODEL", "runware:400@4")
 RUNWARE_LONG = 1024  # FLUX.2 Klein 4B ~1 MP output
+# v11.65 tier upscale: Full HD / Ultra HD = Flare, then Real-ESRGAN 2x on
+# Runware, then Lanczos to the tier's long side. HD = Flare as-is.
+RUNWARE_UPSCALE_MODEL = os.environ.get("RUNWARE_UPSCALE_MODEL", "runware:504@1")
+UPSCALE_FACTOR = 2
+UPSCALE_TIMEOUT = float(os.environ.get("UPSCALE_TIMEOUT", "45"))
+UPSCALE_TIERS = {"full_hd": 1920, "ultra_hd": 2560}
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 app = FastAPI(title="AI Camera Enhance Server", version="11.1.59")
@@ -435,7 +441,9 @@ async def call_runware(tasks: list) -> tuple[int, dict | str]:
     """Runware FLUX.2 Klein 4B (monkeypatched in tests). Key from env
     RUNWARE_API_KEY, never logged."""
     if _flag("ENHANCE_MOCK"):
-        ref = tasks[0]["inputs"]["referenceImages"][0].split(",", 1)[1]
+        inp = tasks[0].get("inputs") or {}
+        src = inp.get("image") or (inp.get("referenceImages") or [""])[0]
+        ref = src.split(",", 1)[-1]
         return 200, {"data": [{"imageBase64Data": ref, "cost": 0}]}
     key = _runware_key()
     if not key:
@@ -464,6 +472,60 @@ async def runware_images(body: dict) -> tuple[list[bytes], float]:
                 r.raise_for_status()
                 out.append(r.content)
     return out, cost
+
+
+def upscale_payload(image_url: str) -> list:
+    """v11.65 Real-ESRGAN 2x (runware:504@1) — no prompt, nothing invented."""
+    import uuid
+    return [{
+        "taskType": "upscale",
+        "taskUUID": str(uuid.uuid4()),
+        "model": RUNWARE_UPSCALE_MODEL,
+        "upscaleFactor": UPSCALE_FACTOR,
+        "inputs": {"image": image_url},
+        "outputType": "base64Data",
+        "outputFormat": "JPG",
+        "includeCost": True,
+    }]
+
+
+def resize_long_side(raw: bytes, long_side: int) -> bytes:
+    """Lanczos resize (up or down) so the long side == [long_side], JPEG q92."""
+    im = Image.open(io.BytesIO(raw))
+    im = ImageOps.exif_transpose(im).convert("RGB")
+    s = long_side / max(im.width, im.height, 1)
+    if abs(s - 1.0) > 0.005:
+        im = im.resize((max(1, round(im.width * s)), max(1, round(im.height * s))), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=92)
+    return buf.getvalue()
+
+
+async def tier_upscale(out: bytes, quality: str, dev: str = "") -> tuple[bytes, str, float]:
+    """v11.65: Full HD / Ultra HD → Real-ESRGAN 2x then Lanczos to the tier's
+    long side. Any upscale failure (e.g. Runware insufficientCredits) falls
+    back to a plain Lanczos resize of the Flare image — the shot never fails
+    and is never refunded for it. Returns (bytes, "esrgan"|"resize"|"none", cost)."""
+    target = UPSCALE_TIERS.get(quality)
+    if not target:
+        return out, "none", 0.0
+    try:
+        status, body = await asyncio.wait_for(call_runware(upscale_payload(data_url(out))),
+                                              timeout=UPSCALE_TIMEOUT)
+        if status != 200 or not isinstance(body, dict):
+            snippet = str(body)[:200]
+            raise RuntimeError(f"runware upscale HTTP {status}: {snippet}")
+        imgs, cost = await runware_images(body)
+        if not imgs:
+            raise RuntimeError("runware upscale returned no image")
+        return resize_long_side(imgs[0], target), "esrgan", cost
+    except Exception as e:  # noqa: BLE001 — never fail the shot for the upscale
+        log.warning("tier upscale failed, Lanczos fallback (%s %s): %s", quality, dev, e)
+        try:
+            return resize_long_side(out, target), "resize", 0.0
+        except Exception as e2:  # noqa: BLE001
+            log.warning("fallback resize failed, delivering as-is: %s", e2)
+            return out, "none", 0.0
 
 
 def style_model_for(style) -> str:
@@ -1023,8 +1085,9 @@ async def enhance_v1(
                 out = CM.match_colors(out, main_jpg)
             except Exception as e:
                 log.warning("macro colour match skipped: %s", e)
-        # v11.58: the AI image is delivered at its native size (no 1920 /
-        # tier upscale, no re-encode).
+        # v11.65: Full HD / Ultra HD → Real-ESRGAN 2x + Lanczos to the tier
+        # size (fallback: Lanczos only). HD stays at Flare's native size.
+        out, upscaled, up_cost = await tier_upscale(out, quality, dev)
 
         # The phone gave up (Cancel / its own timeout) → don't charge.
         if request is not None and await request.is_disconnected():
@@ -1054,6 +1117,9 @@ async def enhance_v1(
         headers["X-Enhance-Cost"] = str(cost)
     if similarity is not None:
         headers["X-Structure"] = f"{similarity:.3f}"
+    headers["X-Upscale"] = upscaled
+    if up_cost:
+        headers["X-Upscale-Cost"] = str(up_cost)
     return Response(content=out, media_type=media, headers=headers)
 
 
@@ -1318,7 +1384,10 @@ async def video_styles():
 async def video_options():
     return {"credits": VP.credit_table(_video_override()), "minimax_enabled": VP.minimax_enabled(),
             "minimax": {"seconds": list(VP.MM_SECONDS), "resolutions": list(VP.MM_RES),
-                        "aspect_ratios": list(VP.MM_ASPECTS), "label": "MiniMax H3"}}
+                        "aspect_ratios": list(VP.MM_ASPECTS), "label": "MiniMax H3"},
+            # v11.65 Fast ⚡ (fal MiniMax H3 Max Turbo); credits = Standard for now (TBD).
+            "fast": {"enabled": VP.configured(VP.FAL), "seconds": list(VP.MM_SECONDS),
+                     "resolutions": list(VP.MM_RES), "label": "MiniMax H3 Max Turbo"}}
 
 
 @app.post("/v1/video/generate")
@@ -1326,9 +1395,11 @@ async def video_generate(
     device_id: str = Form(...), prompt: str = Form(...), kind: str = Form("i2v"),
     seconds: int = Form(5), resolution: str = Form("480p"), aspect_ratio: str = Form("9:16"),
     style_id: Optional[str] = Form(None), image: Optional[UploadFile] = File(None),
+    speed: str = Form("standard"),
 ):
     dev = _check_device(device_id)
     text = prompt
+    fast = (speed or "").strip().lower() == "fast"  # v11.65 Fast ⚡ = fal
     if style_id:
         st = get_styles().get(style_id)
         if st is None or not st.enabled or st.media_type != "video":
@@ -1338,7 +1409,7 @@ async def video_generate(
     elif P.blocked_custom_prompt(prompt):
         raise HTTPException(status_code=400, detail="Blocked by the safety list")
     try:
-        spec = VP.route(kind, text, seconds, resolution, aspect_ratio)
+        spec = VP.route(kind, text, seconds, resolution, aspect_ratio, fast=fast)
     except VP.VideoError as e:
         raise _video_http(e) from e
     if not VP.configured(spec.provider):
@@ -1383,7 +1454,7 @@ async def video_status(job_id: str, device_id: str):
     except VP.VideoError as e:
         raise _video_http(e) from e
     out = {"job_id": job_id, "provider": provider,
-           "model_label": "Wan 2.2" if provider == VP.WAN else "MiniMax H3", **st}
+           "model_label": VP.model_label(provider), **st}
     if st["status"] == "done":
         state, d, fresh = get_ledger().commit_once(dev, f"video:{provider}:{rid}",
                                                    _video_look_spec(credits), now_utc())

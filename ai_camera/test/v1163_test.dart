@@ -11,8 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.64+77', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.64+77'));
+  test('version 1.11.65+78', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.65+78'));
   });
 
   group('video: Phosor MiniMax only', () {
@@ -52,9 +52,9 @@ void main() {
   });
 
   group('prompts', () {
-    const photo = 'Clean up and sharpen this image, with a natural tone.';
+    const photo = 'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.';
     const portrait =
-        'Clean up and sharpen this image, with a natural tone. Blur only the background with a natural bokeh, and keep the subject sharp.';
+        'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Blur only the background with a natural bokeh, and keep the subject sharp. Do not change, add or remove anything else.';
 
     test('exact Photo / zoom / Portrait strings; no maintain / invent / DSLR', () {
       expect(kUniversalEnhancePrompt, photo);

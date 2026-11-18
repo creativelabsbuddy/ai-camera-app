@@ -131,7 +131,7 @@ def test_runware_size():
 
 def test_universal_prompt_single_for_all():
     u = P.UNIVERSAL_ENHANCE_PROMPT
-    assert u == "Clean up and sharpen this image, with a natural tone."
+    assert u == "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
     assert P.build_prompt(zoom=20, optical_limit=2, night=True).startswith(u)
     assert P.NIGHT_PROMPT not in P.build_prompt(night=True)
     port = P.build_prompt(portrait_prompt=P.PORTRAIT_ENHANCE_PROMPT)

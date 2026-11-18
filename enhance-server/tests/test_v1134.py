@@ -6,7 +6,7 @@ from tests.test_v11 import env  # noqa: F401
 
 def test_prompt_text():
     assert P.ZOOM_CLEAN_PROMPT == P.UNIVERSAL_ENHANCE_PROMPT
-    assert P.ZOOM_CLEAN_PROMPT == "Clean up and sharpen this image, with a natural tone."
+    assert P.ZOOM_CLEAN_PROMPT == "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
     assert P.zoom_ladder_prompt(None, None, refs=False) == P.ZOOM_CLEAN_PROMPT
     assert P.ZOOM_LADDER_PROMPT.startswith(P.ZOOM_CLEAN_PROMPT)
 

@@ -9,8 +9,12 @@
 /// | Ultra HD | 4       | high    | 2K         | ~2.5K (≥2560)    |
 /// | 4K       | 8       | high    | 4K         | ~4K  (≥3840)     |
 ///
-/// If the model returns fewer pixels than the target, the result is
-/// resampled up to [minLongSide] so the label is honest.
+/// v11.65: Flare always returns ~1.5K whatever the resolution param, so:
+/// HD = the Flare image as-is (no upscale); Full HD / Ultra HD = Flare, then
+/// Real-ESRGAN 2x (Runware `runware:504@1`), then resized to exactly
+/// [upscaleLongSide] (1920 / 2560). If the upscale fails the Flare image is
+/// resized instead (never fails / refunds the shot). 4K is not pickable;
+/// a stored '4k' maps to Ultra HD ([pickable]). Credits unchanged.
 enum QualityTier {
   hd('hd', 'HD', 1, 'low', '1K', 1024, '~1K', 'HD'),
   fullHd('full_hd', 'Full HD', 2, 'medium', '1.5K', 1920, '~2K', 'FHD'),
@@ -41,6 +45,14 @@ enum QualityTier {
 
   /// Compact top-right chip text (Samsung "12M" style): HD / FHD / UHD / 4K.
   final String shortLabel;
+
+  /// v11.65 final long side after the Real-ESRGAN 2x upscale; null = HD
+  /// (delivered as Flare returned it). Old 4K → Ultra HD's 2560.
+  int? get upscaleLongSide => switch (this) {
+    hd => null,
+    fullHd => 1920,
+    ultraHd || k4 => 2560,
+  };
 
   /// Ultra HD / 4K — covered by the one-time "premium quality" starter trial.
   bool get isPremium => this == ultraHd || this == k4;

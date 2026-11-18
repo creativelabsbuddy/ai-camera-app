@@ -197,12 +197,18 @@ def test_packs_pay_premium_tiers(env):
 
 
 def test_output_not_upscaled_v1158(env):
-    """v11.58: the AI image is delivered at its native size (no 1920 upscale)."""
+    """v11.58: HD is delivered at its native size. v11.65: Full HD is sized to
+    1920 (Real-ESRGAN, or the Lanczos fallback when Runware is unreachable)."""
     c, _, _ = env
     c.post("/v1/purchase", json={"device_id": "dev_test_1", "product_id": "pack_25"})
-    r = enhance(c, quality="full_hd")
+    r = enhance(c, quality="hd")
     im = Image.open(io.BytesIO(r.content))
     assert max(im.size) < 1920
+    assert r.headers["X-Upscale"] == "none"
+    r = enhance(c, quality="full_hd")
+    assert r.status_code == 200
+    assert max(Image.open(io.BytesIO(r.content)).size) == 1920
+    assert r.headers["X-Upscale"] == "resize"  # network blocked → fallback, still delivered
 
 
 def test_purchase_validation_and_test_mode_switch(env, monkeypatch):

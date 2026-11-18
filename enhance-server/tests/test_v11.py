@@ -226,7 +226,7 @@ def test_pose_media_rejects_traversal(env):
 
 # == hidden prompts ==========================================================
 def test_default_prompts_content():
-    assert P.LOCKED_ENHANCE_PROMPT == "Clean up and sharpen this image, with a natural tone."  # v11.63
+    assert P.LOCKED_ENHANCE_PROMPT == "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."  # v11.63
     assert "cells" not in P.LOCKED_ENHANCE_PROMPT
     port = P.PORTRAIT_PROMPT.lower()
     for k in ["sharpen", "natural tone", "bokeh", "subject sharp"]:

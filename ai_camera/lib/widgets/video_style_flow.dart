@@ -26,6 +26,53 @@ int videoFromCredits(VideoService svc) {
   return best < 0 ? 0 : best;
 }
 
+/// v11.65 speed pick (Standard = Phosor, Fast ⚡ = fal). Writes the shared
+/// [VideoService.preferFast]; hidden when Fast is not available.
+class VideoSpeedChips extends StatelessWidget {
+  const VideoSpeedChips({super.key, required this.svc, this.onChanged});
+  final VideoService svc;
+  final VoidCallback? onChanged;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<bool>(
+    valueListenable: svc.fastAvailable,
+    builder: (context, available, _) {
+      if (!available) return const SizedBox.shrink();
+      return ValueListenableBuilder<bool>(
+        valueListenable: svc.preferFast,
+        builder: (context, fast, _) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(top: 14, bottom: 6),
+              child: Text('Speed', style: TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final f in const [false, true])
+                  ChoiceChip(
+                    key: ValueKey('video_speed_${f ? 'fast' : 'standard'}'),
+                    label: Text(f ? '$kFastVideoTitle · $kFastVideoNote' : '$kStandardVideoTitle · $kStandardVideoNote'),
+                    selected: f == fast,
+                    onSelected: (_) {
+                      svc.preferFast.value = f;
+                      onChanged?.call();
+                    },
+                  ),
+              ],
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+/// True when the next video should use Fast ⚡.
+bool wantsFast(VideoService svc) => svc.fastAvailable.value && svc.preferFast.value;
+
 String videoFromLabel(int credits) => 'from $kCreditGlyph$credits';
 String makeVideoLabel(int credits) => 'Generate · $kCreditGlyph$credits';
 
@@ -126,7 +173,8 @@ class _VideoConfirmSheetState extends State<VideoConfirmSheet> {
     return ValueListenableBuilder<Map<String, int>>(
       valueListenable: widget.svc.credits,
       builder: (context, _, _) {
-        final c = widget.svc.creditsForKey(kPresetVideoSeconds, _res);
+        final fast = wantsFast(widget.svc);
+        final c = widget.svc.creditsForKey(kPresetVideoSeconds, _res, fast: fast);
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
@@ -183,12 +231,13 @@ class _VideoConfirmSheetState extends State<VideoConfirmSheet> {
                     for (final r in kMiniMaxResolutions)
                       ChoiceChip(
                         key: ValueKey('preset_res_$r'),
-                        label: CreditText('$r · $kCreditGlyph${widget.svc.creditsForKey(kPresetVideoSeconds, r)}'),
+                        label: CreditText('$r · $kCreditGlyph${widget.svc.creditsForKey(kPresetVideoSeconds, r, fast: fast)}'),
                         selected: r == _res,
                         onSelected: (_) => setState(() => _res = r),
                       ),
                   ],
                 ),
+                VideoSpeedChips(svc: widget.svc, onChanged: () => setState(() {})),
                 const SizedBox(height: 16),
                 FilledButton(
                   key: const ValueKey('preset_go'),

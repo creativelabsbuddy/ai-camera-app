@@ -9,13 +9,13 @@ import 'zoom_range.dart' show formatZoom;
 /// (1x–100x Pro Photo). Mirrored in enhance-server/prompts.py
 /// (UNIVERSAL_ENHANCE_PROMPT / ZOOM_CLEAN_PROMPT).
 const String kUniversalEnhancePrompt =
-    'Clean up and sharpen this image, with a natural tone.';
+    'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.';
 
 /// v11.63 Portrait variant (Pro AI Portrait, 1x–100x): same cleanup plus
 /// natural background bokeh. Used INSTEAD of the universal prompt.
 /// = prompts.PORTRAIT_ENHANCE_PROMPT.
 const String kPortraitEnhancePrompt =
-    'Clean up and sharpen this image, with a natural tone. Blur only the background with a natural bokeh, and keep the subject sharp.';
+    'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Blur only the background with a natural bokeh, and keep the subject sharp. Do not change, add or remove anything else.';
 
 /// Legacy name: the base of every enhance (now the universal prompt).
 const String kLockedEnhancePrompt = kUniversalEnhancePrompt;

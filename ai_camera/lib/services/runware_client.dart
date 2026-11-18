@@ -47,6 +47,21 @@ Map<String, Object?> buildRunwareTask({
   };
 }
 
+/// v11.65 Real-ESRGAN 2x upscale task (no prompt — invents nothing).
+Map<String, Object?> buildRunwareUpscaleTask({
+  required String imageDataUrl,
+  String? taskUuid,
+}) => {
+  'taskType': 'upscale',
+  'taskUUID': taskUuid ?? _uuid4(),
+  'model': AiConfig.runwareUpscaleModel,
+  'upscaleFactor': AiConfig.runwareUpscaleFactor,
+  'inputs': {'image': imageDataUrl},
+  'outputType': 'base64Data',
+  'outputFormat': 'JPG',
+  'includeCost': true,
+};
+
 String _uuid4() {
   final r = math.Random.secure();
   final b = List<int>.generate(16, (_) => r.nextInt(256));
@@ -68,6 +83,21 @@ class RunwareClient {
 
   bool get isConfigured => _key.isNotEmpty;
 
+  /// v11.65: Real-ESRGAN 2x of [bytes] (the Flare result). Throws
+  /// [AiFailure] on any problem (e.g. HTTP 400 insufficientCredits) — the
+  /// caller falls back to a plain resize.
+  Future<({Uint8List image, double cost})> upscale(
+    Uint8List bytes, {
+    AiCancelToken? cancel,
+  }) async {
+    if (!isConfigured) throw const AiFailure(AiFailureKind.other, 'Runware is not set up');
+    final mime = bytes.length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50 ? 'image/png' : 'image/jpeg';
+    final body = jsonEncode([
+      buildRunwareUpscaleTask(imageDataUrl: 'data:$mime;base64,${base64Encode(bytes)}'),
+    ]);
+    return _send(body, cancel, AiConfig.upscaleTimeout);
+  }
+
   Future<({Uint8List image, double cost})> generate({
     required File image,
     required String prompt,
@@ -79,6 +109,14 @@ class RunwareClient {
     final body = jsonEncode([
       buildRunwareTask(prompt: prompt, imageDataUrl: main.dataUrl, width: main.width, height: main.height),
     ]);
+    return _send(body, cancel, timeout);
+  }
+
+  Future<({Uint8List image, double cost})> _send(
+    String body,
+    AiCancelToken? cancel,
+    Duration timeout,
+  ) async {
     final own = _injected == null;
     final client = _injected ?? http.Client();
     if (own) cancel?.onCancel(client.close);
