@@ -1,3 +1,17 @@
+/// v11.58 per-style image model (admin "Model" select, mirrors the server):
+/// `klein` FLUX Klein (OpenRouter, photo only), `runware_klein4b` FLUX.2
+/// Klein 4B on Runware (violent / bloody looks), `custom` = the Custom
+/// change model (Flare). Unknown → `custom` (fallback to Custom).
+const kStyleModelKlein = 'klein';
+const kStyleModelRunware = 'runware_klein4b';
+const kStyleModelCustom = 'custom';
+const kStyleModels = [kStyleModelKlein, kStyleModelRunware, kStyleModelCustom];
+
+String normalizeStyleModel(Object? v) {
+  final s = '${v ?? ''}'.trim().toLowerCase();
+  return kStyleModels.contains(s) ? s : kStyleModelCustom;
+}
+
 /// One AI look in the style library (v9). The hidden prompt and reference
 /// images live on the server (admin panel) and are never sent to the app;
 /// the app only knows how to show the style and what it costs.
@@ -18,6 +32,7 @@ class AiStyle {
     this.uiCategory,
     this.sampleBeforeUrl,
     this.sampleAfterUrl,
+    this.model = kStyleModelKlein,
   });
 
   /// Parses a server `/v1/styles` entry (relative `image_url` resolved
@@ -54,6 +69,10 @@ class AiStyle {
           : null,
       sampleBeforeUrl: abs(j['sample_before_url']),
       sampleAfterUrl: abs(j['sample_after_url']),
+      // v11.58: missing (seed / older server) → Klein default; unknown → Custom.
+      model: j.containsKey('model') && j['model'] != null
+          ? normalizeStyleModel(j['model'])
+          : (j['kind'] == 'filter' ? kStyleModelCustom : kStyleModelKlein),
     );
   }
 
@@ -95,6 +114,9 @@ class AiStyle {
   final String? sampleBeforeUrl;
   final String? sampleAfterUrl;
 
+  /// v11.58: which image model renders this style (see [kStyleModels]).
+  final String model;
+
   Map<String, Object?> toJson() => {
     'id': id,
     'name': name,
@@ -111,6 +133,7 @@ class AiStyle {
     if (uiCategory != null) 'ui_category': uiCategory,
     if (sampleBeforeUrl != null) 'sample_before_url': sampleBeforeUrl,
     if (sampleAfterUrl != null) 'sample_after_url': sampleAfterUrl,
+    'model': model,
   };
 
   AiStyle withAsset(String? asset) => AiStyle(
@@ -129,6 +152,7 @@ class AiStyle {
     uiCategory: uiCategory,
     sampleBeforeUrl: sampleBeforeUrl,
     sampleAfterUrl: sampleAfterUrl,
+    model: model,
   );
 
   @override

@@ -219,3 +219,89 @@ Future<(bool, double)> framingCheck(Uint8List src, Uint8List out) async {
   final s = framingSimilarity(a.values, b.values, a.width, a.height);
   return (s >= kFramingMin, s);
 }
+
+// ---------------------------------------------------------------------------
+// v11.59 zoom output check (free, on device; mirrors image_guard.py
+// zoom_output_ok): the AI result must keep the SOURCE area's structure and,
+// without a chosen look, its colours. Run against the sharp source when
+// one was sent, else against the final zoom photo itself.
+// ---------------------------------------------------------------------------
+
+/// Structure similarity floor (same as Pro Night).
+const double kZoomStructureMin = kStructureMin;
+
+/// Mean colour distance (0..441, RGB) above which the colours changed.
+const double kZoomColourMaxDist = 70;
+
+/// Mean RGB colour distance of two equal-size RGBA proxies. Pure.
+double meanColourDistance(List<int> a, List<int> b) {
+  final n = math.min(a.length, b.length) ~/ 4;
+  if (n == 0) return 0;
+  var sum = 0.0;
+  for (var i = 0; i < n; i++) {
+    final dr = a[i * 4] - b[i * 4];
+    final dg = a[i * 4 + 1] - b[i * 4 + 1];
+    final db = a[i * 4 + 2] - b[i * 4 + 2];
+    sum += math.sqrt(dr * dr + dg * dg + db * db);
+  }
+  return sum / n;
+}
+
+/// RGBA proxy of [w]×[h] by BOX AVERAGING an 8× decode (decoders sample
+/// differently at tiny target sizes — JPEG vs PNG must not look different).
+Future<List<int>> _rgbaProxy(Uint8List bytes, int w, int h) async {
+  final codec = await ui.instantiateImageCodec(
+    bytes,
+    targetWidth: w * 8,
+    targetHeight: h * 8,
+  );
+  final frame = await codec.getNextFrame();
+  final im = frame.image;
+  final data = await im.toByteData(format: ui.ImageByteFormat.rawRgba);
+  final bw = im.width, bh = im.height;
+  im.dispose();
+  codec.dispose();
+  final px = data!.buffer.asUint8List();
+  final out = List<int>.filled(w * h * 4, 255);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      var r = 0, g = 0, b = 0, n = 0;
+      final y0 = y * bh ~/ h, y1 = math.max(y0 + 1, (y + 1) * bh ~/ h);
+      final x0 = x * bw ~/ w, x1 = math.max(x0 + 1, (x + 1) * bw ~/ w);
+      for (var yy = y0; yy < y1 && yy < bh; yy++) {
+        for (var xx = x0; xx < x1 && xx < bw; xx++) {
+          final i = (yy * bw + xx) * 4;
+          r += px[i];
+          g += px[i + 1];
+          b += px[i + 2];
+          n++;
+        }
+      }
+      final o = (y * w + x) * 4;
+      if (n > 0) {
+        out[o] = r ~/ n;
+        out[o + 1] = g ~/ n;
+        out[o + 2] = b ~/ n;
+      }
+    }
+  }
+  return out;
+}
+
+/// (ok, structure similarity). Colour is checked only when [checkColour]
+/// (no style / colour look chosen).
+Future<(bool, double)> zoomOutputCheck(
+  Uint8List src,
+  Uint8List out, {
+  bool checkColour = true,
+}) async {
+  final (_, s) = await structureCheck(src, out);
+  var ok = s >= kZoomStructureMin;
+  if (ok && checkColour) {
+    final a = await grayProxy(src, 16);
+    final ca = await _rgbaProxy(src, a.width, a.height);
+    final cb = await _rgbaProxy(out, a.width, a.height);
+    ok = meanColourDistance(ca, cb) <= kZoomColourMaxDist;
+  }
+  return (ok, s);
+}

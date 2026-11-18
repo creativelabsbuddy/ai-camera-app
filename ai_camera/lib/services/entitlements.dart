@@ -355,6 +355,18 @@ CreditState applyDecision(CreditState s, EnhanceDecision d) {
   );
 }
 
+/// v11.58: gives back exactly what [d] took (same buckets, trials reopened).
+/// Used for a bad / failed Microscope result the user reports.
+CreditState refundDecision(CreditState s, EnhanceDecision d) {
+  if (!d.allowed) return s;
+  return s.copyWith(
+    freeDaily: s.freeDaily + d.fromFree,
+    subCredits: s.subCredits + d.fromSub,
+    packCredits: s.packCredits + d.fromPack,
+    trialsUsed: {...s.trialsUsed}..removeAll(d.trials),
+  );
+}
+
 /// Applies a (test-mode or real) purchase.
 /// * Subscription: Pro until max(now, proUntil) + 30 days; sub credits SET
 ///   to 100 (no rollover from the previous period).

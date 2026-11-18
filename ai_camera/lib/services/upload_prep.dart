@@ -16,7 +16,9 @@ const int kMacroContextLongSide = 1024;
 int contextLongSideFor(String path) =>
     path.endsWith('_boxed.jpg') ? kMacroContextLongSide : kContextLongSide;
 const int kReferenceLongSide = 1024; // style reference images
-const int kUploadJpegQuality = 90;
+/// v11.58: no lossy q90 re-encode any more. Upright JPEGs that already fit
+/// go out byte-for-byte; a resize / EXIF bake is written at q100.
+const int kUploadJpegQuality = 100;
 
 /// Upload-ready image: upright pixels, ≤ maxLong long side, JPEG.
 class PreparedImage {
@@ -39,7 +41,7 @@ class UploadPrep {
   static String lastPath = '';
 }
 
-/// Bakes EXIF orientation and limits the long side to [maxLong] (JPEG q90).
+/// Bakes EXIF orientation and limits the long side to [maxLong] (JPEG q100).
 /// Small upright JPEGs are passed through untouched.
 Future<PreparedImage> prepareUpload(
   Uint8List bytes, {
@@ -283,6 +285,68 @@ Uint8List _ensureMinSync(_MinArgs a) {
     width: (im.width * scale).round(),
     height: (im.height * scale).round(),
     interpolation: img.Interpolation.cubic,
+  );
+  return Uint8List.fromList(img.encodeJpg(out, quality: 92));
+}
+
+/// v11.65 tier sizing: resample [bytes] (up OR down) so its long side is
+/// exactly [longSide] (JPEG q92). Native decode + resample first (fast, high
+/// quality), pure Dart as fallback (cubic up / area down — the `image`
+/// package has no Lanczos). Returns the input unchanged when within 0.5 %.
+Future<Uint8List> resizeToLongSide(Uint8List bytes, int longSide) async {
+  if (UploadPrep.nativeDecode) {
+    try {
+      final r = await _resizeNative(bytes, longSide).timeout(const Duration(seconds: 20));
+      if (r != null) return r;
+    } catch (e) {
+      debugPrint('Native resize failed, using Dart: $e');
+    }
+  }
+  return compute(_resizeSync, _MinArgs(bytes, longSide));
+}
+
+(int, int) longSideSize(int w, int h, int longSide) {
+  final s = longSide / math.max(1, math.max(w, h));
+  return (math.max(1, (w * s).round()), math.max(1, (h * s).round()));
+}
+
+Future<Uint8List?> _resizeNative(Uint8List bytes, int longSide) async {
+  final buf = await ui.ImmutableBuffer.fromUint8List(bytes);
+  final desc = await ui.ImageDescriptor.encoded(buf);
+  final w = desc.width;
+  final h = desc.height;
+  desc.dispose();
+  buf.dispose();
+  if ((math.max(w, h) - longSide).abs() <= longSide * 0.005) return bytes;
+  final (tw, th) = longSideSize(w, h, longSide);
+  final codec = await ui.instantiateImageCodec(
+    bytes,
+    targetWidth: tw,
+    targetHeight: th,
+    allowUpscaling: true,
+  );
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+  final rgba = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+  final ow = image.width;
+  final oh = image.height;
+  image.dispose();
+  codec.dispose();
+  if (rgba == null) return null;
+  return compute(_encodeRgba, _RgbaArgs(rgba.buffer.asUint8List(), ow, oh, 92));
+}
+
+Uint8List _resizeSync(_MinArgs a) {
+  final im = img.decodeImage(a.bytes);
+  if (im == null) return a.bytes;
+  final long = math.max(im.width, im.height);
+  if ((long - a.minLong).abs() <= a.minLong * 0.005) return a.bytes;
+  final (tw, th) = longSideSize(im.width, im.height, a.minLong);
+  final out = img.copyResize(
+    im,
+    width: tw,
+    height: th,
+    interpolation: a.minLong > long ? img.Interpolation.cubic : img.Interpolation.average,
   );
   return Uint8List.fromList(img.encodeJpg(out, quality: 92));
 }

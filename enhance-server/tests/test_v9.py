@@ -58,7 +58,8 @@ def test_styles_endpoint_hides_prompts_and_refs(env):
     first = js["styles"][0]
     assert set(first) == {"id", "name", "category", "credit_cost", "pro_only", "sort_order",
                           "image_url", "has_reference", "needs_person", "kind", "ui_category",
-                          "sample_before_url", "sample_after_url"}
+                          "sample_before_url", "sample_after_url", "model"}
+    assert first["model"] == "klein"  # v11.58 default
     img = c.get(first["image_url"])
     assert img.status_code == 200 and img.headers["content-type"] == "image/jpeg"
 
@@ -95,7 +96,10 @@ def test_apply_style_cost_only_on_success(env):
     sent = up.calls[-1]["prompt"]
     assert sent.startswith(P.LOOK_IDENTITY_PROMPT) and store.get("paris_eiffel").prompt in sent
     assert P.LOCKED_ENHANCE_PROMPT not in sent
-    assert up.calls[-1]["quality"] == "medium" and up.calls[-1]["resolution"] == "1.5K"
+    # v11.58: styles render on FLUX Klein — photo only, no quality/resolution.
+    assert up.calls[-1]["model"] == main.KLEIN_MODEL
+    assert "quality" not in up.calls[-1] and "resolution" not in up.calls[-1]
+    assert len(up.calls[-1]["input_references"]) == 1
     assert account(c, "dev_look_1")["state"]["free_daily"] == 0
     # Out of credits → 402, no upstream call.
     n = len(up.calls)
@@ -137,7 +141,11 @@ def test_pro_only_style_needs_pro(env):
 
 
 def test_variations_cost_4x_and_partial_results_charged_per_image(env):
-    c, _, up = env
+    c, store, up = env
+    for sid in ("black_suit", "diwali_lights"):  # v11.58: the Custom (Flare) path
+        s = store.get(sid)
+        s.model = "custom"
+        store.upsert(s)
     c.post("/v1/purchase", json={"device_id": "dev_look_1", "product_id": "pack_25"})
     # Fake upstream returns 1 image per call → server tops up with single calls.
     r = apply(c, style_id="black_suit", variations=4)
@@ -181,6 +189,12 @@ def test_reference_images_sent_after_user_photo(env):
     s = store.get("dubai_skyline")
     s.ref_images = [store.save_image(jpeg(500, 500, (0, 0, 255)), private=True)]
     store.upsert(s)
+    # v11.58: Klein gets only the user's photo — references are not sent.
+    c.post("/v1/purchase", json={"device_id": "dev_look_1", "product_id": "pack_25"})
+    r = apply(c, style_id="dubai_skyline")
+    assert r.json()["references_used"] == 0 and len(up.calls[-1]["input_references"]) == 1
+    s.model = "custom"  # the Custom (Flare) path still sends references
+    store.upsert(s)
     r = apply(c, style_id="dubai_skyline")
     assert r.json()["references_used"] == 1
     refs = up.calls[-1]["input_references"]
@@ -199,7 +213,7 @@ def test_night_flag_appends_exact_prompt_after_locked(env):
     r = enhance(c, night="true")
     assert r.status_code == 200 and r.headers["x-night"] == "1"
     p = up.calls[-1]["prompt"]
-    assert p.startswith(P.LOCKED_ENHANCE_PROMPT + " " + P.NIGHT_PROMPT)
+    assert p.startswith(P.UNIVERSAL_ENHANCE_PROMPT) and P.NIGHT_PROMPT not in p  # v11.58
     assert r.headers["x-credits-charged"] == "1"  # night costs nothing extra
     enhance(c)
     assert P.NIGHT_PROMPT not in up.calls[-1]["prompt"]

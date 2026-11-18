@@ -4,25 +4,25 @@ import 'package:ai_camera/services/macro.dart';
 import 'package:ai_camera/services/mode_prompts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const ext =
-    'A tiny area of {spot} under a light microscope at 1000x magnification, microscopic cells and structure filling the frame. One single full-frame image, no text or labels. Photorealistic.';
-const ult =
-    'Close-up of {spot} under a scanning electron microscope at 2000x magnification. Show how it looks. One single full-frame image, no text or labels. Photorealistic.';
+// v11.58: material-aware texts (no hardcoded cells).
+final ext = kMacroExtremePrompt;
+final ult = kMacroUltraPrompt;
 
 void main() {
   test('Extreme / Ultra prompts (app defaults)', () {
-    expect(kMacroExtremePrompt, ext);
-    expect(kMacroUltraPrompt, ult);
+    expect(ext, contains('1000x magnification'));
+    expect(ult, contains('2000x magnification'));
+    expect(ext.toLowerCase(), isNot(contains('cells')));
   });
 
   test('spot filled; capital only at the sentence start', () {
     expect(
       macroPrompt('eye', level: 'ultra', part: 'brown human eye brown iris'),
-      startsWith('Close-up of brown human eye brown iris under a scanning'),
+      startsWith('Close-up of brown human eye brown iris under a scanning'), // part names the eye
     );
     expect(
       macroPrompt('eye', level: 'extreme', part: 'brown iris'),
-      startsWith('A tiny area of brown iris under a light microscope at 1000x'),
+      startsWith('A tiny area of brown iris on the eye under a light microscope at 1000x'), // v11.58
     );
   });
 

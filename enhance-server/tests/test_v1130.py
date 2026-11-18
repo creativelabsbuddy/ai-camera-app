@@ -65,6 +65,7 @@ def test_zoom_ladder_one_call_refs_first_final_last(env):
 
 def test_zoom_ladder_flag_ignored_without_steps_or_in_macro(env):
     c, _, _, up = env
+    up.reply = enc(scene(1200, 900), "PNG")  # v11.59 output check: keeps the photo
     r = _post(c, "dev_v1130c", {"zoom": "40", "optical_limit": "1", "zoom_ladder": "true"}, 0)
     assert r.status_code == 200
     assert up.calls[-1]["prompt"] == P.ZOOM_CLEAN_PROMPT  # v11.34: final only
@@ -75,6 +76,6 @@ def test_zoom_ladder_flag_ignored_without_steps_or_in_macro(env):
 
 
 def test_ladder_prompt_simple_and_version():
-    assert P.ZOOM_LADDER_PROMPT.startswith("Keep this zoomed photo exactly as it is")  # v11.39
+    assert P.ZOOM_LADDER_PROMPT.startswith(P.ZOOM_CLEAN_PROMPT)  # v11.59
     assert P.zoom_ladder_prompt(None, None) == P.ZOOM_LADDER_PROMPT
     assert tuple(map(int, main.app.version.split("."))) >= (11, 1, 25)

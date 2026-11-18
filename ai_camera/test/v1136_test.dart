@@ -106,7 +106,9 @@ void main() {
       expect(kZoomModeHint, 'Tap Zoom mode for more');
       expect(hcs, contains("route.aiMode == 'photo' && _zoomModeActive"));
       expect(hcs, contains('_zoomMode &&\n      _macroLowEnd'));
-      expect(hcs, contains('_zoomModeActive &&\n          shouldMergeZoom('));
+      // v11.60: the zoom burst keeps the gate for Pro AI (Normal has no
+      // Zoom mode and may burst on its own).
+      expect(hcs, contains('(!_aiMode || _zoomModeActive) &&'));
       expect(hcs, contains('if (!_zoomModeActive || _processingCapture'));
       expect(hcs, contains('await _setMode(CaptureMode.pro)'));
     });

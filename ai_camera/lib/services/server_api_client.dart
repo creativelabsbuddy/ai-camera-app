@@ -55,6 +55,8 @@ AiFailureKind? failureKindFromWire(String? s) {
       return AiFailureKind.structureChanged;
     case 'framing_changed':
       return AiFailureKind.framingChanged;
+    case 'no_sharp_source':
+      return AiFailureKind.noSharpSource;
   }
   return null;
 }
@@ -250,6 +252,7 @@ class ServerApiClient {
     List<File> steps = const [],
     bool zoomLadder = false,
     bool zoomClean = false,
+    bool zoomSource = false,
     String? macroLevel,
     String? part,
     AiCancelToken? cancel,
@@ -305,6 +308,8 @@ class ServerApiClient {
       if (contextBoxed) 'context_boxed': 'true',
       if (zoomLadder) 'zoom_ladder': 'true', // v11.30
       if (zoomClean) 'zoom_clean': 'true', // v11.34
+      // v11.59: image = aligned sharp source, steps[0] = final (framing).
+      if (zoomSource) 'zoom_source': 'true',
     });
     final resp = await _sendAi(req, aiTimeout, cancel);
     _throwIfNotOk(resp, 'Enhance');

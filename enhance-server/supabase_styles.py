@@ -20,14 +20,15 @@ from typing import Optional
 import httpx
 from PIL import Image, ImageOps
 
-from styles import MAX_IMAGE_LONG, MAX_SAMPLE_LONG, MEDIA_TYPES, Style, normalize_ui_category, slugify, valid_media_name
+from styles import (MAX_IMAGE_LONG, MAX_SAMPLE_LONG, MEDIA_TYPES, Style, normalize_style_model, normalize_ui_category,
+                    slugify, valid_media_name)
 
 THUMBS = "style-thumbs"
 REFS = "style-refs"
 SAMPLES = "style-samples"  # v11.56 public before/after samples
 _FIELDS = ("id", "name", "category", "prompt", "credit_cost", "pro_only", "enabled", "sort_order",
            "display_image", "ref_images", "needs_person", "media_type", "free_trial", "kind", "ui_category",
-           "sample_before_url", "sample_after_url")
+           "sample_before_url", "sample_after_url", "model")
 
 
 class SupabaseStyleStore:
@@ -53,7 +54,8 @@ class SupabaseStyleStore:
                      media_type=r.get("media_type") or "photo", free_trial=bool(r.get("free_trial", True)),
                      kind=r.get("kind") or "style", ui_category=r.get("ui_category") or "new",
                      sample_before_url=r.get("sample_before_url") or None,
-                     sample_after_url=r.get("sample_after_url") or None)
+                     sample_after_url=r.get("sample_after_url") or None,
+                     model=normalize_style_model(r.get("model")))
 
     def _rows(self, params: dict) -> list:
         return self._ok(self._c.get("/rest/v1/styles", params={"select": "*", **params})).json()
@@ -83,6 +85,7 @@ class SupabaseStyleStore:
         if s.kind not in ("style", "filter"):
             s.kind = "style"
         s.ui_category = normalize_ui_category(s.ui_category, s.media_type)
+        s.model = normalize_style_model(s.model)
         row = {k: getattr(s, k) for k in _FIELDS}
         row["updated_at"] = time.time()
         self._ok(self._c.post("/rest/v1/styles", json=row, headers={

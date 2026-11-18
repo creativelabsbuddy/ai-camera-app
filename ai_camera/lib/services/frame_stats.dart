@@ -18,7 +18,17 @@ class FrameStats {
     this.thumbHeight = 0,
     this.cropLuma,
     this.cropZoom = 1,
+    this.trackLuma,
+    this.trackWidth = 0,
+    this.trackHeight = 0,
   });
+
+  /// v11.60 upright GREY proxy of the WHOLE camera frame (zoom tracking),
+  /// [trackWidth]×[trackHeight] (aspect of the analysis frame), box
+  /// averaged. Null unless tracking is on.
+  final Uint8List? trackLuma;
+  final int trackWidth;
+  final int trackHeight;
 
   /// v11.35 upright GREY (1 byte/px) [kThumbW]×[kThumbH] sample of the
   /// visible crop (centre 1/[cropZoom] of the camera frame).
@@ -53,6 +63,7 @@ FrameStats frameStatsFromNv21(
   int rotation = 90,
   bool thumb = true,
   double cropZoom = 1,
+  bool track = false,
 }) {
   final stride = bytesPerRow > 0 ? bytesPerRow : width;
   if (width <= 0 || height <= 0 || nv21.length < stride * height) {
@@ -83,7 +94,19 @@ FrameStats frameStatsFromNv21(
   final cl = thumb
       ? _cropLuma(nv21, width, height, stride, rotation, cz)
       : null;
+  Uint8List? tl;
+  var tw = 0, th = 0;
+  if (track) {
+    final rot = ((rotation % 360) + 360) % 360;
+    final swap = rot == 90 || rot == 270;
+    tw = kTrackProxyW;
+    th = ((swap ? width / height : height / width) * tw).round();
+    tl = trackProxy(nv21, width, height, stride, rotation, tw, th);
+  }
   return FrameStats(
+    trackLuma: tl,
+    trackWidth: tw,
+    trackHeight: th,
     cropLuma: cl,
     cropZoom: cz,
     luma: luma,
@@ -182,6 +205,55 @@ Uint8List _thumb(Uint8List nv21, int w, int h, int stride, int rotation) {
       out[o + 1] = (yv - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255);
       out[o + 2] = (yv + 1.772 * uu).round().clamp(0, 255);
       out[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
+/// v11.60 tracking proxy width (upright).
+const int kTrackProxyW = 72;
+
+/// v11.60 upright grey proxy of the whole frame: each output pixel is the
+/// mean of a 3×3 grid of luma samples inside its footprint (anti-alias).
+/// Rotation mapping as [_thumb]. Pure → unit tested.
+Uint8List trackProxy(
+  Uint8List nv21,
+  int w,
+  int h,
+  int stride,
+  int rotation,
+  int tw,
+  int th,
+) {
+  final out = Uint8List(tw * th);
+  final rot = ((rotation % 360) + 360) % 360;
+  for (var ty = 0; ty < th; ty++) {
+    for (var tx = 0; tx < tw; tx++) {
+      var s = 0;
+      for (var j = 0; j < 3; j++) {
+        for (var i = 0; i < 3; i++) {
+          final u = (tx + (i + 0.5) / 3) / tw, v = (ty + (j + 0.5) / 3) / th;
+          double fx, fy;
+          switch (rot) {
+            case 90:
+              fx = v;
+              fy = 1 - u;
+            case 180:
+              fx = 1 - u;
+              fy = 1 - v;
+            case 270:
+              fx = 1 - v;
+              fy = u;
+            default:
+              fx = u;
+              fy = v;
+          }
+          final sx = (fx * w).floor().clamp(0, w - 1);
+          final sy = (fy * h).floor().clamp(0, h - 1);
+          s += nv21[sy * stride + sx];
+        }
+      }
+      out[ty * tw + tx] = (s / 9).round();
     }
   }
   return out;

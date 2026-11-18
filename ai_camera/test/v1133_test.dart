@@ -203,7 +203,7 @@ void main() {
   test('home wiring: no charge before the box is ready / detection', () {
     final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
     expect(h, isNot(contains('if (!_boxCheck.ready) {'))); // v11.40
-    expect(h, contains('await _detectBoxArea('));
+    expect(h, isNot(contains('await _detectBoxArea('))); // v11.59 F6
     expect(h, contains('MacroLevelChips('));
     expect(h, contains("ValueKey('macro_box')"));
     expect(h, isNot(contains('DriftPopup(')));

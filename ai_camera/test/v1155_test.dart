@@ -108,5 +108,5 @@ void main() {
         lessThanOrEqualTo(915));
     await shot(t, 'photo_source_sheet');
   });
-  test('version 1.11.5x', () { expect(File('pubspec.yaml').readAsStringSync(), matches(RegExp(r'version: 1\.11\.5[5-9]\+'))); });
+  test('version 1.11.5x', () { expect(File('pubspec.yaml').readAsStringSync(), matches(RegExp(r'version: 1\.11\.(5[5-9]|6\d)\+'))); });
 }

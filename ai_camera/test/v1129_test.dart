@@ -14,18 +14,9 @@ String _home() =>
 
 void main() {
   test('Extreme / Ultra prompts', () {
-    expect(
-      kMacroExtremePrompt,
-      'A tiny area of {spot} under a light microscope at 1000x magnification, '
-      'microscopic cells and structure filling the frame. One single '
-      'full-frame image, no text or labels. Photorealistic.',
-    );
-    expect(
-      kMacroUltraPrompt,
-      'Close-up of {spot} under a scanning electron microscope at 2000x '
-      'magnification. Show how it looks. One single full-frame image, no '
-      'text or labels. Photorealistic.',
-    );
+    // v11.58: material-aware (no hardcoded cells).
+    expect(kMacroExtremePrompt, startsWith('A tiny area of {spot}{on_object} under a light microscope at 1000x'));
+    expect(kMacroUltraPrompt, startsWith('Close-up of {spot}{on_object} under a scanning electron microscope at 2000x'));
     for (final f in Directory('lib').listSync(recursive: true)) {
       if (f is File && f.path.endsWith('.dart')) {
         expect(f.readAsStringSync(), isNot(contains('15000x')), reason: f.path);

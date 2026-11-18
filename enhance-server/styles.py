@@ -37,6 +37,22 @@ def ui_categories_for(media_type: str) -> tuple:
     return VIDEO_UI_CATEGORIES if media_type == "video" else PHOTO_UI_CATEGORIES
 
 
+# v11.58: which image model renders a photo style (admin "Model" select).
+#   klein            → FLUX Klein (OpenRouter), the user's photo only (default)
+#   runware_klein4b  → FLUX.2 Klein 4B on Runware (violent / bloody looks)
+#   custom           → the same model as a Custom change (Flare)
+# Empty / unknown → "custom" (fallback to Custom).
+STYLE_MODELS = (("klein", "FLUX Klein (default)"),
+                ("runware_klein4b", "FLUX.2 Klein 4B · Runware (violent / bloody looks)"),
+                ("custom", "Same as Custom (Flare)"))
+DEFAULT_STYLE_MODEL = "klein"
+
+
+def normalize_style_model(value) -> str:
+    v = (value or "").strip().lower()
+    return v if v in {k for k, _ in STYLE_MODELS} else "custom"
+
+
 def normalize_ui_category(value, media_type: str = "photo") -> str:
     v = (value or "").strip().lower()
     return v if v in {k for k, _ in ui_categories_for(media_type)} else "new"
@@ -76,6 +92,8 @@ class Style:
     # (absolute public URLs or /media/styles/<file>). Video: after only.
     sample_before_url: Optional[str] = None
     sample_after_url: Optional[str] = None
+    # v11.58: image model for this style (see STYLE_MODELS).
+    model: str = DEFAULT_STYLE_MODEL
 
     def public_json(self) -> dict:
         return {
@@ -92,6 +110,7 @@ class Style:
             "ui_category": normalize_ui_category(self.ui_category, self.media_type),
             "sample_before_url": self.sample_before_url or None,
             "sample_after_url": self.sample_after_url or None,
+            "model": normalize_style_model(self.model),
         }
 
     def admin_json(self) -> dict:
@@ -156,6 +175,8 @@ class StyleStore:
             self._db.execute("ALTER TABLE styles ADD COLUMN sample_before_url TEXT")
         if "sample_after_url" not in cols:
             self._db.execute("ALTER TABLE styles ADD COLUMN sample_after_url TEXT")
+        if "model" not in cols:  # v11.58 migration
+            self._db.execute(f"ALTER TABLE styles ADD COLUMN model TEXT DEFAULT '{DEFAULT_STYLE_MODEL}'")
 
     # -- seed --------------------------------------------------------------
     def seed_if_empty(self, seed_json: str, seed_media: str) -> int:
@@ -180,6 +201,7 @@ class StyleStore:
                     enabled=True, sort_order=int(s.get("sort_order", n)), display_image=img,
                     needs_person=bool(s.get("needs_person", True)),
                     ui_category=s.get("ui_category") or "new",
+                    model=s.get("model") or DEFAULT_STYLE_MODEL,
                 ))
                 n += 1
             self._db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('seeded', '1')")
@@ -190,10 +212,11 @@ class StyleStore:
     def _row(r) -> Style:
         return Style(r[0], r[1], r[2], r[3], r[4], bool(r[5]), bool(r[6]), r[7], r[8], json.loads(r[9] or "[]"),
                      bool(r[10]), r[11] or "photo", bool(r[12]), r[13] or "style", r[14] or "new",
-                     r[15] or None, r[16] or None)
+                     r[15] or None, r[16] or None, normalize_style_model(r[17]))
 
     _COLS = ("id, name, category, prompt, credit_cost, pro_only, enabled, sort_order, display_image, "
-             "ref_images, needs_person, media_type, free_trial, kind, ui_category, sample_before_url, sample_after_url")
+             "ref_images, needs_person, media_type, free_trial, kind, ui_category, sample_before_url, sample_after_url, "
+             "model")
 
     def list(self, include_disabled: bool = False, media_type: Optional[str] = None) -> list[Style]:
         q = f"SELECT {self._COLS} FROM styles"
@@ -216,7 +239,7 @@ class StyleStore:
         s.credit_cost = max(0, min(100, int(s.credit_cost)))
         with self._lock:
             self._db.execute(
-                f"INSERT INTO styles({self._COLS}, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                f"INSERT INTO styles({self._COLS}, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET name=excluded.name, category=excluded.category, "
                 "prompt=excluded.prompt, credit_cost=excluded.credit_cost, pro_only=excluded.pro_only, "
                 "enabled=excluded.enabled, sort_order=excluded.sort_order, "
@@ -224,13 +247,14 @@ class StyleStore:
                 "needs_person=excluded.needs_person, media_type=excluded.media_type, "
                 "free_trial=excluded.free_trial, kind=excluded.kind, ui_category=excluded.ui_category, "
                 "sample_before_url=excluded.sample_before_url, sample_after_url=excluded.sample_after_url, "
-                "updated_at=excluded.updated_at",
+                "model=excluded.model, updated_at=excluded.updated_at",
                 (s.id, s.name, s.category, s.prompt, s.credit_cost, int(s.pro_only), int(s.enabled),
                  s.sort_order, s.display_image, json.dumps(s.ref_images), int(s.needs_person),
                  s.media_type if s.media_type in MEDIA_TYPES else "photo", int(s.free_trial),
                  s.kind if s.kind in KINDS else "style",
                  normalize_ui_category(s.ui_category, s.media_type),
-                 s.sample_before_url or None, s.sample_after_url or None, time.time()),
+                 s.sample_before_url or None, s.sample_after_url or None,
+                 normalize_style_model(s.model), time.time()),
             )
         return s
 

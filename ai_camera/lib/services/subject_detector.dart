@@ -305,6 +305,111 @@ class SubjectDetector {
     lastReason = 'ok';
     return PartResult(sameSubject: ins, part: part, object: obj, fill: fill);
   });
+
+  /// v11.64 Microscope / Extreme / Ultra naming step (flash-lite, once per
+  /// shot): 1.5x [wide] + zoomed [zoom] → (name, part). name '' = vague /
+  /// unclear; null = failed / timed out / cancelled. ONE overall [timeout].
+  Future<(String, String)?> detectMicroNameTimed(
+    File wide,
+    File zoom, {
+    Duration timeout = kDetectSubjectTimeout,
+  }) async {
+    cancelInFlight();
+    _reasonAfterCancel = null;
+    final gen = ++_subjectGen;
+    try {
+      final r = await _guard(() async {
+        final url = await _serverUrl();
+        if (url.isNotEmpty) {
+          final j = await _server.macroDetect(
+            baseUrl: url,
+            deviceId: await _deviceId(),
+            files: [('wide', wide), ('zoom', zoom)],
+            endpoint: 'micro-name',
+          );
+          if (j != null) {
+            final n = sanitizeDetected(stripLookWords(j['name'] as String?));
+            final p = sanitizeDetected(stripLookWords(j['part'] as String?));
+            lastReason = n.isEmpty || isVagueDetect(n) ? 'vague' : 'ok';
+            return (isVagueDetect(n) ? '' : n, p);
+          }
+          // Older server (no micro-name endpoint): the 1.5x name, look
+          // words stripped.
+          final o = await _server.macroDetect(
+            baseUrl: url,
+            deviceId: await _deviceId(),
+            files: [('image', wide)],
+          );
+          if (o == null) {
+            lastReason = 'server error';
+            return null;
+          }
+          final (n, p) = parseMicroNameReply(o['name'] as String?);
+          lastReason = n.isEmpty ? 'vague' : 'ok';
+          return (n, p);
+        }
+        final raw = await _openRouter.detectMicroName(wide, zoom);
+        if (raw.trim().isEmpty) {
+          lastReason = _direct('');
+          return null;
+        }
+        final (n, p) = parseMicroNameReply(raw);
+        lastReason = n.isEmpty ? 'vague' : 'ok';
+        return (n, p);
+      }).timeout(timeout);
+      return gen == _subjectGen ? r : null;
+    } on TimeoutException {
+      if (gen == _subjectGen) cancelInFlight('timeout ${timeout.inSeconds}s');
+      return null;
+    }
+  }
+
+  /// v11.64 part step (flash-lite): part / side of [parent] only (never a
+  /// new name) + in_scene. Null on failure.
+  Future<PartResult?> detectMicroPart(
+    File oneX,
+    File boxedStep,
+    String parent,
+  ) => _guard(() async {
+    final url = await _serverUrl();
+    String part;
+    bool? ins;
+    if (url.isNotEmpty) {
+      var j = await _server.macroDetect(
+        baseUrl: url,
+        deviceId: await _deviceId(),
+        files: [('one_x', oneX), ('step', boxedStep)],
+        parent: parent,
+        endpoint: 'micro-part',
+      );
+      final old = j == null;
+      // Older server: the legacy part endpoint, only in_scene is used.
+      j ??= await _server.macroDetect(
+        baseUrl: url,
+        deviceId: await _deviceId(),
+        files: [('one_x', oneX), ('step', boxedStep)],
+        parent: parent,
+      );
+      if (j == null) {
+        lastReason = 'server error';
+        return null;
+      }
+      final i = j['in_scene'] ?? j['same_subject'];
+      ins = i is bool ? i : null;
+      part = old ? '' : microPartOnly(j['part'] as String?);
+    } else {
+      final raw = await _openRouter.detectMicroPart(oneX, boxedStep, parent);
+      final (_, p, i) = parseObjectPartReply(raw);
+      part = microPartOnly(p);
+      ins = i;
+      if (raw.trim().isEmpty) {
+        lastReason = _direct('');
+        return null;
+      }
+    }
+    lastReason = 'ok';
+    return PartResult(sameSubject: ins, part: part);
+  });
 }
 
 /// v11.24: one overall limit for the 1.5x detection (prep + network).

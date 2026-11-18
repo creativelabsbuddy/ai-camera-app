@@ -64,8 +64,8 @@ void main() {
     );
     expect(p.startsWith(kLockedEnhancePrompt), isTrue);
     expect(p, contains(kContextBoxedSentence));
-    expect(p, contains(kHighZoomClarity));
-    expect(kHighZoomClarity, contains('exactly as it is')); // v11.39
+    // v11.58: one universal prompt — no high-zoom clarity sentence.
+    expect(p, isNot(contains(kHighZoomClarity)));
     expect(
       buildEnhancePrompt(zoom: 2, opticalLimit: 2),
       isNot(contains(kHighZoomClarity)),

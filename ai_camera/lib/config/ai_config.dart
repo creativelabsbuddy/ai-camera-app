@@ -40,9 +40,10 @@ class AiConfig {
         'https://yrgfoglpzrvjfyoclwyw.supabase.co/storage/v1/object/public/style-thumbs',
   );
 
-  /// v11.53 AI video (key TEST builds only, like OPENROUTER_API_KEY):
-  /// 8scale Wan 2.2 (≤5 s) and Phosor MiniMax H3 Turbo (>5 s). Server
-  /// builds leave these empty and go through `/v1/video/*`.
+  /// v11.63 AI video (key TEST builds only, like OPENROUTER_API_KEY):
+  /// Phosor MiniMax H3 Turbo for every length. [videoApiKey] is unused
+  /// (kept so a dart-define does not break the build). Server builds
+  /// leave these empty and go through `/v1/video/*`.
   static const String videoApiKey = String.fromEnvironment(
     'VIDEO_API_KEY',
     defaultValue: '',
@@ -51,11 +52,21 @@ class AiConfig {
     'PHOSOR_API_KEY',
     defaultValue: '',
   );
+  /// Unused (legacy 8scale base). Kept so an existing dart-define still compiles.
   static const String wanBaseUrl = String.fromEnvironment(
     'VIDEO_API_BASE',
     defaultValue: 'https://8scale.run',
   );
   static const String phosorBaseUrl = 'https://phosor.ai/api/v1';
+
+  /// v11.65 Fast ⚡ video: fal.ai MiniMax H3 Max Turbo (key TEST builds
+  /// only via `--dart-define=FAL_KEY=…`; server builds keep it server-side).
+  static const String falApiKey = String.fromEnvironment(
+    'FAL_KEY',
+    defaultValue: '',
+  );
+  static const String falQueueUrl = 'https://queue.fal.run';
+  static const String falApp = 'minimax/h3-max-turbo';
 
   /// MiniMax region switch (default: allowed everywhere; no geo detection).
   static const bool minimaxEnabled = bool.fromEnvironment(
@@ -67,6 +78,25 @@ class AiConfig {
       'https://openrouter.ai/api/v1/images';
 
   static const String model = 'openai/gpt-image-2.5-flare';
+
+  /// v11.58 style models (per style, admin "Model"; fallback = Custom/Flare).
+  /// FLUX Klein on OpenRouter: the user's photo only, no quality/resolution.
+  static const String kleinModel = 'black-forest-labs/flux-3-image-klein';
+
+  /// FLUX.2 Klein 4B on Runware (violent / bloody looks). Key TEST builds
+  /// only (dart-define RUNWARE_API_KEY); server builds keep it on the server.
+  static const String runwareApiKey = String.fromEnvironment(
+    'RUNWARE_API_KEY',
+    defaultValue: '',
+  );
+  static const String runwareUrl = 'https://api.runware.ai/v1';
+  static const String runwareKlein4bModel = 'runware:400@4';
+
+  /// v11.65 tier upscale: Real-ESRGAN (BSD-3) on Runware, 2x, Full HD /
+  /// Ultra HD only. Same RUNWARE_API_KEY as Klein 4B.
+  static const String runwareUpscaleModel = 'runware:504@1';
+  static const int runwareUpscaleFactor = 2;
+  static const Duration upscaleTimeout = Duration(seconds: 45);
 
   /// v11.15 Macro subject detection (cheap vision chat call, no credits).
   static const String openRouterChatUrl =

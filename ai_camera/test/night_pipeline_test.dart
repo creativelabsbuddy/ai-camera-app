@@ -83,8 +83,10 @@ void main() {
   });
 
   test('AI night prompt goes right after the locked prompt (exact text)', () {
+    // v11.58: one universal prompt — Night adds no night sentence.
     final p = buildEnhancePrompt(night: true, hasContextImage: true);
-    expect(p.startsWith('$kLockedEnhancePrompt $kNightPrompt'), isTrue);
+    expect(p.startsWith(kUniversalEnhancePrompt), isTrue);
+    expect(p.contains(kNightPrompt), isFalse);
     // v11 night prompt (mirrors the server's default; admin-editable).
     // v11.48: general night prompt.
     expect(kNightPrompt, startsWith('A natural night photograph'));

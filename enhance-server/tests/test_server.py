@@ -135,7 +135,7 @@ def test_two_images_sent_with_context_sentence(env):
     assert len(p["input_references"]) == 2
     assert P.CONTEXT_IMAGE_SENTENCE in p["prompt"]
     assert p["prompt"].startswith(P.LOCKED_ENHANCE_PROMPT)
-    assert "carefully recover" in p["prompt"]  # 3x over optical
+    assert "carefully recover" not in p["prompt"]  # v11.58: one universal prompt
     assert (p["quality"], p["resolution"]) == ("low", "1K")
 
 
@@ -196,12 +196,19 @@ def test_packs_pay_premium_tiers(env):
     assert a["state"]["pack_credits"] == 23 and a["state"]["free_daily"] == 2
 
 
-def test_output_upscaled_to_tier_target(env):
+def test_output_not_upscaled_v1158(env):
+    """v11.58: HD is delivered at its native size. v11.65: Full HD is sized to
+    1920 (Real-ESRGAN, or the Lanczos fallback when Runware is unreachable)."""
     c, _, _ = env
     c.post("/v1/purchase", json={"device_id": "dev_test_1", "product_id": "pack_25"})
-    r = enhance(c, quality="full_hd")
+    r = enhance(c, quality="hd")
     im = Image.open(io.BytesIO(r.content))
-    assert max(im.size) >= 1920
+    assert max(im.size) < 1920
+    assert r.headers["X-Upscale"] == "none"
+    r = enhance(c, quality="full_hd")
+    assert r.status_code == 200
+    assert max(Image.open(io.BytesIO(r.content)).size) == 1920
+    assert r.headers["X-Upscale"] == "resize"  # network blocked → fallback, still delivered
 
 
 def test_purchase_validation_and_test_mode_switch(env, monkeypatch):
@@ -244,7 +251,9 @@ def test_locked_prompt_matches_app():
     if not os.path.exists(path):
         pytest.skip("app source not present")
     src = open(path, encoding="utf-8").read()
-    assert _dart_string_const(src, "kLockedEnhancePrompt") == P.LOCKED_ENHANCE_PROMPT
+    assert _dart_string_const(src, "kUniversalEnhancePrompt") == P.UNIVERSAL_ENHANCE_PROMPT
+    assert _dart_string_const(src, "kPortraitEnhancePrompt") == P.PORTRAIT_ENHANCE_PROMPT
+    assert P.LOCKED_ENHANCE_PROMPT == P.UNIVERSAL_ENHANCE_PROMPT  # v11.58
     assert _dart_string_const(src, "kContextImageSentence") == P.CONTEXT_IMAGE_SENTENCE
 
 

@@ -92,7 +92,10 @@ def test_blocked_custom_prompt_never_reaches_the_ai(env):
 
 
 def test_variations_top_up_in_parallel(env, monkeypatch):
-    c, _, _ = env
+    c, store, _ = env
+    s = store.get("paris_eiffel")
+    s.model = "custom"  # v11.58: Flare path (Klein is always one per call)
+    store.upsert(s)
     ns = []
 
     async def one_image(payload):

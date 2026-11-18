@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/ai_config.dart';
 import '../models/ai_style.dart';
 
-/// v11.53 video style presets (image-to-video · 9:16 · 5 s · Wan 2.2).
+/// v11.63 video style presets (image-to-video · 9:16 · 5 s · MiniMax H3).
 /// Read from Supabase with the publishable key (RLS: enabled
 /// media_type='video' rows only) so admin-added presets appear without a
 /// new APK; built-ins are the offline fallback.
@@ -119,7 +119,8 @@ class VideoStyleCatalog {
     try {
       final u = Uri.parse('${_url.replaceAll(RegExp(r'/+$'), '')}/rest/v1/styles').replace(
         queryParameters: {
-          'select': 'id,name,category,ui_category,prompt,sort_order,display_image',
+          'select': 'id,name,category,ui_category,prompt,sort_order,display_image,credit_cost,'
+              'sample_before_url,sample_after_url',
           'media_type': 'eq.video',
           'enabled': 'eq.true',
           'order': 'sort_order.asc,name.asc',

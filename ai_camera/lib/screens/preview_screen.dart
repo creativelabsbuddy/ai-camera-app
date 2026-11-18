@@ -66,6 +66,8 @@ class PreviewScreen extends StatefulWidget {
     this.stepFiles = const [],
     this.zoomLadder = false,
     this.zoomClean = false,
+    this.zoomSourceFile,
+    this.zoomSourceOnly = false,
     this.aiInputFile,
     this.subjectSure = false,
     this.spotSource,
@@ -74,7 +76,12 @@ class PreviewScreen extends StatefulWidget {
     this.enhanceService,
     this.source,
     this.captureNote,
+    this.zoomLabel,
   });
+
+  /// v11.61: e.g. "Beyond clear range, AI-enhanced" — the zoom went past the
+  /// real detail this phone captured; shown on the result.
+  final String? zoomLabel;
 
   /// Where the photo came from (v10 enhance rules). Defaults from [mode]:
   /// PRO AI capture vs Normal capture. Gallery picks pass
@@ -134,6 +141,13 @@ class PreviewScreen extends StatefulWidget {
   final bool zoomLadder;
   final bool zoomClean;
 
+  /// v11.59 sharp-source zoom: the aligned sharp lower-zoom crop the AI
+  /// works from ([imageFile] = the final zoom, framing only).
+  final File? zoomSourceFile;
+
+  /// v11.62: send only [zoomSourceFile] (no blurry final frame).
+  final bool zoomSourceOnly;
+
   /// v11.13 Extreme: tighter spot sent instead of the crop.
   final File? aiInputFile;
 
@@ -186,6 +200,11 @@ class _PreviewScreenState extends State<PreviewScreen> {
 
   /// A paid Macro AI result is on screen ("Try again · 🪙N" offered).
   bool _macroDone = false;
+
+  /// v11.58: a bad Microscope / Extreme / Ultra result can be refunded
+  /// once (local test-key charge; same credit buckets given back).
+  EnhanceDecision? _refundable;
+  bool _refunding = false;
 
   /// v11 Pro Night guard hit on the last AI run (AI result not used).
   AiFailureKind? _guard;
@@ -384,6 +403,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
     steps: widget.stepFiles,
     zoomLadder: widget.zoomLadder,
     zoomClean: widget.zoomClean,
+    zoomSource: widget.zoomSourceFile,
+    zoomSourceOnly: widget.zoomSourceOnly,
     context: widget.contextFile,
     tier: widget.tier,
     zoom: widget.captureZoom,
@@ -432,6 +453,31 @@ class _PreviewScreenState extends State<PreviewScreen> {
 
   bool get _isMicroscope =>
       _isMacro && (widget.macroLevel?.isMicroscopic ?? false);
+
+  /// v11.58: give back the credits of a bad Microscope result (once) and
+  /// show the photo as taken again.
+  Future<void> _refundBadResult() async {
+    final d = _refundable;
+    if (d == null || _refunding) return;
+    setState(() => _refunding = true);
+    try {
+      await AccountService.instance.refundLocal(d);
+      if (!mounted) return;
+      setState(() {
+        _refundable = null;
+        _current = _original;
+        _aiBase = null;
+        _compare = false;
+        _status = 'Credits refunded ($kCreditGlyph${d.credits}). Photo kept as taken.';
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not refund. Please try again.')));
+      }
+    } finally {
+      if (mounted) setState(() => _refunding = false);
+    }
+  }
 
   /// v11.1 Macro "Try again · 🪙N": a normal paid run (full tier credits).
   /// Only technical failures are free; there is no refund check in Macro.
@@ -578,6 +624,13 @@ class _PreviewScreenState extends State<PreviewScreen> {
           _status = '$_status · framing ${r.structure!.toStringAsFixed(2)}';
         }
       });
+      if (guard == AiFailureKind.network) {
+        // v11.59: offline → the exact message, spinner already off (finally
+        // in _runAi), Retry stays available; nothing was charged.
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text(kCheckInternetMessage)));
+      }
       return;
     }
     final denied = r.denied;
@@ -612,6 +665,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
       if (r.usedAi) {
         _aiBase = r.file;
         _macroDone = _isMacro;
+        final lc = r.localCharge;
+        _refundable = _isMicroscope && lc != null && lc.credits > 0 ? lc : null;
         if (_isMacro) _compare = true;
         _trialsUsed.addAll(r.trialsUsed);
         final cost = r.trialsUsed.isNotEmpty
@@ -859,6 +914,33 @@ class _PreviewScreenState extends State<PreviewScreen> {
               ],
             ),
           ),
+          if (widget.zoomLabel case final zl?)
+            Padding(
+              key: const ValueKey('zoom_clear_label'),
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.auto_awesome_rounded,
+                    size: 16,
+                    color: AppColors.proGold,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      zl,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.proGold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -928,6 +1010,16 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 kAiImaginedLabel,
                 key: ValueKey('ai_imagined_label'),
                 style: TextStyle(color: AppColors.proGold, fontSize: 12),
+              ),
+            ),
+          if (_macroDone && _refundable != null && !_busy)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: TextButton.icon(
+                key: const ValueKey('micro_refund'),
+                onPressed: _refunding ? null : _refundBadResult,
+                icon: const Icon(Icons.undo_rounded, size: 18),
+                label: CreditText('Bad result? Refund $kCreditGlyph${_refundable!.credits}'),
               ),
             ),
           if (_macroDone && !_busy)

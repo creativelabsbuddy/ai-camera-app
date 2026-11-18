@@ -26,7 +26,11 @@ void main() {
     expect(sharpestPhotoIndex([3, 9, 5]), 1);
     expect(sharpestPhotoIndex([7, 7]), 0); // tie → the final photo
     expect(sharpestPhotoIndex([]), -1);
-    expect(home, contains('_sharpestMicroSource(path, crop, snap.zoom)'));
+    // v11.59 F6: Microscope no longer has a detect-only fallback.
+    expect(
+      home,
+      isNot(contains('_sharpestMicroSource(path, crop, snap.zoom)')),
+    );
   });
 
   test('Microscope text-only only with a detected spot', () {

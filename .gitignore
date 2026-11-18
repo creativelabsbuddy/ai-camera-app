@@ -46,10 +46,10 @@ __pycache__/
 *.db-*
 # ---- Logs / local output / personal photos ----
 *.log
-tests-out/
-verification/
-shots_v1155/
-samples/
+/tests-out/
+/verification/
+/shots_v1155/
+/samples/
 *.bak
 .idea/
 *.iml
