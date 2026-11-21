@@ -340,6 +340,7 @@ class _LookScreenState extends State<LookScreen> {
                   label: 'AI · ${_job.label}',
                   showElapsed: true,
                   onCancel: _cancelRun,
+                  note: kAiBlurNote,
                   child: _results.isEmpty
                       ? Image.file(widget.original, fit: BoxFit.contain)
                       : CompareSlider(

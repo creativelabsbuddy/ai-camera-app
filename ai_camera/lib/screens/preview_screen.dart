@@ -950,6 +950,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 label: _overlayLabel,
                 showElapsed: !_overlayLight,
                 onCancel: _overlayLight ? null : _cancelAi,
+                note: kAiBlurNote,
                 // Cross-fade original → enhanced result when it lands.
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 420),

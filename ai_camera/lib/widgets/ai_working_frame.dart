@@ -5,6 +5,11 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 
+/// v11.66: note shown in the centre of the generation waves.
+const String kAiBlurNote =
+    'AI may change faces and details if the photo is too blurry. '
+    'For best results, wipe the lens and add more light.';
+
 /// Photo frame that, while [active], plays a premium "AI is working" effect
 /// directly on the image: a soft light band sweeps diagonally across the
 /// photo pixels (via [ShaderMask] + [BlendMode.srcATop], so letterbox areas
@@ -19,7 +24,12 @@ class AiWorkingFrame extends StatefulWidget {
     this.light = false,
     this.showElapsed = false,
     this.onCancel,
+    this.note,
   });
+
+  /// v11.66: short centred note over the waves while [active] (not shown in
+  /// the [light] saving variant).
+  final String? note;
 
   /// Shows "· 12s" (seconds since the AI work started) in the status chip.
   final bool showElapsed;
@@ -213,6 +223,42 @@ class AiWorkingFrameState extends State<AiWorkingFrame>
                       ),
                     ),
                   ),
+                  if (widget.note != null && widget.active && !widget.light)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: Center(
+                          child: Opacity(
+                            opacity: strength,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 28,
+                              ),
+                              child: Container(
+                                key: const ValueKey('ai_blur_note'),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 10,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.bg.withValues(alpha: 0.55),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Text(
+                                  widget.note!,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontSize: 13,
+                                    height: 1.35,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   if (widget.onCancel != null && widget.active)
                     Positioned(
                       bottom: 16,
