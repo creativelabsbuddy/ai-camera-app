@@ -266,11 +266,36 @@ void main() {
       expect(h, contains('_onMacroZoom();'));
       expect(h, contains('await _refocusCentre();\n      await Future<void>.delayed(kMacroGateFocusWait);'));
       expect(h, contains('gateSteps = _gateStepPhotos();'));
-      expect(h, contains('(gated ? 0 : kMacroCtxMargin)'));
+      expect(h, contains('? (gated && (macroLevel?.isMicroscopic ?? false)'));
       expect(h, isNot(contains('checkpointMatch(')));
       expect(h, isNot(contains('_microOneHalf')));
       final sc = File('lib/services/server_api_client.dart').readAsStringSync();
       expect(sc, contains("if (microSteps) 'micro_steps': 'true',"));
+    });
+  });
+
+  group('6: Macro / Close step photos during the zoom', () {
+    test('gates at 2x and 5x below the 10x max, no detection', () {
+      for (final l in [MacroLevel.macro, MacroLevel.close]) {
+        expect(macroLevelZoomMax(l, 30), 10);
+        expect(macroGateZooms(l, 30), [2.0, 5.0]);
+        expect(macroGateZooms(l, 3), [2.0]);
+        expect(macroGateCap(l, 30, {}), 2.0);
+        expect(macroGateCap(l, 30, {2.0}), 5.0);
+        expect(macroGateCap(l, 30, {2.0, 5.0}), 10);
+        expect(macroGateDue(l, 30, {}, 2.0), 2.0);
+        expect(macroGateDue(l, 30, {2.0}, 4.9), isNull);
+      }
+      expect(macroGateZooms(null, 30), isEmpty);
+    });
+
+    test('home wiring: gate photos at the shutter, no post-shutter steps', () {
+      final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
+      expect(h, contains('if (level.isMicroscopic) await _detectAtGate('));
+      expect(h, contains('// v11.66 Macro / Close: the 2x / 5x zoom-gate photos'));
+      expect(h, isNot(contains('_takeMacroContext(')));
+      expect(h, isNot(contains('_macroCtx')));
+      expect(h, contains('subject = kMacroGeneralSubject;'));
     });
   });
 }

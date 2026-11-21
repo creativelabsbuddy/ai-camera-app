@@ -28,10 +28,10 @@ void main() {
   });
 
   test('all five levels take step photos; failed step skipped', () {
-    // v11.66: Microscope levels use the zoom-gate photos instead.
-    expect(home, contains('if (_macroLevel != null && !_macroLevel!.isMicroscopic) {'));
-    expect(home, contains('continue; // v11.46'));
-    expect(home, contains('macroStepHint(steps)'));
+    // v11.66: every level uses its zoom-gate photos (taken during the
+    // zoom); a failed gate photo still opens the gate.
+    expect(home, contains('_gatesDone.add(g); // never stuck at a gate'));
+    expect(home, isNot(contains('macroStepHint(steps)')));
   });
 
   test(

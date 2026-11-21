@@ -322,9 +322,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   final MacroBoxCheck _boxCheck = MacroBoxCheck();
   ContextSnapshot? _microHint;
 
-  /// v11.40 Macro / Close / Extreme / Ultra: wider context photos taken at
-  /// the shutter (lower zoom steps), sent as extra references.
-  List<ContextSnapshot> _macroCtx = const [];
 
   /// v11.66 stepwise macro zoom: gates done (a failed photo still opens
   /// the gate so the user is never stuck), the gate photos, their detection
@@ -1958,6 +1955,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           note = '$note · locked: '
               '${lockName == kMacroGeneralSubject ? '(vague)' : lockName}';
           gateSteps = _gateStepPhotos();
+        } else if (level != null) {
+          // v11.66 Macro / Close: the 2x / 5x zoom-gate photos (no detection).
+          gateSteps = _gateStepPhotos();
         }
         shotPath = path;
         captureNote = note;
@@ -2089,10 +2089,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         : null;
     // v11.40: wider context photos (Macro / Close / Extreme / Ultra).
     // v11.66: the zoom-gate photos (sent whole, the shot area boxed).
-    final gated = gateSteps != null;
+    final gated = gateSteps != null && gateSteps.isNotEmpty;
     final macroCtx = aiModeId == 'macro' && snap.ai
         ? [
-            for (final s in gateSteps ?? _macroCtx)
+            for (final s in gateSteps ?? const <ContextSnapshot>[])
               if (File(s.path).existsSync() &&
                   snapshotRegionZoom(snap.zoom, s.cameraZoom) >=
                       kMacroCtxMinWider)
@@ -2137,7 +2137,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         // wider, never nearly the same area). v11.60: ladder references are
         // cut at their TRACKED region below, not at the centre here.
         stepCropMargin: macroCtx.isNotEmpty
-            ? (gated ? 0 : kMacroCtxMargin)
+            ? (gated && (macroLevel?.isMicroscopic ?? false)
+                  ? 0
+                  : kMacroCtxMargin)
             : microHint == null
             ? 0
             : kLadderRefMargin,
@@ -3241,40 +3243,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _macroLevel = null;
     _boxCheck.reset();
     _dropMicroHint();
-    _dropMacroCtx();
-  }
-
-  void _dropMacroCtx() {
-    final old = _macroCtx;
-    _macroCtx = const [];
-    for (final s in old) {
-      unawaited(File(s.path).delete().then((_) {}, onError: (_) {}));
-    }
-  }
-
-  /// v11.40: up to 2 wider context photos below the shot zoom (widest
-  /// first). Fail-safe: any error → fewer / no context photos.
-  Future<List<ContextSnapshot>> _takeMacroContext(
-    CameraController c,
-    double shotZoom,
-  ) async {
-    final out = <ContextSnapshot>[];
-    for (final z in macroContextZooms(shotZoom)) {
-      if (!identical(c, _controller) || !c.value.isInitialized) break;
-      try {
-        final cam = planZoom(requested: z, range: _range).cameraZoom;
-        await c.setZoomLevel(cam);
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        final shot = await c.takePicture();
-        out.add(
-          ContextSnapshot(path: shot.path, cameraZoom: cam, at: DateTime.now()),
-        );
-      } catch (e) {
-        debugPrint('Macro step photo @${z}x skipped: $e');
-        continue; // v11.46: skip a failed step, keep going
-      }
-    }
-    return out;
   }
 
   // ---- v11.30 100x zoom ladder (cheap phones) --------------------------------
@@ -3850,25 +3818,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final ourAf = await _preCapture(); // centre AF unless tapped
     try {
       final (path, note) = await _burstSharpest(c, n, crop, merge: lowEnd);
-      // v11.40: Macro / Close / Extreme / Ultra add wider context photos
-      // (Microscope keeps its own hint photo).
-      // v11.66: Microscope / Extreme / Ultra use the zoom-gate photos
-      // instead (no post-shutter step / 1.5x photos).
-      _dropMacroCtx();
-      var ctxTaken = false;
-      if (_macroLevel != null && !_macroLevel!.isMicroscopic) {
-        final steps = macroContextZooms(_zoom);
-        if (steps.isNotEmpty) _showToast(macroStepHint(steps));
-        try {
-          _macroCtx = await _takeMacroContext(c, _zoom);
-          ctxTaken = _macroCtx.isNotEmpty;
-        } catch (e) {
-          debugPrint('Macro context photos skipped: $e');
-        }
-      }
-      if (ctxTaken && !moved && identical(c, _controller)) {
-        unawaited(c.setZoomLevel(previewCam).catchError((Object _) {}));
-      }
+      // v11.66: every level uses its zoom-gate photos, taken DURING the
+      // zoom (Macro / Close 2x · 5x, Microscope levels 1.5x · 5x) — no
+      // post-shutter step photos any more.
       return (path, note, crop);
     } finally {
       unawaited(_focus.afterCapture(ourAf));

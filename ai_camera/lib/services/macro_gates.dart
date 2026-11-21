@@ -16,6 +16,10 @@ const double kMicroLevelMaxZoom = 15;
 /// checked again at 5x.
 const List<double> kMicroGateZooms = [1.5, 5.0];
 
+/// v11.66 Macro / Close gates: plain step photos at 2x and 5x (no
+/// detection; kMacroGeneralSubject stays).
+const List<double> kMacroGateZooms = [2.0, 5.0];
+
 /// Focus settle after the centre AF pass at a gate, before the photo.
 const Duration kMacroGateFocusWait = Duration(milliseconds: 450);
 
@@ -42,7 +46,7 @@ double macroLevelZoomMax(MacroLevel? level, double deviceMax) =>
 List<double> macroGateZooms(MacroLevel? level, double deviceMax) {
   if (level == null) return const [];
   final m = macroLevelZoomMax(level, deviceMax);
-  final gates = level.isMicroscopic ? kMicroGateZooms : const <double>[];
+  final gates = level.isMicroscopic ? kMicroGateZooms : kMacroGateZooms;
   return [
     for (final z in gates)
       if (z < m - 0.01) z,
