@@ -19,6 +19,7 @@ import 'openrouter_client.dart';
 import 'premium_filters.dart';
 import 'prompt_builder.dart';
 import 'runware_client.dart';
+import 'step_timings.dart';
 import 'tier_upscale.dart';
 import 'server_api_client.dart';
 import 'network_check.dart';
@@ -309,7 +310,11 @@ class EnhanceResult {
     this.structure,
     this.rejectedFile,
     this.localCharge,
+    this.timings,
   });
+
+  /// v11.66 test builds: per-step durations for the debug timing line.
+  final StepTimings? timings;
 
   /// v11.58: what a local (test-key) run charged — lets the user get the
   /// credits back for a bad Microscope result. Null for server runs.
@@ -401,6 +406,7 @@ class EnhanceService {
     if (url.isNotEmpty) {
       // Server path: the server runs both night guards itself.
       try {
+        final serverSw = Stopwatch()..start();
         final r = await runAiCall(
           (tok) async => _server.enhance(
             baseUrl: url,
@@ -437,9 +443,11 @@ class EnhanceService {
           ),
           parent: cancel,
         );
+        final serverMs = serverSw.elapsedMilliseconds;
         final file = await _writeBytes(r.bytes, 'server');
         await _account.onServerResult(r.account);
         return EnhanceResult(
+          timings: StepTimings(netMs: _net.lastProbeMs, serverMs: serverMs),
           file: file,
           backend: EnhanceBackend.server,
           creditsCharged: r.creditsCharged,
@@ -605,6 +613,13 @@ class EnhanceService {
           debugPrint('Enhance: context image unsupported, used crop only');
         }
         return EnhanceResult(
+          timings: StepTimings(
+            netMs: _net.lastProbeMs,
+            uploadMs: r.uploadMs,
+            flareMs: r.flareMs,
+            upscaleMs: up.upscaleMs,
+            resizeMs: up.resizeMs,
+          ),
           file: file,
           backend: EnhanceBackend.openRouter,
           creditsCharged: charged.allowed ? charged.credits : decision.credits,

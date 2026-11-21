@@ -90,7 +90,19 @@ class NetworkCheck {
     return _inFlight ??= _probe(timeout).whenComplete(() => _inFlight = null);
   }
 
+  /// v11.66 timing line: how long the last real probe took (ms).
+  int? lastProbeMs;
+
   Future<bool> _probe(Duration timeout) async {
+    final sw = Stopwatch()..start();
+    try {
+      return await _probeAll(timeout);
+    } finally {
+      lastProbeMs = sw.elapsedMilliseconds;
+    }
+  }
+
+  Future<bool> _probeAll(Duration timeout) async {
     final probes = _list;
     if (probes.isEmpty) return true;
     final done = Completer<bool>();

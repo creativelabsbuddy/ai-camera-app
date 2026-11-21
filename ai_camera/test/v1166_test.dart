@@ -4,7 +4,16 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:ai_camera/models/quality_tier.dart';
+import 'package:ai_camera/services/network_check.dart';
+import 'package:ai_camera/services/openrouter_client.dart';
+import 'package:ai_camera/services/runware_client.dart';
+import 'package:ai_camera/services/step_timings.dart';
+import 'package:ai_camera/services/tier_upscale.dart';
 import 'package:ai_camera/widgets/ai_working_frame.dart';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 void main() {
   group('2: blur note in the waves', () {
@@ -44,6 +53,83 @@ void main() {
       ]) {
         expect(File(f).readAsStringSync(), contains('note: kAiBlurNote'));
       }
+    });
+  });
+
+  group('3: per-step timing line (test builds)', () {
+    test('line format: local path and server path', () {
+      final l = StepTimings(
+        netMs: 180,
+        uploadMs: 1240,
+        flareMs: 17400,
+        upscaleMs: 2900,
+        resizeMs: 310,
+      ).line();
+      expect(
+        l,
+        'Net 180ms · Upload 1.2s · Flare 17.4s · Upscale 2.9s · Resize 310ms',
+      );
+      expect(
+        StepTimings(netMs: 90, serverMs: 25100).line(),
+        'Net 90ms · Server 25.1s (upload+Flare+upscale) · Upscale — · Resize —',
+      );
+    });
+
+    test('NetworkCheck records the last real probe time', () async {
+      final n = NetworkCheck(
+        probes: [
+          (_) async {
+            await Future<void>.delayed(const Duration(milliseconds: 30));
+            return true;
+          },
+        ],
+      );
+      expect(n.lastProbeMs, isNull);
+      expect(await n.online(fresh: true), isTrue);
+      expect(n.lastProbeMs, greaterThanOrEqualTo(25));
+    });
+
+    test('TimedRequest fires once the body is sent', () async {
+      var sent = false;
+      final c = MockClient((req) async {
+        return http.Response('ok', 200);
+      });
+      final req = TimedRequest('POST', Uri.parse('https://x.test'), () {
+        sent = true;
+      })..body = '{"a":1}';
+      final r = await http.Response.fromStream(await c.send(req));
+      expect(r.body, 'ok');
+      expect(sent, isTrue);
+    });
+
+    test('upscaleForTier reports upscale + resize times', () async {
+      final hd = await upscaleForTier(
+        Uint8List.fromList([1, 2, 3]),
+        QualityTier.hd,
+      );
+      expect(hd.upscaleMs, isNull);
+      expect(hd.resizeMs, isNull);
+      // Runware not set up → resize fallback, both steps timed.
+      final full = await upscaleForTier(
+        Uint8List.fromList([1, 2, 3]),
+        QualityTier.fullHd,
+        runware: RunwareClient(apiKey: ''),
+        resize: (b, n) async => b,
+      );
+      expect(full.outcome, UpscaleOutcome.resize);
+      expect(full.upscaleMs, isNotNull);
+      expect(full.resizeMs, isNotNull);
+    });
+
+    test('wired: enhance result → preview line only with embedded key', () {
+      final e = File('lib/services/enhance_service.dart').readAsStringSync();
+      expect(e, contains('timings: StepTimings('));
+      final p = File('lib/screens/preview_screen.dart').readAsStringSync();
+      expect(p, contains("ValueKey('ai_timing_line')"));
+      expect(
+        p,
+        contains('_timing = AiConfig.hasEmbeddedApiKey ? r.timings?.line() : null;'),
+      );
     });
   });
 }

@@ -20,7 +20,15 @@ enum UpscaleOutcome {
   resize,
 }
 
-typedef TierUpscaleResult = ({Uint8List bytes, UpscaleOutcome outcome, double cost});
+/// v11.66: [upscaleMs] / [resizeMs] for the test-build timing line (null
+/// when that step did not run).
+typedef TierUpscaleResult = ({
+  Uint8List bytes,
+  UpscaleOutcome outcome,
+  double cost,
+  int? upscaleMs,
+  int? resizeMs,
+});
 
 /// v11.65: Full HD / Ultra HD = Real-ESRGAN 2x ([AiConfig.runwareUpscaleModel])
 /// then resize to [QualityTier.upscaleLongSide]. Never throws for an upscale
@@ -35,24 +43,59 @@ Future<TierUpscaleResult> upscaleForTier(
   Future<Uint8List> Function(Uint8List, int)? resize,
 }) async {
   final target = tier.upscaleLongSide;
-  if (target == null) return (bytes: bytes, outcome: UpscaleOutcome.none, cost: 0.0);
+  if (target == null) {
+    return (
+      bytes: bytes,
+      outcome: UpscaleOutcome.none,
+      cost: 0.0,
+      upscaleMs: null,
+      resizeMs: null,
+    );
+  }
   final rs = resize ?? resizeToLongSide;
   final rw = runware ?? RunwareClient(timeout: AiConfig.upscaleTimeout);
+  final sw = Stopwatch()..start();
+  int? upMs;
   try {
     if (!rw.isConfigured) throw const AiFailure(AiFailureKind.other, 'Runware is not set up');
     final up = await rw.upscale(bytes, cancel: cancel);
     cancel?.throwIfCancelled();
-    return (bytes: await rs(up.image, target), outcome: UpscaleOutcome.esrgan, cost: up.cost);
+    upMs = sw.elapsedMilliseconds;
+    final r0 = sw.elapsedMilliseconds;
+    final out = await rs(up.image, target);
+    return (
+      bytes: out,
+      outcome: UpscaleOutcome.esrgan,
+      cost: up.cost,
+      upscaleMs: upMs,
+      resizeMs: sw.elapsedMilliseconds - r0,
+    );
   } on AiCancelledException {
     rethrow;
   } catch (e) {
     cancel?.throwIfCancelled();
     debugPrint('Tier upscale failed (${tier.id}), resize fallback: $e');
+    // The failed upscale attempt still took time (e.g. empty wallet).
+    upMs ??= sw.elapsedMilliseconds;
+    final r0 = sw.elapsedMilliseconds;
     try {
-      return (bytes: await rs(bytes, target), outcome: UpscaleOutcome.resize, cost: 0.0);
+      final out = await rs(bytes, target);
+      return (
+        bytes: out,
+        outcome: UpscaleOutcome.resize,
+        cost: 0.0,
+        upscaleMs: upMs,
+        resizeMs: sw.elapsedMilliseconds - r0,
+      );
     } catch (e2) {
       debugPrint('Fallback resize failed, delivering as-is: $e2');
-      return (bytes: bytes, outcome: UpscaleOutcome.none, cost: 0.0);
+      return (
+        bytes: bytes,
+        outcome: UpscaleOutcome.none,
+        cost: 0.0,
+        upscaleMs: upMs,
+        resizeMs: null,
+      );
     }
   }
 }
