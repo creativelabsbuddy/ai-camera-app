@@ -11,6 +11,7 @@ import 'package:ai_camera/services/runware_client.dart';
 import 'package:ai_camera/services/step_timings.dart';
 import 'package:ai_camera/services/tier_upscale.dart';
 import 'package:ai_camera/widgets/ai_working_frame.dart';
+import 'package:ai_camera/widgets/quality_sheet.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -129,6 +130,39 @@ void main() {
       expect(
         p,
         contains('_timing = AiConfig.hasEmbeddedApiKey ? r.timings?.line() : null;'),
+      );
+    });
+  });
+
+  group('4: quality sheet', () {
+    testWidgets('only HD / Full HD / Ultra HD, no 2K, no ~K labels, 1/2/4', (
+      t,
+    ) async {
+      await t.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () => showQualitySheet(ctx, QualityTier.hd),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      );
+      await t.tap(find.text('open'));
+      await t.pumpAndSettle();
+      expect(find.text('Choose AI quality'), findsOneWidget);
+      for (final n in ['HD', 'Full HD', 'Ultra HD']) {
+        expect(find.text(n), findsOneWidget);
+      }
+      expect(find.text('2K'), findsNothing);
+      expect(find.textContaining('Coming soon'), findsNothing);
+      expect(find.textContaining('~'), findsNothing);
+      expect(find.text('1 credit'), findsOneWidget);
+      expect(find.text('2 credits'), findsOneWidget);
+      expect(find.text('4 credits'), findsOneWidget);
+      expect(
+        QualityTier.picker.map((q) => q.credits).toList(),
+        [1, 2, 4],
       );
     });
   });

@@ -11,11 +11,11 @@ void main() {
     expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.'));
   });
 
-  test('picker has no 4K; old 4K pick maps to Ultra HD; 2K locked', () {
+  test('picker has no 4K; old 4K pick maps to Ultra HD; no 2K row (v11.66)', () {
     expect(QualityTier.picker, isNot(contains(QualityTier.k4)));
     expect(QualityTier.pickable('4k'), QualityTier.ultraHd);
     final w = File('lib/widgets/quality_sheet.dart').readAsStringSync();
-    expect(w, contains('tier_2k_coming_soon'));
+    expect(w, isNot(contains('tier_2k_coming_soon')));
   });
 
   test('short general prompts, no subject, no RGB subpixels', () {

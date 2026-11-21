@@ -76,24 +76,8 @@ Future<QualityTier?> showQualitySheet(
                     Navigator.pop(ctx, t);
                   },
                 ),
-              // v11.39: 4K removed; 2K shown locked (no credits, not
-              // selectable).
-              const Opacity(
-                opacity: 0.5,
-                child: ListTile(
-                  key: ValueKey('tier_2k_coming_soon'),
-                  enabled: false,
-                  leading: Icon(Icons.lock_outline),
-                  title: Text(
-                    '2K',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  trailing: Text(
-                    kComingSoonLabel,
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ),
-              ),
+              // v11.66: only HD / Full HD / Ultra HD (the locked "2K ·
+              // Coming soon" row was removed).
             ],
           ),
         ),
@@ -146,7 +130,8 @@ class _TierTile extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    '${tier.label}  ·  ${tier.targetLabel}',
+                    // v11.66: name only (no ~1K / ~2K / ~2.5K label).
+                    tier.label,
                     style: const TextStyle(
                       fontWeight: FontWeight.w700,
                       fontSize: 15,
