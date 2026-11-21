@@ -206,7 +206,7 @@ class LookService {
     }
     if (url.isNotEmpty) {
       try {
-        final r = await watchNetwork(
+        final r = await runAiCall(
           (tok) async => _server.applyLook(
             baseUrl: url,
             deviceId: await _account.deviceId(),
@@ -217,7 +217,6 @@ class LookService {
             cancel: tok,
           ),
           parent: cancel,
-          net: _net,
         );
         // The server only charges a request that is still connected; if
         // the user cancelled just as it finished, sync the balance anyway.
@@ -265,7 +264,7 @@ class LookService {
         cancel: tok,
       );
       try {
-        final r0 = await watchNetwork(
+        final r0 = await runAiCall(
           (tok) async {
             ({List<Uint8List> images, double cost})? r;
             // v11.58: per-style model; on failure fall back to Custom (Flare).
@@ -306,7 +305,6 @@ class LookService {
             return r;
           },
           parent: cancel,
-          net: _net,
         );
         final r = r0;
         if (cancel?.isCancelled ?? false) throw const AiCancelledException();

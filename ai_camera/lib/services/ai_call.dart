@@ -70,7 +70,9 @@ Future<T> raceCancel<T>(Future<T> f, AiCancelToken? token) {
 }
 
 /// v11.59 offline message (= network_check.kCheckInternet).
-const String kCheckInternetMessage = 'Check your internet connection';
+/// v11.66: exact wording of the start-only internet check.
+const String kCheckInternetMessage =
+    'No internet. Turn on internet and try again';
 
 /// v11.59 (= zoom_source.kZoomNoSharpSource).
 const String kNoSharpSourceMessage =

@@ -401,7 +401,7 @@ class EnhanceService {
     if (url.isNotEmpty) {
       // Server path: the server runs both night guards itself.
       try {
-        final r = await watchNetwork(
+        final r = await runAiCall(
           (tok) async => _server.enhance(
             baseUrl: url,
             deviceId: await _account.deviceId(),
@@ -436,7 +436,6 @@ class EnhanceService {
             cancel: tok,
           ),
           parent: cancel,
-          net: _net,
         );
         final file = await _writeBytes(r.bytes, 'server');
         await _account.onServerResult(r.account);
@@ -496,7 +495,7 @@ class EnhanceService {
         }
       }
       try {
-        final r = await watchNetwork(
+        final r = await runAiCall(
           (tok) => _openRouter.enhanceImages(
             image: sendImage,
             // Macro: boxed step photos first, then the crop (the boxed
@@ -518,7 +517,6 @@ class EnhanceService {
             cancel: tok,
           ),
           parent: cancel,
-          net: _net,
         );
         cancel?.throwIfCancelled();
         double? structure;

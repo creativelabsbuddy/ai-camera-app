@@ -1790,7 +1790,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       }
       // v11.59: Pro AI with no working internet → the exact message right
       // away, no capture / spinner, nothing charged (Normal is untouched).
-      if (_aiMode && !NetworkCheck.instance.recentlyOnline) {
+      // v11.66: start-only check — a fresh probe at every AI shutter (up to
+      // kNetShutterTimeout); nothing probes the network mid-call.
+      if (_aiMode) {
         _captureLock = true;
         bool ok;
         try {
@@ -1843,7 +1845,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     NetworkCheck.instance.serverHost = url.isEmpty
         ? null
         : Uri.tryParse(url)?.host;
-    return NetworkCheck.instance.online();
+    return NetworkCheck.instance.online(
+      timeout: kNetShutterTimeout,
+      fresh: true,
+    );
   }
 
   /// What is on screen at the moment of the tap.
