@@ -45,7 +45,7 @@ class PendingLook {
   final String? customPrompt;
   final QualityTier tier;
 
-  String get label => style?.name ?? 'Your change';
+  String get label => style?.displayName ?? 'Your change';
 }
 
 /// Test hooks (fake look service / gallery / saver).
@@ -81,7 +81,8 @@ Future<void> startLook(
   }
   final job = LookJob(
     image: photo,
-    style: style,
+    // v11.66: the variant visible in the card when Apply was pressed.
+    style: r.style ?? style,
     customPrompt: r.customPrompt,
     tier: r.tier,
   );
@@ -146,7 +147,7 @@ Future<void> startLookWithoutPhoto(
       await startLook(
         context,
         photo: f,
-        style: style,
+        style: r.style ?? style,
         tier: r.tier,
         initialPrompt: r.customPrompt,
       );
@@ -290,7 +291,7 @@ class _LookScreenState extends State<LookScreen> {
     if (r == null || r.action != LookSheetAction.apply || !mounted) return;
     final job = LookJob(
       image: widget.original,
-      style: style,
+      style: r.style ?? style,
       customPrompt: r.customPrompt,
       tier: r.tier,
     );

@@ -18,10 +18,14 @@ Endpoints
                        v11 Pro Night guard: 400 {reason:"too_dark"} (no AI
                        call) / 422 {reason:"structure_changed"} (AI result
                        rejected) — nothing charged
-  GET  /v1/styles                          enabled styles, NO prompts
+  GET  /v1/styles                          enabled styles, NO prompts (v11.66:
+                                           + "variants" [{id,name,sample_url,sort_order}])
+  GET  /v1/styles/{id}/variants            v11.66 a style's enabled variants (no prompts)
   GET  /media/styles/{file}                public style display images
   POST /v1/looks/apply  multipart: device_id, image, style_id | custom_prompt,
-                     [quality] (custom only), [variations 1..4]
+                     [quality] (custom only), [variations 1..4],
+                     [variant_id] (v11.66: one of the style's variants; its
+                       prompt is picked here, credits/model stay the style's)
                      → JSON {images:[b64…], credits_charged, trials_used,
                        account, cost}; 402/502 as above (nothing charged)
   GET  /v1/poses                           v11 Pose-mode photo library (free; id,
@@ -1140,7 +1144,26 @@ LOOK_TIER = "full_hd"  # library styles render at Full HD params (medium, 1.5K)
 async def list_styles():
     """Public catalogue. Never includes prompts or reference images."""
     st = get_styles()
-    return {"version": st.version(), "styles": [s.public_json() for s in st.list(media_type="photo")]}
+    by_style = S.variants_by_style(st.list_variants())
+    out = []
+    for s in st.list(media_type="photo"):
+        j = s.public_json()
+        vs = by_style.get(s.id) or []
+        if vs:  # v11.66: the app shows a swipeable card only for 2+ variants
+            j["variants"] = [v.public_json() for v in vs[:S.MAX_VARIANTS]]
+        out.append(j)
+    return {"version": st.version(), "styles": out}
+
+
+@app.get("/v1/styles/{sid}/variants")
+async def list_style_variants(sid: str):
+    """v11.66: a photo style's enabled variants (never prompts)."""
+    st = get_styles()
+    style = st.get(sid)
+    if style is None or not style.enabled or style.media_type != "photo":
+        raise HTTPException(status_code=404, detail="style not found")
+    vs = st.list_variants(sid)[:S.MAX_VARIANTS]
+    return {"style_id": sid, "variants": [v.public_json() for v in vs]}
 
 
 @app.get("/media/styles/{name}")
@@ -1175,6 +1198,7 @@ async def apply_look(
     custom_prompt: Optional[str] = Form(None),
     quality: str = Form("full_hd"),
     variations: int = Form(1),
+    variant_id: Optional[str] = Form(None),
 ):
     """Style apply (by id; prompt + references composed here) or a custom
     "Describe a change…" edit. Charged only for images actually returned."""
@@ -1196,6 +1220,13 @@ async def apply_look(
         style = get_styles().get(style_id)
         if style is None or not style.enabled or style.media_type != "photo":
             raise HTTPException(status_code=404, detail="style not found")
+        if variant_id:  # v11.66: the variant must belong to this style and be enabled
+            variant = get_styles().get_variant(variant_id)
+            if variant is None or variant.style_id != style.id or not variant.enabled:
+                raise HTTPException(status_code=404, detail="variant not found")
+            style_prompt = variant.prompt
+        else:
+            style_prompt = style.prompt
         tier = LOOK_TIER
         spec = L.LookSpec(credit_cost=style.credit_cost, variations=variations, pro_only=style.pro_only,
                           allow_trial=style.free_trial)
@@ -1224,7 +1255,7 @@ async def apply_look(
             b = get_styles().read_file(f, private=True)
             if b:
                 ref_urls.append(data_url(prepare(b, 1024)[0]))
-        prompt = P.build_look_prompt(style_prompt=style.prompt if style else None,
+        prompt = P.build_look_prompt(style_prompt=style_prompt if style else None,
                                      custom_prompt=None if style else custom,
                                      has_references=bool(ref_urls))
         aspect = aspect_for(w, h)

@@ -665,7 +665,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       onTakePhoto: (r) {
         setState(() {
           _pendingLook = PendingLook(
-            style: pick.style,
+            // v11.66: keeps the variant visible in the card.
+            style: r.style ?? pick.style,
             customPrompt: r.customPrompt,
             tier: r.tier,
           );

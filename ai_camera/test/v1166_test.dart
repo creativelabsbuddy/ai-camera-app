@@ -1,10 +1,21 @@
 // v11.66 (1.11.66+79) tests: one group per agreed change.
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ai_camera/config/ai_config.dart';
+import 'package:ai_camera/models/ai_style.dart';
+import 'package:ai_camera/services/account_service.dart';
+import 'package:ai_camera/services/look_service.dart';
+import 'package:ai_camera/services/saved_styles.dart';
+import 'package:ai_camera/services/server_api_client.dart';
+import 'package:ai_camera/services/style_samples.dart';
+import 'package:ai_camera/widgets/look_sheet.dart';
+import 'package:ai_camera/widgets/variant_pager.dart';
+import 'package:image/image.dart' as img;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ai_camera/models/quality_tier.dart';
 import 'package:ai_camera/services/enhance_service.dart';
 import 'package:ai_camera/services/macro.dart';
@@ -321,6 +332,204 @@ void main() {
       expect(h, contains('if (_zoomModeActive) ...['));
       expect(h, contains('if (_brightApplied) await _releaseLatch();'));
       expect(h, contains('if (_brightApplied) unawaited(_releaseLatch()); // v11.39'));
+    });
+  });
+
+  group('8: style variants (swipe inside the card)', () {
+    final json = {
+      'id': 'neon',
+      'name': 'Neon',
+      'category': 'Mood',
+      'credit_cost': 2,
+      'variants': [
+        {'id': 'v_b', 'name': 'Blue', 'sample_url': '/media/styles/b.jpg', 'sort_order': 1},
+        {'id': 'v_a', 'name': 'Pink', 'sample_url': 'https://cdn/a.jpg', 'sort_order': 0},
+        {'id': 'v_c', 'name': 'Green', 'sort_order': 2},
+      ],
+    };
+
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+      AccountService.resetForTest();
+      SavedStyles.resetForTest(SavedStyles());
+      StyleSamples.resetForTest(StyleSamples(url: '', key: ''));
+    });
+
+    test('parses variants (ordered, URLs resolved); no prompts in the app', () {
+      final s = AiStyle.fromJson(json, baseUrl: 'https://srv/');
+      expect(s.hasVariants, isTrue);
+      expect([for (final v in s.variants) v.id], ['v_a', 'v_b', 'v_c']);
+      expect(s.variants[1].sampleUrl, 'https://srv/media/styles/b.jpg');
+      expect(s.variants[2].sampleUrl, isNull);
+      expect(s.variantId, isNull);
+      expect(s.displayName, 'Neon');
+      // Cache round trip keeps them.
+      final back = AiStyle.fromJson(s.toJson());
+      expect([for (final v in back.variants) v.name], ['Pink', 'Blue', 'Green']);
+      expect(jsonEncode(s.toJson()), isNot(contains('prompt')));
+    });
+
+    test('0 or 1 variant → normal card; old servers without the field', () {
+      final one = AiStyle.fromJson({
+        ...json,
+        'variants': [(json['variants'] as List).first],
+      });
+      expect(one.variants.length, 1);
+      expect(one.hasVariants, isFalse);
+      expect(one.withVariant('v_b').variantId, isNull);
+      final none = AiStyle.fromJson({'id': 'x', 'name': 'X'});
+      expect(none.variants, isEmpty);
+      expect(none.hasVariants, isFalse);
+      expect(AiStyle.fromJson({'id': 'y', 'variants': 'junk'}).variants, isEmpty);
+    });
+
+    test('withVariant: chosen look, same credits / model; unknown id → none', () {
+      final s = AiStyle.fromJson(json);
+      final c = s.withVariant('v_b');
+      expect(c.variantId, 'v_b');
+      expect(c.variantIndex, 1);
+      expect(c.displayName, 'Neon · Blue');
+      expect(c.creditCost, s.creditCost);
+      expect(c.model, s.model);
+      expect(c.id, 'neon');
+      expect(s.withVariant('nope').variantId, isNull);
+      expect(c.withAsset('a.png').variantId, 'v_b');
+      final job = LookJob(image: File('x'), style: c);
+      expect(job.variantId, 'v_b');
+      expect(job.label, 'Neon · Blue');
+      expect(job.creditCostPerImage, 2);
+      expect(LookJob(image: File('x'), style: s).variantId, isNull);
+      expect(variantCountLabel(1, 7), '2/7');
+    });
+
+    test('applyLook sends only variant_id (never a prompt) with the style', () async {
+      final dir = Directory.systemTemp.createTempSync('v1166v');
+      final im = img.Image(width: 64, height: 64);
+      final f = File('${dir.path}/p.jpg')..writeAsBytesSync(img.encodeJpg(im));
+      final bodies = <String>[];
+      final mock = MockClient((req) async {
+        bodies.add(latin1.decode(req.bodyBytes));
+        return http.Response(
+          jsonEncode({
+            'images': [base64Encode(img.encodeJpg(im))],
+            'credits_charged': 2,
+            'trials_used': [],
+          }),
+          200,
+        );
+      });
+      final c = ServerApiClient(httpClient: mock);
+      await c.applyLook(baseUrl: 'https://x', deviceId: 'd', image: f, styleId: 'neon', variantId: 'v_b');
+      expect(bodies.last, contains('name="variant_id"'));
+      expect(bodies.last, contains('v_b'));
+      expect(bodies.last, isNot(contains('name="custom_prompt"')));
+      await c.applyLook(baseUrl: 'https://x', deviceId: 'd', image: f, styleId: 'neon');
+      expect(bodies.last, isNot(contains('variant_id')));
+      await c.applyLook(baseUrl: 'https://x', deviceId: 'd', image: f, customPrompt: 'hat', variantId: 'v_b');
+      expect(bodies.last, isNot(contains('variant_id')));
+    });
+
+    Future<LookSheetResult?> openSheet(WidgetTester t, AiStyle s) async {
+      t.view.physicalSize = const Size(1080, 2400);
+      t.view.devicePixelRatio = 2.6;
+      addTearDown(t.view.reset);
+      LookSheetResult? out;
+      await t.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () async => out = await showLookSheet(ctx, style: s),
+              child: const Text('go'),
+            ),
+          ),
+        ),
+      ));
+      await t.tap(find.text('go'));
+      for (var i = 0; i < 6; i++) {
+        await t.pump(const Duration(milliseconds: 100));
+      }
+      return out;
+    }
+
+    testWidgets('swipe inside the card → the visible variant is applied', (t) async {
+      final s = AiStyle.fromJson(json);
+      LookSheetResult? out;
+      t.view.physicalSize = const Size(1080, 2400);
+      t.view.devicePixelRatio = 2.6;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () async => out = await showLookSheet(ctx, style: s),
+              child: const Text('go'),
+            ),
+          ),
+        ),
+      ));
+      await t.tap(find.text('go'));
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('look_variant_pager')), findsOneWidget);
+      expect(find.byKey(const ValueKey('look_frame_look')), findsNothing);
+      expect(find.text('1/3'), findsOneWidget);
+      final frame = t.getRect(find.byKey(const ValueKey('look_variant_frame')));
+      expect(frame.width / frame.height, closeTo(9 / 16, 1e-6));
+      await t.drag(find.byKey(const ValueKey('look_variant_pager')), Offset(-frame.width * 0.7, 0));
+      await t.pumpAndSettle();
+      expect(find.text('2/3'), findsOneWidget);
+      expect(find.text('Blue'), findsOneWidget); // frame label = variant name
+      await t.tap(find.byKey(const ValueKey('look_take_photo')));
+      await t.pumpAndSettle();
+      expect(out!.action, LookSheetAction.takePhoto);
+      expect(out!.style!.id, 'neon');
+      expect(out!.style!.variantId, 'v_b');
+    });
+
+    testWidgets('reopening starts on the chosen variant', (t) async {
+      final s = AiStyle.fromJson(json).withVariant('v_c');
+      await openSheet(t, s);
+      await t.pumpAndSettle();
+      expect(find.text('3/3'), findsOneWidget);
+    });
+
+    testWidgets('one variant → normal card, no variant id', (t) async {
+      final s = AiStyle.fromJson({
+        ...json,
+        'variants': [(json['variants'] as List).first],
+      });
+      LookSheetResult? out;
+      t.view.physicalSize = const Size(1080, 2400);
+      t.view.devicePixelRatio = 2.6;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () async => out = await showLookSheet(ctx, style: s),
+              child: const Text('go'),
+            ),
+          ),
+        ),
+      ));
+      await t.tap(find.text('go'));
+      await t.pumpAndSettle();
+      expect(find.byKey(const ValueKey('look_variant_pager')), findsNothing);
+      expect(find.byKey(const ValueKey('look_frame_look')), findsOneWidget);
+      await t.tap(find.byKey(const ValueKey('look_take_photo')));
+      await t.pumpAndSettle();
+      expect(out!.style!.variantId, isNull);
+    });
+
+    test('wiring: variant flows to the server call and pending look', () {
+      final svc = File('lib/services/look_service.dart').readAsStringSync();
+      expect(svc, contains('variantId: job.variantId'));
+      expect(svc, contains("'This look needs the server'"));
+      final ls = File('lib/screens/look_screen.dart').readAsStringSync();
+      expect('r.style ?? style'.allMatches(ls).length, 3);
+      final home = File('lib/screens/home_camera_screen.dart').readAsStringSync();
+      expect(home, contains('style: r.style ?? pick.style'));
+      final lib = File('lib/widgets/style_library_sheet.dart').readAsStringSync();
+      expect(lib, contains('StylePick.style(chosen)'));
     });
   });
 }

@@ -339,6 +339,7 @@ class ServerApiClient {
     required String deviceId,
     required File image,
     String? styleId,
+    String? variantId,
     String? customPrompt,
     QualityTier tier = QualityTier.fullHd,
     AiCancelToken? cancel,
@@ -359,6 +360,8 @@ class ServerApiClient {
       // v11.56: always one image (4 variations removed).
       'variations': '1',
       if (styleId != null) 'style_id': styleId,
+      // v11.66: only an id — the server picks the variant's prompt.
+      if (styleId != null && variantId != null) 'variant_id': variantId,
       if (styleId == null && customPrompt != null)
         'custom_prompt': customPrompt,
       if (styleId == null) 'quality': tier.id,

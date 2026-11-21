@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import time
 import uuid
 from typing import Optional
@@ -20,12 +21,15 @@ from typing import Optional
 import httpx
 from PIL import Image, ImageOps
 
-from styles import (MAX_IMAGE_LONG, MAX_SAMPLE_LONG, MEDIA_TYPES, Style, normalize_style_model, normalize_ui_category,
-                    slugify, valid_media_name)
+from styles import (MAX_IMAGE_LONG, MAX_SAMPLE_LONG, MEDIA_TYPES, Style, StyleVariant, normalize_style_model,
+                    normalize_ui_category, slugify, valid_media_name)
 
 THUMBS = "style-thumbs"
 REFS = "style-refs"
 SAMPLES = "style-samples"  # v11.56 public before/after samples
+VARIANTS = "/rest/v1/style_variants"  # v11.66 (migration 20261122_style_variants.sql)
+_VFIELDS = ("id", "style_id", "name", "prompt", "sample_url", "sort_order", "enabled")
+log = logging.getLogger("styles")
 _FIELDS = ("id", "name", "category", "prompt", "credit_cost", "pro_only", "enabled", "sort_order",
            "display_image", "ref_images", "needs_person", "media_type", "free_trial", "kind", "ui_category",
            "sample_before_url", "sample_after_url", "model")
@@ -107,6 +111,8 @@ class SupabaseStyleStore:
         s = self.get(sid)
         if s is None:
             return
+        for v in self.list_variants(sid, include_disabled=True):  # FK cascades rows; drop sample files
+            self.remove_sample(v.sample_url)
         self._ok(self._c.delete("/rest/v1/styles", params={"id": f"eq.{sid}"}))
         self.remove_file(s.display_image)
         for f in s.ref_images:
@@ -134,7 +140,67 @@ class SupabaseStyleStore:
 
     def version(self) -> str:
         rows = self._rows({"select": "id,enabled,sort_order,updated_at", "order": "id.asc"})
-        return hashlib.sha1(json.dumps(rows, sort_keys=True).encode()).hexdigest()[:12]
+        vrows = self._vrows({"select": "id,enabled,sort_order,updated_at", "order": "id.asc"})
+        key = rows if not vrows else [rows, vrows]  # unchanged when there are no variants
+        return hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:12]
+
+    # -- v11.66 variants ----------------------------------------------------------
+    def _vrows(self, params: dict) -> list:
+        """Reads never break the style list: a missing table (migration not
+        applied yet) or any read error → no variants (normal cards)."""
+        try:
+            r = self._c.get(VARIANTS, params={"select": "*", **params})
+        except httpx.HTTPError as e:
+            log.warning("style_variants read failed: %s", e)
+            return []
+        if r.status_code >= 400:
+            log.warning("style_variants read → %s", r.status_code)
+            return []
+        return r.json()
+
+    @staticmethod
+    def _from_vrow(r: dict) -> StyleVariant:
+        return StyleVariant(id=r["id"], style_id=r["style_id"], name=r["name"], prompt=r["prompt"],
+                            sample_url=r.get("sample_url") or None, sort_order=int(r.get("sort_order") or 0),
+                            enabled=bool(r.get("enabled", True)))
+
+    def list_variants(self, style_id: Optional[str] = None, include_disabled: bool = False) -> list:
+        p = {"order": "style_id.asc,sort_order.asc,name.asc"}
+        if style_id is not None:
+            p["style_id"] = f"eq.{style_id}"
+        if not include_disabled:
+            p["enabled"] = "eq.true"
+        return [self._from_vrow(r) for r in self._vrows(p)]
+
+    def get_variant(self, vid: str) -> Optional[StyleVariant]:
+        rows = self._vrows({"id": f"eq.{vid}"})
+        return self._from_vrow(rows[0]) if rows else None
+
+    def upsert_variant(self, v: StyleVariant) -> StyleVariant:
+        row = {k: getattr(v, k) for k in _VFIELDS}
+        row["updated_at"] = time.time()
+        self._ok(self._c.post(VARIANTS, json=row, headers={"Prefer": "resolution=merge-duplicates,return=minimal"}))
+        return v
+
+    def delete_variant(self, vid: str) -> None:
+        v = self.get_variant(vid)
+        if v is None:
+            return
+        self._ok(self._c.delete(VARIANTS, params={"id": f"eq.{vid}"}))
+        self.remove_sample(v.sample_url)
+
+    def move_variant(self, vid: str, direction: int) -> None:
+        v = self.get_variant(vid)
+        if v is None:
+            return
+        ids = [x.id for x in self.list_variants(v.style_id, include_disabled=True)]
+        i = ids.index(vid)
+        j = i + (1 if direction > 0 else -1)
+        if 0 <= j < len(ids):
+            ids[i], ids[j] = ids[j], ids[i]
+        for n, x in enumerate(ids):
+            self._ok(self._c.patch(VARIANTS, params={"id": f"eq.{x}"},
+                                   json={"sort_order": n, "updated_at": time.time()}))
 
     # -- files ------------------------------------------------------------------
     def save_image(self, raw: bytes, private: bool = False) -> str:

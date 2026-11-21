@@ -7,9 +7,11 @@ import httpx
 class FakeSupabase:
     def __init__(self):
         self.rows, self.objects, self.requests = {}, {}, []
+        # v11.66: None → table missing (404, migration not applied); {} → present.
+        self.vrows = None
 
-    def _filter(self, params):
-        rows = list(self.rows.values())
+    def _filter(self, params, table=None):
+        rows = list((self.rows if table is None else table).values())
         for k, v in params.items():
             if k in ("select", "order", "limit"):
                 continue
@@ -28,6 +30,24 @@ class FakeSupabase:
         self.requests.append(req)
         assert req.headers["apikey"] == "svc" and req.headers["authorization"] == "Bearer svc"
         p, params = req.url.path, dict(req.url.params)
+        if p == "/rest/v1/style_variants":
+            if self.vrows is None:
+                return httpx.Response(404, json={"code": "PGRST205"})
+            t = self.vrows
+            if req.method == "GET":
+                return httpx.Response(200, json=self._filter(params, t))
+            if req.method == "POST":
+                row = json.loads(req.content)
+                t[row["id"]] = {**t.get(row["id"], {}), **row}
+                return httpx.Response(201)
+            if req.method == "PATCH":
+                for r in self._filter(params, t):
+                    r.update(json.loads(req.content))
+                return httpx.Response(204)
+            if req.method == "DELETE":
+                for r in self._filter(params, t):
+                    t.pop(r["id"])
+                return httpx.Response(204)
         if p == "/rest/v1/styles":
             if req.method == "GET":
                 return httpx.Response(200, json=self._filter(params))

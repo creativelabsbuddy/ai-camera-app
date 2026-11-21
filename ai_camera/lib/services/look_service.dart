@@ -67,7 +67,11 @@ class LookJob {
     isStyle: isStyle,
   );
 
-  String get label => style?.name ?? 'Your change';
+  String get label => style?.displayName ?? 'Your change';
+
+  /// v11.66: the variant visible in the style card when Apply was pressed
+  /// (the server picks its prompt; credits/model stay the style's).
+  String? get variantId => style?.variant?.id;
 
 }
 
@@ -212,6 +216,7 @@ class LookService {
             deviceId: await _account.deviceId(),
             image: job.image,
             styleId: job.style?.id,
+            variantId: job.variantId,
             customPrompt: job.customPrompt,
             tier: job.effectiveTier,
             cancel: tok,
@@ -241,6 +246,13 @@ class LookService {
 
     if (_openRouter.isConfigured) {
       String? stylePrompt;
+      if (job.variantId != null) {
+        // v11.66: variant prompts live only on the server.
+        return const LookResult(
+          error: 'This look needs the server',
+          failure: AiFailureKind.other,
+        );
+      }
       if (job.style != null) {
         stylePrompt = _localPromptFor(job.style!.id);
         if (stylePrompt == null) {

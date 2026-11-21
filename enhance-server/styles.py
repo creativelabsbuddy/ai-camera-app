@@ -122,6 +122,42 @@ class Style:
 
 KINDS = ("style", "filter")
 
+# v11.66: a style card can hold several variants (looks). Each variant has
+# its own hidden prompt + sample photo; credits, model, Pro flag and
+# reference images always come from the parent style. Prompts never leave
+# the server (public_json has no prompt).
+MAX_VARIANTS = 12
+
+
+@dataclass
+class StyleVariant:
+    id: str
+    style_id: str
+    name: str
+    prompt: str
+    sample_url: Optional[str] = None
+    sort_order: int = 0
+    enabled: bool = True
+
+    def public_json(self) -> dict:
+        return {"id": self.id, "name": self.name, "sample_url": self.sample_url or None,
+                "sort_order": self.sort_order}
+
+    def admin_json(self) -> dict:
+        return {**self.public_json(), "style_id": self.style_id, "prompt": self.prompt, "enabled": self.enabled}
+
+
+def new_variant_id() -> str:
+    return "v_" + uuid.uuid4().hex[:12]
+
+
+def variants_by_style(variants: list) -> dict:
+    """{style_id: [variants in order]} (input already sorted)."""
+    out: dict = {}
+    for v in variants:
+        out.setdefault(v.style_id, []).append(v)
+    return out
+
 
 def slugify(name: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
@@ -158,6 +194,17 @@ class StyleStore:
               updated_at REAL NOT NULL
             );
             CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+            CREATE TABLE IF NOT EXISTS style_variants(
+              id TEXT PRIMARY KEY,
+              style_id TEXT NOT NULL REFERENCES styles(id) ON DELETE CASCADE,
+              name TEXT NOT NULL,
+              prompt TEXT NOT NULL,
+              sample_url TEXT,
+              sort_order INTEGER NOT NULL DEFAULT 0,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS style_variants_style ON style_variants(style_id, sort_order);
             """
         )
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(styles)")}
@@ -274,6 +321,8 @@ class StyleStore:
             s = self.get(sid)
             if s is None:
                 return
+            for v in self.list_variants(sid, include_disabled=True):
+                self.delete_variant(v.id)
             self._db.execute("DELETE FROM styles WHERE id=?", (sid,))
             self.remove_file(s.display_image)
             for f in s.ref_images:
@@ -307,7 +356,67 @@ class StyleStore:
             "SELECT COUNT(*), COALESCE(MAX(updated_at), 0), "
             "COALESCE(GROUP_CONCAT(id || ':' || enabled || ':' || sort_order), '') FROM styles"
         ).fetchone()
-        return hashlib.sha1(repr(r).encode()).hexdigest()[:12]
+        v = self._db.execute(
+            "SELECT COUNT(*), COALESCE(MAX(updated_at), 0) FROM style_variants").fetchone()
+        key = repr(r) if not v[0] else repr((r, v))  # unchanged when there are no variants
+        return hashlib.sha1(key.encode()).hexdigest()[:12]
+
+    # -- v11.66 variants -------------------------------------------------------
+    _VCOLS = "id, style_id, name, prompt, sample_url, sort_order, enabled"
+
+    @staticmethod
+    def _vrow(r) -> StyleVariant:
+        return StyleVariant(r[0], r[1], r[2], r[3], r[4] or None, int(r[5]), bool(r[6]))
+
+    def list_variants(self, style_id: Optional[str] = None, include_disabled: bool = False) -> list:
+        q = f"SELECT {self._VCOLS} FROM style_variants"
+        where, args = [], []
+        if style_id is not None:
+            where.append("style_id=?")
+            args.append(style_id)
+        if not include_disabled:
+            where.append("enabled=1")
+        if where:
+            q += " WHERE " + " AND ".join(where)
+        q += " ORDER BY style_id, sort_order, name"
+        return [self._vrow(r) for r in self._db.execute(q, args)]
+
+    def get_variant(self, vid: str) -> Optional[StyleVariant]:
+        r = self._db.execute(f"SELECT {self._VCOLS} FROM style_variants WHERE id=?", (vid,)).fetchone()
+        return self._vrow(r) if r else None
+
+    def upsert_variant(self, v: StyleVariant) -> StyleVariant:
+        with self._lock:
+            self._db.execute(
+                f"INSERT INTO style_variants({self._VCOLS}, updated_at) VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, prompt=excluded.prompt, "
+                "sample_url=excluded.sample_url, sort_order=excluded.sort_order, enabled=excluded.enabled, "
+                "updated_at=excluded.updated_at",
+                (v.id, v.style_id, v.name, v.prompt, v.sample_url or None, int(v.sort_order), int(v.enabled),
+                 time.time()))
+        return v
+
+    def delete_variant(self, vid: str) -> None:
+        with self._lock:
+            v = self.get_variant(vid)
+            if v is None:
+                return
+            self._db.execute("DELETE FROM style_variants WHERE id=?", (vid,))
+            self.remove_sample(v.sample_url)
+
+    def move_variant(self, vid: str, direction: int) -> None:
+        with self._lock:
+            v = self.get_variant(vid)
+            if v is None:
+                return
+            ids = [x.id for x in self.list_variants(v.style_id, include_disabled=True)]
+            i = ids.index(vid)
+            j = i + (1 if direction > 0 else -1)
+            if 0 <= j < len(ids):
+                ids[i], ids[j] = ids[j], ids[i]
+            for n, x in enumerate(ids):
+                self._db.execute("UPDATE style_variants SET sort_order=?, updated_at=? WHERE id=?",
+                                 (n, time.time(), x))
 
     # -- files -----------------------------------------------------------------
     def save_image(self, raw: bytes, private: bool = False) -> str:

@@ -12,6 +12,62 @@ String normalizeStyleModel(Object? v) {
   return kStyleModels.contains(s) ? s : kStyleModelCustom;
 }
 
+/// v11.66: one look inside a style card (swipe left/right). The hidden
+/// prompt stays on the server; the app only knows the id, name and sample
+/// photo. Credits, model and Pro flag always come from the parent style.
+class StyleVariant {
+  const StyleVariant({
+    required this.id,
+    required this.name,
+    this.sampleUrl,
+    this.sortOrder = 0,
+  });
+
+  factory StyleVariant.fromJson(Map<String, Object?> j, {String? baseUrl}) {
+    String? abs(Object? v) {
+      if (v is! String || v.isEmpty) return null;
+      if (v.startsWith('http')) return v;
+      final root = (baseUrl ?? '').replaceAll(RegExp(r'/+$'), '');
+      return root.isEmpty ? null : '$root${v.startsWith('/') ? '' : '/'}$v';
+    }
+
+    return StyleVariant(
+      id: '${j['id']}',
+      name: '${j['name'] ?? j['id']}',
+      sampleUrl: abs(j['sample_url']),
+      sortOrder: j['sort_order'] is num ? (j['sort_order'] as num).toInt() : 0,
+    );
+  }
+
+  final String id;
+  final String name;
+  final String? sampleUrl;
+  final int sortOrder;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    if (sampleUrl != null) 'sample_url': sampleUrl,
+    'sort_order': sortOrder,
+  };
+}
+
+/// v11.66: a style card is swipeable only with 2+ variants; 0–1 → normal card.
+const int kMinSwipeVariants = 2;
+
+/// Parses the optional `variants` list (missing / malformed → none).
+List<StyleVariant> parseStyleVariants(Object? v, {String? baseUrl}) {
+  if (v is! List) return const [];
+  final out = <StyleVariant>[];
+  for (final e in v.whereType<Map>()) {
+    final m = e.cast<String, Object?>();
+    if (m['id'] == null || '${m['id']}'.isEmpty) continue;
+    out.add(StyleVariant.fromJson(m, baseUrl: baseUrl));
+  }
+  out.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+  return List.unmodifiable(out);
+}
+
 /// One AI look in the style library (v9). The hidden prompt and reference
 /// images live on the server (admin panel) and are never sent to the app;
 /// the app only knows how to show the style and what it costs.
@@ -33,6 +89,8 @@ class AiStyle {
     this.sampleBeforeUrl,
     this.sampleAfterUrl,
     this.model = kStyleModelKlein,
+    this.variants = const [],
+    this.variantId,
   });
 
   /// Parses a server `/v1/styles` entry (relative `image_url` resolved
@@ -50,6 +108,7 @@ class AiStyle {
       final root = (baseUrl ?? '').replaceAll(RegExp(r'/+$'), '');
       return root.isEmpty ? null : '$root${v.startsWith('/') ? '' : '/'}$v';
     }
+
     return AiStyle(
       id: '${j['id']}',
       name: '${j['name'] ?? j['id']}',
@@ -64,7 +123,9 @@ class AiStyle {
       needsPerson: j['needs_person'] != false,
       kind: j['kind'] == 'filter' ? 'filter' : 'style',
       prompt: j['prompt'] is String ? j['prompt'] as String : null,
-      uiCategory: j['ui_category'] is String && (j['ui_category'] as String).trim().isNotEmpty
+      uiCategory:
+          j['ui_category'] is String &&
+              (j['ui_category'] as String).trim().isNotEmpty
           ? (j['ui_category'] as String).trim().toLowerCase()
           : null,
       sampleBeforeUrl: abs(j['sample_before_url']),
@@ -73,6 +134,7 @@ class AiStyle {
       model: j.containsKey('model') && j['model'] != null
           ? normalizeStyleModel(j['model'])
           : (j['kind'] == 'filter' ? kStyleModelCustom : kStyleModelKlein),
+      variants: parseStyleVariants(j['variants'], baseUrl: baseUrl),
     );
   }
 
@@ -117,6 +179,34 @@ class AiStyle {
   /// v11.58: which image model renders this style (see [kStyleModels]).
   final String model;
 
+  /// v11.66: looks inside this style card (server order). Fewer than
+  /// [kMinSwipeVariants] → a normal card with the style's own prompt.
+  final List<StyleVariant> variants;
+
+  /// v11.66: the variant chosen in the card (sent as `variant_id`; the
+  /// server picks its prompt). Null → the style's own prompt.
+  final String? variantId;
+
+  bool get hasVariants => variants.length >= kMinSwipeVariants;
+
+  /// The chosen variant (only when this style shows variants).
+  StyleVariant? get variant {
+    if (variantId == null || !hasVariants) return null;
+    for (final v in variants) {
+      if (v.id == variantId) return v;
+    }
+    return null;
+  }
+
+  /// "Style · Variant" when a variant is chosen, else the style name.
+  String get displayName => variant == null ? name : '$name · ${variant!.name}';
+
+  /// Index of the chosen variant (0 when none / unknown).
+  int get variantIndex {
+    final v = variant;
+    return v == null ? 0 : variants.indexOf(v);
+  }
+
   Map<String, Object?> toJson() => {
     'id': id,
     'name': name,
@@ -134,26 +224,40 @@ class AiStyle {
     if (sampleBeforeUrl != null) 'sample_before_url': sampleBeforeUrl,
     if (sampleAfterUrl != null) 'sample_after_url': sampleAfterUrl,
     'model': model,
+    if (variants.isNotEmpty) 'variants': [for (final v in variants) v.toJson()],
   };
 
-  AiStyle withAsset(String? asset) => AiStyle(
-    id: id,
-    name: name,
-    category: category,
-    creditCost: creditCost,
-    proOnly: proOnly,
-    sortOrder: sortOrder,
-    imageUrl: imageUrl,
-    imageAsset: asset,
-    hasReference: hasReference,
-    needsPerson: needsPerson,
-    kind: kind,
-    prompt: prompt,
-    uiCategory: uiCategory,
-    sampleBeforeUrl: sampleBeforeUrl,
-    sampleAfterUrl: sampleAfterUrl,
-    model: model,
+  AiStyle withAsset(String? asset) => _copy(asset: asset, variantId: variantId);
+
+  /// v11.66: the same style with [id] chosen (unknown / null → none).
+  AiStyle withVariant(String? id) => _copy(
+    asset: imageAsset,
+    variantId: id != null && hasVariants && variants.any((v) => v.id == id)
+        ? id
+        : null,
   );
+
+  AiStyle _copy({required String? asset, required String? variantId}) =>
+      AiStyle(
+        id: id,
+        name: name,
+        category: category,
+        creditCost: creditCost,
+        proOnly: proOnly,
+        sortOrder: sortOrder,
+        imageUrl: imageUrl,
+        imageAsset: asset,
+        hasReference: hasReference,
+        needsPerson: needsPerson,
+        kind: kind,
+        prompt: prompt,
+        uiCategory: uiCategory,
+        sampleBeforeUrl: sampleBeforeUrl,
+        sampleAfterUrl: sampleAfterUrl,
+        model: model,
+        variants: variants,
+        variantId: variantId,
+      );
 
   @override
   String toString() => 'AiStyle($id, 🪙$creditCost${proOnly ? ', pro' : ''})';

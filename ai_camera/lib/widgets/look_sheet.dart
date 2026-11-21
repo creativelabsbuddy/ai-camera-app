@@ -16,6 +16,7 @@ import 'style_thumb.dart';
 import 'credit_icon.dart';
 import 'compare_slider.dart';
 import 'save_style_button.dart';
+import 'variant_pager.dart';
 import '../services/style_samples.dart';
 
 enum LookSheetAction { apply, takePhoto, pickGallery }
@@ -26,11 +27,16 @@ class LookSheetResult {
     this.action, {
     this.customPrompt,
     this.tier = QualityTier.hd,
+    this.style,
   });
 
   final LookSheetAction action;
   final String? customPrompt;
   final QualityTier tier;
+
+  /// v11.66: the style as chosen in the sheet — with the variant that was
+  /// visible in the card ([AiStyle.variantId]). Null for a custom prompt.
+  final AiStyle? style;
 }
 
 /// v11.57: styles are never free — always show the credit cost.
@@ -124,6 +130,15 @@ class _LookSheetState extends State<_LookSheet> {
 
   bool get _custom => widget.style == null;
 
+  /// v11.66: 2+ variants → swipeable card; the visible one is applied.
+  bool get _swipe => !_custom && widget.style!.hasVariants;
+  late int _variant = widget.style?.variantIndex ?? 0;
+
+  /// The style handed back to the caller (with the visible variant).
+  AiStyle? get _chosen => _swipe
+      ? widget.style!.withVariant(widget.style!.variants[_variant].id)
+      : widget.style;
+
   /// Tiny safety list (no relevance checks — users may type anything).
   String? get _blocked =>
       _custom ? blockedCustomPromptReason(_prompt.text) : null;
@@ -207,7 +222,22 @@ class _LookSheetState extends State<_LookSheet> {
                       ),
                     ),
                   const SizedBox(height: 12),
-                  if (hasSample) ...[
+                  if (_swipe) ...[
+                    Center(
+                      child: _Framed(
+                        key: const ValueKey('look_variant_frame'),
+                        size: lookSingleFrameSize(
+                            media.size.width - 36, media.size.height * 0.40),
+                        label: widget.style!.variants[_variant].name,
+                        child: VariantPager(
+                          style: widget.style!,
+                          initial: _variant,
+                          onChanged: (i) => setState(() => _variant = i),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ] else if (hasSample) ...[
                     Center(
                       child: _Framed(
                         key: const ValueKey('look_sample_slider'),
@@ -219,7 +249,7 @@ class _LookSheetState extends State<_LookSheet> {
                     ),
                     const SizedBox(height: 12),
                   ],
-                  if (!_custom && !hasSample && widget.photo != null)
+                  if (!_custom && !_swipe && !hasSample && widget.photo != null)
                     Builder(builder: (_) {
                       final sz = lookPairFrameSize(
                           media.size.width - 36, media.size.height * 0.40);
@@ -250,7 +280,7 @@ class _LookSheetState extends State<_LookSheet> {
                         ],
                       );
                     }),
-                  if (!_custom && !hasSample && widget.photo == null)
+                  if (!_custom && !_swipe && !hasSample && widget.photo == null)
                     Center(
                       child: _Framed(
                         key: const ValueKey('look_frame_look'),
@@ -306,7 +336,7 @@ class _LookSheetState extends State<_LookSheet> {
                   ],
                   const SizedBox(height: 10),
                   if (widget.photo != null) ...[
-                    if (_custom || hasSample)
+                    if (_custom || _swipe || hasSample)
                       Center(
                         child: _Framed(
                           key: const ValueKey('look_frame_photo'),
@@ -349,6 +379,7 @@ class _LookSheetState extends State<_LookSheet> {
                                       ? normalizeCustomPrompt(_prompt.text)
                                       : null,
                                   tier: _tier,
+                                  style: _chosen,
                                 ),
                               ),
                         style: FilledButton.styleFrom(
@@ -399,6 +430,7 @@ class _LookSheetState extends State<_LookSheet> {
                                     ? _prompt.text.trim()
                                     : null,
                                 tier: _tier,
+                                style: _chosen,
                               ),
                             ),
                             icon: const Icon(Icons.photo_camera_rounded),
@@ -417,6 +449,7 @@ class _LookSheetState extends State<_LookSheet> {
                                     ? _prompt.text.trim()
                                     : null,
                                 tier: _tier,
+                                style: _chosen,
                               ),
                             ),
                             icon: const Icon(Icons.photo_library_outlined),
