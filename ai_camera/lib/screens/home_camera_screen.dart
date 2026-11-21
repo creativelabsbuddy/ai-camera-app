@@ -180,8 +180,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   /// v11.34 bright small region in a dark frame (high zoom): meter + focus
   /// on it. Generic luminance only.
-  final BrightMeter _bright = BrightMeter();
-  bool _brightApplied = false; // v11.36: = far-bright latch on
+  /// v11.66: = the manual "Bright spot ☀️" exposure is on (Zoom mode only;
+  /// off by default, never turned on automatically).
+  bool _brightApplied = false;
 
   /// v11.36 Zoom mode (chip): > 10x + heavy logic only when on.
   bool _zoomMode = false;
@@ -196,13 +197,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   int _fpsFrames = 0;
   DateTime _fpsSince = DateTime.now();
   Timer? _debugTicker;
-  bool _latchSuppressed = false; // "Auto focus" chip until zoom < 3x
   bool _latchManual = false;
   int _latchNs = kLatchStartNs;
   int _latchTop = 0;
   double _latchEv = 0;
   String _latchText = '';
-  DateTime? _latchLastSpot;
   DateTime? _latchStep;
   Offset? _latchMeterPoint; // tapped area (visible crop coords)
   BrightSpot? _lastSpot;
@@ -1030,7 +1029,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     setState(() {
       _maxExposureOffset = maxEv.isFinite ? maxEv : 0;
       _minExposureOffset = minEv.isFinite ? minEv : 0;
-      _bright.reset();
       _brightApplied = false;
       _controller = controller;
       _description = description;
@@ -1266,10 +1264,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       // v11.46: enter Zoom mode with clean automatic exposure.
       await _restoreAutoExposure();
       if (!mounted) return;
-      setState(() {
-        _zoomMode = true;
-        _latchSuppressed = false;
-      });
+      setState(() => _zoomMode = true);
       _showToast('Zoom mode on · up to ${formatZoom(_range.displayMax)}x');
     } else {
       setState(() => _zoomMode = false);
@@ -1286,70 +1281,67 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     if (_zoom > _userZoomMax + 0.01) await _setZoom(_userZoomMax);
   }
 
-  /// v11.36 far-bright latch: relative bright spot at ≥ 5x on 3 frames →
-  /// infinity focus + our shutter/ISO until < 3x, 30 s without a spot, the
-  /// Auto focus chip, or Zoom mode off. No subject recognition.
+  /// v11.36 far-bright exposure. v11.66: MANUAL only ("Bright spot ☀️"
+  /// button). While on, the shutter keeps stepping so the bright spot is
+  /// not clipped; it turns off only from the button, leaving Zoom mode or
+  /// the app going to the background / restarting.
   void _updateBright(FrameStats s) {
-    if (!_zoomModeActive || _processingCapture && !_brightApplied) {
-      if (_brightApplied && !_zoomModeActive) unawaited(_releaseLatch());
+    if (!_zoomModeActive) {
+      if (_brightApplied) unawaited(_releaseLatch());
       return;
     }
+    if (!_brightApplied) return;
     final g = s.cropLuma;
     if (g == null || g.length < kThumbW * kThumbH) return;
     final spot = findBrightSpot(g, kThumbW, kThumbH);
     _lastSpot = spot;
     final now = DateTime.now();
+    if (_latchManual &&
+        (_latchStep == null ||
+            now.difference(_latchStep!) > const Duration(milliseconds: 400))) {
+      _latchStep = now;
+      final mp = _latchMeterPoint;
+      final top = mp != null
+          ? regionTop(g, kThumbW, kThumbH, mp)
+          : (spot?.top ??
+                regionTop(
+                  g,
+                  kThumbW,
+                  kThumbH,
+                  const Offset(0.5, 0.5),
+                  r: 0.5,
+                ));
+      _latchTop = top;
+      final next = nextLatchExposure(_latchNs, top);
+      if (next != _latchNs) {
+        _latchNs = next;
+        unawaited(
+          CameraExtras.setManual(
+            focusInfinity: true,
+            exposureNs: next,
+            iso: kLatchIso,
+          ),
+        );
+      }
+    }
+  }
+
+  /// v11.66 "Bright spot ☀️" button: on ↔ off (Zoom mode only).
+  Future<void> _toggleBrightSpot() async {
     if (_brightApplied) {
-      if (spot != null) _latchLastSpot = now;
-      final idle = now.difference(_latchLastSpot ?? now) > kLatchIdle;
-      if (_cameraZoom < kLatchOffZoom - 0.01 || idle) {
-        unawaited(_releaseLatch());
-        return;
-      }
-      if (_latchManual &&
-          (_latchStep == null ||
-              now.difference(_latchStep!) >
-                  const Duration(milliseconds: 400))) {
-        _latchStep = now;
-        final mp = _latchMeterPoint;
-        final top = mp != null
-            ? regionTop(g, kThumbW, kThumbH, mp)
-            : (spot?.top ??
-                  regionTop(
-                    g,
-                    kThumbW,
-                    kThumbH,
-                    const Offset(0.5, 0.5),
-                    r: 0.5,
-                  ));
-        _latchTop = top;
-        final next = nextLatchExposure(_latchNs, top);
-        if (next != _latchNs) {
-          _latchNs = next;
-          unawaited(
-            CameraExtras.setManual(
-              focusInfinity: true,
-              exposureNs: next,
-              iso: kLatchIso,
-            ),
-          );
-        }
-      }
-      return;
+      await _releaseLatch();
+      _showToast('Bright spot off');
+    } else {
+      if (!_zoomModeActive) return;
+      await _engageLatch();
+      _showToast('Bright spot on · exposure lowered');
     }
-    if (_latchSuppressed) {
-      if (_cameraZoom < kLatchOffZoom) _latchSuppressed = false;
-      return;
-    }
-    final on = _bright.update(_cameraZoom >= kLatchOnZoom - 0.01 ? spot : null);
-    if (on && _bright.active) unawaited(_engageLatch());
   }
 
   Future<void> _engageLatch() async {
     final c = _controller;
     if (c == null || _brightApplied) return;
     _brightApplied = true;
-    _latchLastSpot = DateTime.now();
     _latchNs = kLatchStartNs;
     _latchMeterPoint = null;
     _latchEv = 0;
@@ -1369,7 +1361,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     } catch (e) {
       _latchText = 'latch failed: $e';
     }
-    debugPrint('Far-bright latch on: $_latchText');
+    debugPrint('Bright spot on: $_latchText');
     if (mounted) setState(() {});
   }
 
@@ -1380,7 +1372,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       await _releaseLatch();
       return;
     }
-    _bright.reset();
     try {
       await CameraExtras.clearManual();
       await _focus.reset();
@@ -1399,7 +1390,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   Future<void> _releaseLatch() async {
     if (!_brightApplied) return;
     _brightApplied = false;
-    _bright.reset();
     _latchManual = false;
     _latchMeterPoint = null;
     _latchEv = 0;
@@ -1416,14 +1406,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     } catch (e) {
       debugPrint('Latch release failed: $e');
     }
-    debugPrint('Far-bright latch off');
+    debugPrint('Bright spot off');
     if (mounted) setState(() {});
-  }
-
-  /// "Auto focus" chip: leave the latch; stays off until zoom < 3x.
-  Future<void> _exitLatch() async {
-    _latchSuppressed = true;
-    await _releaseLatch();
   }
 
   /// Tap while latched: focus stays at infinity, only the shutter is
@@ -1481,7 +1465,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       sp == null
           ? 'bright –'
           : 'bright area ${(sp.area * 100).toStringAsFixed(1)}% rest ${sp.restMean.round()} top ${sp.top}',
-      'latch ${_brightApplied ? 'ON' : (_latchSuppressed ? 'off (Auto focus)' : 'off')}'
+      'bright ${_brightApplied ? 'ON' : 'off'}'
           '${_brightApplied ? (_latchManual ? ' · ours 1/${(1e9 / _latchNs).round()}s ISO $kLatchIso top $_latchTop' : ' · EV ${_latchEv.toStringAsFixed(1)}') : ''}',
       'exp ${exp == null ? '?' : '1/${(1e9 / exp).round()}s'} ISO ${info['iso'] ?? '?'} · EV range [${_minExposureOffset.toStringAsFixed(1)}..${_maxExposureOffset.toStringAsFixed(1)}]',
       'focus ${info['afMode'] ?? info['afState'] ?? '?'} dist ${info['focusDistance'] ?? '?'}',
@@ -5333,13 +5317,15 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                                 active: _zoomModeActive,
                                 onTap: () => unawaited(_toggleZoomMode()),
                               ),
-                              if (_brightApplied) ...[
+                              // v11.66: manual bright-spot exposure (off by
+                              // default; replaces the automatic latch).
+                              if (_zoomModeActive) ...[
                                 const SizedBox(width: 8),
                                 _ZoomModeChip(
-                                  key: const ValueKey('auto_focus_chip'),
-                                  label: kAutoFocusLabel,
-                                  active: false,
-                                  onTap: () => unawaited(_exitLatch()),
+                                  key: const ValueKey('bright_spot_chip'),
+                                  label: kBrightSpotLabel,
+                                  active: _brightApplied,
+                                  onTap: () => unawaited(_toggleBrightSpot()),
                                 ),
                               ],
                             ],

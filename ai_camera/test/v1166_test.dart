@@ -15,6 +15,7 @@ import 'package:ai_camera/services/openrouter_client.dart';
 import 'package:ai_camera/services/runware_client.dart';
 import 'package:ai_camera/services/step_timings.dart';
 import 'package:ai_camera/services/tier_upscale.dart';
+import 'package:ai_camera/services/zoom_assist.dart';
 import 'package:ai_camera/widgets/ai_working_frame.dart';
 import 'package:ai_camera/widgets/quality_sheet.dart';
 import 'package:flutter/foundation.dart';
@@ -296,6 +297,30 @@ void main() {
       expect(h, isNot(contains('_takeMacroContext(')));
       expect(h, isNot(contains('_macroCtx')));
       expect(h, contains('subject = kMacroGeneralSubject;'));
+    });
+  });
+
+  group('7: manual Bright spot button replaces the automatic latch', () {
+    test('label + no automatic latch left', () {
+      expect(kBrightSpotLabel, 'Bright spot ☀️');
+      final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
+      final z = File('lib/services/zoom_assist.dart').readAsStringSync();
+      expect(z, isNot(contains('class BrightMeter')));
+      expect(z, isNot(contains('kLatchOnZoom')));
+      expect(h, isNot(contains('_bright.update(')));
+      expect(h, isNot(contains('kLatchIdle')));
+      expect(h, isNot(contains('auto_focus_chip')));
+      // off by default; on = the old manual 1/250 s ISO 100 (EV-min fallback)
+      expect(h, contains('bool _brightApplied = false;'));
+      expect(h, contains('await _engageLatch();'));
+      expect(h, contains('_latchEv = await c.setExposureOffset(_minExposureOffset);'));
+      expect(kLatchStartNs, 4000000);
+      expect(kLatchIso, 100);
+      // Zoom-mode only button; off when leaving Zoom mode / app paused
+      expect(h, contains("key: const ValueKey('bright_spot_chip')"));
+      expect(h, contains('if (_zoomModeActive) ...['));
+      expect(h, contains('if (_brightApplied) await _releaseLatch();'));
+      expect(h, contains('if (_brightApplied) unawaited(_releaseLatch()); // v11.39'));
     });
   });
 }

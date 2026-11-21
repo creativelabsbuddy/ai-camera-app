@@ -40,18 +40,7 @@ void main() {
       expect(brightEvFor(-2, 2), -2);
       expect(brightEvFor(-1, 1), -1);
     });
-    test('meter hysteresis: on after 3, off after 10', () {
-      final m = BrightMeter();
-      const s = BrightSpot(Offset(0.5, 0.5), 0.01, 10);
-      expect(m.update(s), isFalse);
-      expect(m.update(s), isFalse);
-      expect(m.update(s), isTrue);
-      for (var i = 0; i < 9; i++) {
-        expect(m.update(null), isFalse);
-      }
-      expect(m.update(null), isTrue);
-      expect(m.active, isFalse);
-    });
+    // v11.66: BrightMeter (automatic latch) removed — manual button now.
   });
 
   group('step-by-step checkpoints', () {
