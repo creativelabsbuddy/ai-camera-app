@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'ai_call.dart';
@@ -12,15 +11,15 @@ const String kCheckInternet = kCheckInternetMessage;
 
 /// Whole precheck budget: every probe runs in parallel, the first success
 /// wins; nothing answers within this → offline.
-const Duration kNetProbeTimeout = Duration(milliseconds: 1800);
+/// v11.66: 4 s (inside the agreed 3–5 s start-check budget).
+const Duration kNetProbeTimeout = Duration(seconds: 4);
 
 /// A positive answer is reused this long (no lag on the next shutter).
 const Duration kNetOnlineTtl = Duration(seconds: 20);
 
-/// While an AI call runs: probe this often; [kNetLostAfter] failures in a
-/// row = connection lost → the call is cancelled (nothing charged).
-const Duration kNetWatchEvery = Duration(seconds: 4);
-const int kNetLostAfter = 2;
+/// v11.66: the shutter check waits up to this long for any probe (3–5 s
+/// budget) before it says "No internet". Checked once, at the start only.
+const Duration kNetShutterTimeout = kNetProbeTimeout;
 
 /// One reachability probe: true when it reached the internet.
 typedef NetProbe = Future<bool> Function(Duration timeout);
@@ -91,7 +90,19 @@ class NetworkCheck {
     return _inFlight ??= _probe(timeout).whenComplete(() => _inFlight = null);
   }
 
+  /// v11.66 timing line: how long the last real probe took (ms).
+  int? lastProbeMs;
+
   Future<bool> _probe(Duration timeout) async {
+    final sw = Stopwatch()..start();
+    try {
+      return await _probeAll(timeout);
+    } finally {
+      lastProbeMs = sw.elapsedMilliseconds;
+    }
+  }
+
+  Future<bool> _probeAll(Duration timeout) async {
     final probes = _list;
     if (probes.isEmpty) return true;
     final done = Completer<bool>();
@@ -145,54 +156,11 @@ class OfflineException implements Exception {
   String toString() => kCheckInternet;
 }
 
-/// Runs [body] with a child cancel token; while it runs the network is
-/// probed every [every]; [lostAfter] failed probes in a row cancel the call
-/// and throw [OfflineException]. A cancel of [parent] still cancels.
-Future<T> watchNetwork<T>(
+/// v11.66: the internet is checked ONCE at the start (shutter / precheck);
+/// nothing probes the network while the AI call runs (the v11.59 4 s
+/// watchNetwork probing was removed). Runs [body] with [parent] or a fresh
+/// cancel token.
+Future<T> runAiCall<T>(
   Future<T> Function(AiCancelToken token) body, {
   AiCancelToken? parent,
-  NetworkCheck? net,
-  Duration every = kNetWatchEvery,
-  int lostAfter = kNetLostAfter,
-}) async {
-  final n = net ?? NetworkCheck.instance;
-  final child = AiCancelToken();
-  parent?.onCancel(child.cancel);
-  final lostC = Completer<T>();
-  var lost = false;
-  var misses = 0;
-  var probing = false;
-  final timer = Timer.periodic(every, (t) async {
-    if (probing || child.isCancelled) return;
-    probing = true;
-    try {
-      final ok = await n.online(fresh: true);
-      if (!t.isActive) return;
-      misses = ok ? 0 : misses + 1;
-      if (misses >= lostAfter) {
-        lost = true;
-        t.cancel();
-        n.markOffline();
-        debugPrint('Network lost during AI call → cancelled');
-        child.cancel();
-        // Bounded: the caller is released NOW even if the request hangs.
-        if (!lostC.isCompleted) lostC.completeError(const OfflineException());
-      }
-    } finally {
-      probing = false;
-    }
-  });
-  try {
-    final bf = body(child);
-    // A late error of an abandoned (lost) request is not unhandled.
-    unawaited(bf.then((_) {}, onError: (_) {}));
-    final r = await Future.any([bf, lostC.future]);
-    if (lost) throw const OfflineException();
-    return r;
-  } catch (e) {
-    if (lost) throw const OfflineException();
-    rethrow;
-  } finally {
-    timer.cancel();
-  }
-}
+}) => body(parent ?? AiCancelToken());

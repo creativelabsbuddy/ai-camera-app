@@ -191,6 +191,9 @@ class _PreviewScreenState extends State<PreviewScreen> {
   /// Lighter shimmer (no vignette) for non-AI work like saving.
   bool _overlayLight = false;
   String? _status;
+
+  /// v11.66 test builds: per-step timing line of the last AI enhance.
+  String? _timing;
   bool _showFilters = false;
   PremiumFilter _filter = PremiumFilter.original;
   double _strength = 1.0;
@@ -572,6 +575,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
       _overlayLabel = label;
       _overlayLight = false;
       _status = null;
+      _timing = null;
       _showFilters = false;
       _compare = false;
       _macroDone = false;
@@ -658,6 +662,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     }
     setState(() {
       _initialEnhanceDone = true;
+      _timing = AiConfig.hasEmbeddedApiKey ? r.timings?.line() : null;
       if (r.file != null) {
         _current = r.file!;
         _filter = PremiumFilter.original;
@@ -950,6 +955,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 label: _overlayLabel,
                 showElapsed: !_overlayLight,
                 onCancel: _overlayLight ? null : _cancelAi,
+                note: kAiBlurNote,
                 // Cross-fade original → enhanced result when it lands.
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 420),
@@ -984,6 +990,20 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 style: const TextStyle(
                   color: AppColors.textSecondary,
                   fontSize: 13,
+                ),
+              ),
+            ),
+          if (_timing != null && !_busy && AiConfig.hasEmbeddedApiKey)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: Text(
+                _timing!,
+                key: const ValueKey('ai_timing_line'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 11,
+                  fontFeatures: [FontFeature.tabularFigures()],
                 ),
               ),
             ),

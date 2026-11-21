@@ -43,7 +43,13 @@ class AiImageResult {
     required this.contextUsed,
     this.costUsd,
     this.fellBackToSingleImage = false,
+    this.uploadMs,
+    this.flareMs,
   });
+
+  /// v11.66 timing line: prep + request body sent / Flare until decoded.
+  final int? uploadMs;
+  final int? flareMs;
 
   final Uint8List bytes;
 
@@ -501,21 +507,27 @@ class OpenRouterClient {
         kDetectJsonMaxTokens,
       );
 
-  Future<http.Response> _post(String body, AiCancelToken? cancel) async {
+  Future<http.Response> _post(
+    String body,
+    AiCancelToken? cancel, {
+    void Function()? onBodySent,
+  }) async {
     final own = _injected == null;
     final client = _injected ?? http.Client();
     if (own) cancel?.onCancel(client.close);
     try {
-      return await raceCancel(
-        client
-            .post(
-              Uri.parse(AiConfig.openRouterImagesUrl),
-              headers: _headers,
-              body: body,
-            )
-            .timeout(timeout),
-        cancel,
-      );
+      // v11.66: same POST as client.post, but the request notes when its
+      // body was fully handed to the connection (timing line "Upload").
+      final req = TimedRequest(
+        'POST',
+        Uri.parse(AiConfig.openRouterImagesUrl),
+        onBodySent,
+      )
+        ..headers.addAll(_headers)
+        ..body = body;
+      Future<http.Response> go() async =>
+          http.Response.fromStream(await client.send(req));
+      return await raceCancel(go().timeout(timeout), cancel);
     } finally {
       if (own) client.close();
     }
@@ -544,6 +556,8 @@ class OpenRouterClient {
     if (!isConfigured) {
       throw OpenRouterEnhanceException('OpenRouter API key not configured');
     }
+    final sw = Stopwatch()..start();
+    int? sentAt;
     final main = await prepareUpload(
       await image.readAsBytes(),
       maxLong: mainLong ?? kEnhanceInputLongSide,
@@ -582,6 +596,7 @@ class OpenRouterClient {
         ),
       ),
       cancel,
+      onBodySent: () => sentAt = sw.elapsedMilliseconds,
     );
 
     var withContext = ctx != null || lead.isNotEmpty;
@@ -609,11 +624,14 @@ class OpenRouterClient {
     cancel?.throwIfCancelled();
     // v11.58: the AI image is delivered as it came (no 1920 / tier upscale,
     // no re-encode).
+    final total = sw.elapsedMilliseconds;
     return AiImageResult(
       bytes: bytes,
       contextUsed: withContext,
       fellBackToSingleImage: fellBack,
       costUsd: cost,
+      uploadMs: sentAt,
+      flareMs: sentAt == null ? null : total - sentAt!,
     );
   }
 
@@ -732,4 +750,29 @@ class OpenRouterClient {
   }
 
   static String _snippet(String s) => s.length > 300 ? s.substring(0, 300) : s;
+}
+
+/// v11.66: a plain [http.Request] whose body stream calls [onSent] once the
+/// last byte was handed to the connection (≈ upload finished).
+class TimedRequest extends http.Request {
+  TimedRequest(super.method, super.url, this.onSent);
+
+  final void Function()? onSent;
+
+  @override
+  http.ByteStream finalize() {
+    final s = super.finalize();
+    final cb = onSent;
+    if (cb == null) return s;
+    return http.ByteStream(
+      s.transform(
+        StreamTransformer<List<int>, List<int>>.fromHandlers(
+          handleDone: (sink) {
+            cb();
+            sink.close();
+          },
+        ),
+      ),
+    );
+  }
 }

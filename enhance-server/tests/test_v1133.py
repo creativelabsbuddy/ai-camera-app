@@ -27,7 +27,7 @@ def test_box_prompt_and_parse():
 
 
 def test_microscope_one_hint():
-    assert P.macro_input_plan("microscope") == (1, 1536)
+    assert P.macro_input_plan("microscope") == (2, 1536)  # v11.66 1.5x + 5x gates
 
 
 def test_credits_endpoint():

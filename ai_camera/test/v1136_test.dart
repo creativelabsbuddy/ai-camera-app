@@ -109,7 +109,8 @@ void main() {
       // v11.60: the zoom burst keeps the gate for Pro AI (Normal has no
       // Zoom mode and may burst on its own).
       expect(hcs, contains('(!_aiMode || _zoomModeActive) &&'));
-      expect(hcs, contains('if (!_zoomModeActive || _processingCapture'));
+      // v11.66: bright-spot exposure is manual, still Zoom-mode only.
+      expect(hcs, contains('if (!_zoomModeActive) {\n      if (_brightApplied) unawaited(_releaseLatch());'));
       expect(hcs, contains('await _setMode(CaptureMode.pro)'));
     });
     test('latch: tap re-meters, no AF; release clears options', () {

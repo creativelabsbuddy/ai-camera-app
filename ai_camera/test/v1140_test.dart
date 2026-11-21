@@ -27,7 +27,8 @@ void main() {
 
   test('context zoom steps below the shot zoom', () {
     expect(macroContextZooms(1), isEmpty);
-    expect(home, contains('_takeMacroContext('));
+    // v11.66: replaced by the zoom-gate photos taken during the zoom.
+    expect(home, isNot(contains('_takeMacroContext(')));
   });
 
   test('context line general', () {

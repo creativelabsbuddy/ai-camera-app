@@ -12,6 +12,7 @@ import 'credit_icon.dart';
 import 'style_card_strip.dart' show CoinBadge;
 import 'save_style_button.dart';
 import 'style_thumb.dart';
+import 'variant_pager.dart';
 import 'video_style_flow.dart';
 
 /// Result of the full Styles sheet.
@@ -162,9 +163,10 @@ class _StylesLibraryState extends State<StylesLibrary> {
                                     style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800)))
                                 : CoinBadge(cost: s.creditCost),
                             pro: s.proOnly && !pro,
-                            onTap: () => Navigator.pop(
+                            // v11.66: the variant visible in the card.
+                            onTap: (chosen) => Navigator.pop(
                               context,
-                              _video ? StylePick.video(s) : StylePick.style(s),
+                              _video ? StylePick.video(s) : StylePick.style(chosen),
                             ),
                           ),
                       ],
@@ -284,7 +286,9 @@ class _Chip extends StatelessWidget {
 }
 
 /// Big 9:16 card: image, name on a dark gradient, credit chip.
-class _PortraitCard extends StatelessWidget {
+/// v11.66: 2+ variants → swipe left/right inside the card (dots); tapping
+/// opens the visible variant.
+class _PortraitCard extends StatefulWidget {
   const _PortraitCard({
     super.key,
     required this.style,
@@ -297,17 +301,43 @@ class _PortraitCard extends StatelessWidget {
   final bool video;
   final Widget badge;
   final bool pro;
-  final VoidCallback onTap;
+  final ValueChanged<AiStyle> onTap;
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
+  State<_PortraitCard> createState() => _PortraitCardState();
+}
+
+class _PortraitCardState extends State<_PortraitCard> {
+  int _variant = 0;
+
+  bool get _swipe => !widget.video && widget.style.hasVariants;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = widget.style;
+    final video = widget.video;
+    final pro = widget.pro;
+    final badge = widget.badge;
+    return GestureDetector(
+    onTap: () => widget.onTap(
+      _swipe ? style.withVariant(style.variants[_variant].id) : style,
+    ),
     child: ClipRRect(
       borderRadius: BorderRadius.circular(14),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          StyleThumb(style: style),
+          if (_swipe)
+            VariantPager(
+              key: ValueKey('card_variants_${style.id}'),
+              style: style,
+              initial: 0,
+              showCount: false,
+              dotsBottom: 46,
+              onChanged: (i) => setState(() => _variant = i),
+            )
+          else
+            StyleThumb(style: style),
           Positioned(top: 6, right: 6, child: badge),
           if (video)
             const Positioned(top: 6, left: 6, child: Icon(Icons.play_circle_fill_rounded, color: Colors.white, size: 22)),
@@ -336,7 +366,9 @@ class _PortraitCard extends StatelessWidget {
               // Solid bar: sample images may carry their own caption.
               color: const Color(0xF0101016),
               child: Text(
-                style.name,
+                _swipe
+                    ? '${style.name} · ${variantCountLabel(_variant, style.variants.length)}'
+                    : style.name,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5),
@@ -347,6 +379,7 @@ class _PortraitCard extends StatelessWidget {
       ),
     ),
   );
+  }
 }
 
 class _CustomTile extends StatelessWidget {

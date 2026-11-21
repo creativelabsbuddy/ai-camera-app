@@ -19,6 +19,7 @@ import 'openrouter_client.dart';
 import 'premium_filters.dart';
 import 'prompt_builder.dart';
 import 'runware_client.dart';
+import 'step_timings.dart';
 import 'tier_upscale.dart';
 import 'server_api_client.dart';
 import 'network_check.dart';
@@ -132,8 +133,16 @@ class EnhanceJob {
   /// v11.30 Extreme / Ultra: text prompt from the detected spot, no photo.
   /// v11.40: no spot detected → the zoomed view (+ context photos) instead.
   /// v11.47: Microscope too, but only with a detected spot ([part]).
+  /// v11.66: never with the zoom-gate photos ([microSteps]) — they go to
+  /// the AI with the level prompt.
   bool get deepTextOnly =>
-      aiMode == 'macro' && macroTextOnly(macroLevel, subject, part);
+      aiMode == 'macro' &&
+      !microSteps &&
+      macroTextOnly(macroLevel, subject, part);
+
+  /// v11.66 Microscope / Extreme / Ultra with zoom-gate photos (1.5x, 5x)
+  /// sent before the final frame.
+  bool get microSteps => isMicroscope && steps.isNotEmpty;
 
   bool get isMicroscope =>
       aiMode == 'macro' &&
@@ -214,6 +223,10 @@ class EnhanceJob {
       );
       final cf = colorFilterId;
       final cp = cf == null ? null : kColorFilterPrompts[cf];
+      // v11.66: zoom-gate photos → the steps line in front.
+      if (microSteps && hasContext && sentSteps.isNotEmpty) {
+        return '$kMicroStepsLine $mp';
+      }
       // v11.40: wider context photos line (not Microscope: its own prompt).
       final ctx =
           hasContext && sentSteps.isNotEmpty && macroLevel != 'microscope'
@@ -309,7 +322,11 @@ class EnhanceResult {
     this.structure,
     this.rejectedFile,
     this.localCharge,
+    this.timings,
   });
+
+  /// v11.66 test builds: per-step durations for the debug timing line.
+  final StepTimings? timings;
 
   /// v11.58: what a local (test-key) run charged — lets the user get the
   /// credits back for a bad Microscope result. Null for server runs.
@@ -401,7 +418,8 @@ class EnhanceService {
     if (url.isNotEmpty) {
       // Server path: the server runs both night guards itself.
       try {
-        final r = await watchNetwork(
+        final serverSw = Stopwatch()..start();
+        final r = await runAiCall(
           (tok) async => _server.enhance(
             baseUrl: url,
             deviceId: await _account.deviceId(),
@@ -431,16 +449,18 @@ class EnhanceService {
             // (zoom_source needs the framing photo on the server).
             zoomClean: job.isZoomClean || job.isZoomSourceOnly,
             zoomSource: job.isZoomSource && !job.isZoomSourceOnly,
+            microSteps: job.microSteps && job.sentSteps.isNotEmpty,
             mainLong: job.mainLong,
             stepLong: job.stepLong,
             cancel: tok,
           ),
           parent: cancel,
-          net: _net,
         );
+        final serverMs = serverSw.elapsedMilliseconds;
         final file = await _writeBytes(r.bytes, 'server');
         await _account.onServerResult(r.account);
         return EnhanceResult(
+          timings: StepTimings(netMs: _net.lastProbeMs, serverMs: serverMs),
           file: file,
           backend: EnhanceBackend.server,
           creditsCharged: r.creditsCharged,
@@ -496,7 +516,7 @@ class EnhanceService {
         }
       }
       try {
-        final r = await watchNetwork(
+        final r = await runAiCall(
           (tok) => _openRouter.enhanceImages(
             image: sendImage,
             // Macro: boxed step photos first, then the crop (the boxed
@@ -518,7 +538,6 @@ class EnhanceService {
             cancel: tok,
           ),
           parent: cancel,
-          net: _net,
         );
         cancel?.throwIfCancelled();
         double? structure;
@@ -607,6 +626,13 @@ class EnhanceService {
           debugPrint('Enhance: context image unsupported, used crop only');
         }
         return EnhanceResult(
+          timings: StepTimings(
+            netMs: _net.lastProbeMs,
+            uploadMs: r.uploadMs,
+            flareMs: r.flareMs,
+            upscaleMs: up.upscaleMs,
+            resizeMs: up.resizeMs,
+          ),
           file: file,
           backend: EnhanceBackend.openRouter,
           creditsCharged: charged.allowed ? charged.credits : decision.credits,

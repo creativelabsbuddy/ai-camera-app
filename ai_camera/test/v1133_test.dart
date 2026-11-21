@@ -135,7 +135,7 @@ void main() {
       expect(kMacroMicroscopePhotoPrompt, contains('brightfield microscope'));
       expect(kMacroMicroscopePhotoPrompt, contains('centre of the frame'));
       expect(kMacroExtremePrompt, contains('1000x magnification'));
-      expect(macroInputPlan('microscope').maxSteps, 1);
+      expect(macroInputPlan('microscope').maxSteps, 2); // v11.66
       expect(macroInputPlan('extreme').maxSteps, 2); // v11.40
     });
     test('box detection prompt + reply', () {

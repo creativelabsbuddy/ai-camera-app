@@ -67,7 +67,11 @@ class LookJob {
     isStyle: isStyle,
   );
 
-  String get label => style?.name ?? 'Your change';
+  String get label => style?.displayName ?? 'Your change';
+
+  /// v11.66: the variant visible in the style card when Apply was pressed
+  /// (the server picks its prompt; credits/model stay the style's).
+  String? get variantId => style?.variant?.id;
 
 }
 
@@ -206,18 +210,18 @@ class LookService {
     }
     if (url.isNotEmpty) {
       try {
-        final r = await watchNetwork(
+        final r = await runAiCall(
           (tok) async => _server.applyLook(
             baseUrl: url,
             deviceId: await _account.deviceId(),
             image: job.image,
             styleId: job.style?.id,
+            variantId: job.variantId,
             customPrompt: job.customPrompt,
             tier: job.effectiveTier,
             cancel: tok,
           ),
           parent: cancel,
-          net: _net,
         );
         // The server only charges a request that is still connected; if
         // the user cancelled just as it finished, sync the balance anyway.
@@ -242,6 +246,13 @@ class LookService {
 
     if (_openRouter.isConfigured) {
       String? stylePrompt;
+      if (job.variantId != null) {
+        // v11.66: variant prompts live only on the server.
+        return const LookResult(
+          error: 'This look needs the server',
+          failure: AiFailureKind.other,
+        );
+      }
       if (job.style != null) {
         stylePrompt = _localPromptFor(job.style!.id);
         if (stylePrompt == null) {
@@ -265,7 +276,7 @@ class LookService {
         cancel: tok,
       );
       try {
-        final r0 = await watchNetwork(
+        final r0 = await runAiCall(
           (tok) async {
             ({List<Uint8List> images, double cost})? r;
             // v11.58: per-style model; on failure fall back to Custom (Flare).
@@ -306,7 +317,6 @@ class LookService {
             return r;
           },
           parent: cancel,
-          net: _net,
         );
         final r = r0;
         if (cancel?.isCancelled ?? false) throw const AiCancelledException();

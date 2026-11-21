@@ -76,10 +76,10 @@ NetworkCheck fakeNet(bool online) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version (v11.65: 1.11.65+78)', () {
+  test('version (v11.65: 1.11.66+79)', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.65+78'),
+      contains('version: 1.11.66+79'),
     );
   });
 
@@ -442,7 +442,7 @@ void main() {
       expect(calls, 0);
       expect(r.usedAi, isFalse);
       expect(r.guard, AiFailureKind.network);
-      expect(r.aiError, 'Check your internet connection');
+      expect(r.aiError, 'No internet. Turn on internet and try again');
       expect(r.creditsCharged, 0);
     });
 
@@ -514,33 +514,22 @@ void main() {
       expect(classifyAiError(const OfflineException()), AiFailureKind.network);
       expect(
         aiFailureMessage(AiFailureKind.network),
-        'Check your internet connection',
+        'No internet. Turn on internet and try again',
       );
     });
 
-    test(
-      'watchNetwork cancels a hanging call when the network drops',
-      () async {
-        var up = true;
-        final net = NetworkCheck(probes: [(_) async => up]);
-        AiCancelToken? seen;
-        final f = watchNetwork<int>(
-          (tok) async {
-            seen = tok;
-            await Completer<void>().future.timeout(const Duration(seconds: 5));
-            return 1;
-          },
-          net: net,
-          every: const Duration(milliseconds: 30),
-          lostAfter: 2,
-        );
-        up = false;
-        final sw = Stopwatch()..start();
-        await expectLater(f, throwsA(isA<OfflineException>()));
-        expect(seen!.isCancelled, isTrue);
-        expect(sw.elapsedMilliseconds, lessThan(1500)); // bounded
-      },
-    );
+    test('v11.66: runAiCall passes the token through, no mid-call probing', () async {
+      final parent = AiCancelToken();
+      AiCancelToken? seen;
+      final r = await runAiCall<int>((tok) async {
+        seen = tok;
+        return 7;
+      }, parent: parent);
+      expect(r, 7);
+      expect(identical(seen, parent), isTrue);
+      final src = File('lib/services/network_check.dart').readAsStringSync();
+      expect(src, isNot(contains('Timer.periodic')));
+    });
 
     test(
       'LookService (styles / custom) offline → exact message, no call',
@@ -574,7 +563,7 @@ void main() {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
       expect(
         h,
-        contains('if (_aiMode && !NetworkCheck.instance.recentlyOnline)'),
+        contains('if (_aiMode) {'),
       );
       expect(h, contains('_snack(kCheckInternet)'));
       final v = File('lib/services/video_service.dart').readAsStringSync();
@@ -588,9 +577,10 @@ void main() {
   group('microscope fails closed (F6)', () {
     test('no lock / match error / mismatch → no AI flow', () {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
-      expect(h, contains('fail: kMicroNoLock'));
-      expect(h, contains('fail: kMicroNoMatch'));
-      expect(h, contains('matchError = true'));
+      // v11.66: no pixel match any more; not past 1.5x / fully blurry.
+      expect(h, contains('fail: kMicroZoomFirst'));
+      expect(h, contains('fail: kMicroTooBlurry'));
+      expect(h, isNot(contains('checkpointMatch(')));
       expect(h, isNot(contains('var score = 1.0;')));
       expect(h, isNot(contains('await _detectBoxArea(')));
       expect(

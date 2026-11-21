@@ -168,38 +168,8 @@ double brightEvFor(double deviceMin, double deviceMax) {
   return kBrightEv.clamp(lo, math.max(lo, deviceMax)).toDouble();
 }
 
-/// On after 3 frames with a bright spot, off after 10 frames without
-/// (no flicker).
-class BrightMeter {
-  int _on = 0, _off = 0;
-  bool active = false;
-  Offset? point;
-
-  /// Returns true when [active] changed.
-  bool update(BrightSpot? s) {
-    if (s != null) {
-      _on++;
-      _off = 0;
-      point = s.centroid;
-      if (!active && _on >= 3) return active = true;
-    } else {
-      _off++;
-      _on = 0;
-      if (active && _off >= 10) {
-        active = false;
-        point = null;
-        return true;
-      }
-    }
-    return false;
-  }
-
-  void reset() {
-    _on = _off = 0;
-    active = false;
-    point = null;
-  }
-}
+// v11.66: the automatic BrightMeter (3 frames on / 10 off) was removed —
+// the bright-spot exposure is a manual Zoom-mode button now.
 
 // ---------------------------------------------------------------------------
 // 3. Step-by-step zoom (cheap phones): checkpoints never skipped
@@ -405,15 +375,13 @@ bool showNewSubjectHint({
 }) => subjectChanged && clearLimit != null && zoom > clearLimit + 0.01;
 
 // ---------------------------------------------------------------------------
-// v11.36 far-bright latch (Zoom mode only)
+// v11.36 far-bright exposure (Zoom mode only). v11.66: MANUAL only — the
+// "Bright spot ☀️" button turns it on / off (no automatic latch, no zoom /
+// idle auto-release that could black out the screen at night).
 // ---------------------------------------------------------------------------
 
-/// Latch turns on from this camera zoom, ends below [kLatchOffZoom].
-const double kLatchOnZoom = 5;
-const double kLatchOffZoom = 3;
-
-/// Latch ends after this long without a bright spot.
-const Duration kLatchIdle = Duration(seconds: 30);
+/// v11.66 Zoom-mode button label.
+const String kBrightSpotLabel = 'Bright spot ☀️';
 
 /// Manual exposure: start, limits (ns) and target top level.
 const int kLatchStartNs = 4000000; // 1/250 s
@@ -462,4 +430,3 @@ Offset frameToCrop(Offset p, double cropZoom) {
 const double kNormalZoomMax = 10;
 const String kZoomModeHint = 'Tap Zoom mode for more';
 const String kZoomModeLabel = 'Zoom mode';
-const String kAutoFocusLabel = 'Auto focus';

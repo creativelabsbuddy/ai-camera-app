@@ -89,8 +89,36 @@ class StyleCard extends StatelessWidget {
                     Positioned(
                       left: 4,
                       bottom: 4,
-                      child: SaveStyleButton(styleId: style.id, video: false, size: 16),
+                      child: SaveStyleButton(
+                        styleId: style.id,
+                        video: false,
+                        size: 16,
+                      ),
                     ),
+                    // v11.66: several looks inside → swipe them in the sheet.
+                    if (style.hasVariants)
+                      Positioned(
+                        right: 4,
+                        bottom: 4,
+                        child: Container(
+                          key: ValueKey('style_card_looks_${style.id}'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '${style.variants.length} looks',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
                     if (style.proOnly && !isPro)
                       Positioned(
                         left: 4,

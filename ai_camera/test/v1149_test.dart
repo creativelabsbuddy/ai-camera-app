@@ -23,7 +23,8 @@ void main() {
   test('2: level chips never move the zoom', () {
     expect(home, isNot(contains('macroLevelStartZoom(level')));
     expect(home, isNot(contains('await _animateZoom(kMicroscopeHintMaxZoom)')));
-    expect(home, contains('macroLevelPickZoom(_zoom, _range.hardwareMax)'));
+    // v11.66: only back to the first zoom gate (its photo comes first).
+    expect(home, contains('final gates = macroGateZooms(level, _range.hardwareMax);'));
   });
 
   test('3a: detect prompt asks for the name, mirrors JSON + device rule', () {
@@ -38,7 +39,7 @@ void main() {
     expect(home, contains('if (level != null && level.isMicroscopic) {'));
     // v11.59 F6: the detect-only fallback is gone (fails closed instead).
     expect(home, isNot(contains('widePath: _macroWidePath(snap.zoom)')));
-    expect(home, contains('_snack(fail ?? kMicroNoMatch)'));
+    expect(home, contains('_snack(fail ?? kMicroNoLock)')); // v11.66
   });
 
   test('3d: vague names rejected', () {

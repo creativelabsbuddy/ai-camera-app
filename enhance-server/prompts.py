@@ -878,10 +878,17 @@ def macro_credits_for(level, quality="hd", table=None):
 def macro_input_plan(level):
     """(max step photos, crop long side or None = unchanged)."""
     if level == "microscope":
-        return 1, MACRO_CROP_LONG  # v11.33: crop + ONE hint photo
+        return 2, MACRO_CROP_LONG  # v11.66: crop + the 1.5x / 5x zoom-gate photos
     if level in ("extreme", "ultra"):
         return 2, None  # v11.40: ≤2 wider context photos when no spot text
     return 2, MACRO_CROP_LONG  # v11.40: crop + ≤2 wider context photos
+
+
+# v11.66 (= Dart kMicroStepsLine): Microscope / Extreme / Ultra with the 1.5x / 5x
+# zoom-gate photos — put in front of the level prompt.
+MICRO_STEPS_LINE = (
+    "The first photos show the same object at 1.5x and 5x zoom; the red box marks the spot that is zoomed in. The last photo is the final zoomed frame of that spot. Use the earlier photos only to understand the object, its material and its true colours; do not draw the whole object. Create this image of the spot in the last photo:"
+)
 
 
 # v11.40: added when wider context photos are sent with a macro shot.

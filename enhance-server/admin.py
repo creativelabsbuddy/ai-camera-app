@@ -25,8 +25,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 import prompts as P
 from mode_prompts import ModePromptStore
 from poses import CATEGORIES as POSE_CATEGORIES, Pose, PoseStore, clean_source_url
-from styles import (MAX_REFERENCES, STYLE_MODELS, Style, StyleStore, normalize_style_model, normalize_ui_category,
-                    ui_categories_for)
+from styles import (MAX_REFERENCES, MAX_VARIANTS, STYLE_MODELS, Style, StyleStore, StyleVariant, new_variant_id,
+                    normalize_style_model, normalize_ui_category, ui_categories_for, variants_by_style)
 
 COOKIE = "admin_session"
 SESSION_SECONDS = 12 * 3600
@@ -170,6 +170,8 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
                 '<a class="tab" href="/admin/video/history">Video history</a></div>')
         media = "video" if tab == "video" else "photo"
         rows = []
+        vcount = {k: len(v) for k, v in variants_by_style(
+            get_store().list_variants(include_disabled=True)).items()} if media == "photo" else {}
         for s in get_store().list(include_disabled=True, media_type=media):
             img = f'<img class="t" src="/media/styles/{_esc(s.display_image)}">' if s.display_image else '<div class="t"></div>'
             rows.append(f"""<tr class="{'' if s.enabled else 'off'}"><td>{img}</td>
@@ -184,6 +186,7 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
 <form class="i" method="post" action="/admin/styles/{_esc(s.id)}/move"><input type="hidden" name="direction" value="-1"><button class="btn s" title="Up">↑</button></form>
 <form class="i" method="post" action="/admin/styles/{_esc(s.id)}/move"><input type="hidden" name="direction" value="1"><button class="btn s" title="Down">↓</button></form>
 <a class="btn" href="/admin/styles/{_esc(s.id)}/edit">Edit</a>
+{'' if s.media_type == 'video' else f'<a class="btn s" href="/admin/styles/{_esc(s.id)}/variants">Variants ({vcount.get(s.id, 0)})</a>'}
 <form class="i" method="post" action="/admin/styles/{_esc(s.id)}/delete" onsubmit="return confirm('Delete {_esc(s.name)}?')"><button class="btn d">Delete</button></form>
 </td></tr>""")
         add = ('<a class="btn" href="/admin/styles/new?media=video">+ Add video style</a>'
@@ -263,7 +266,152 @@ def build_router(get_store: Callable[[], StyleStore]) -> APIRouter:
         s = get_store().get(sid)
         if s is None:
             raise HTTPException(status_code=404, detail="style not found")
-        return page("Edit style", f"<h2>Edit · {_esc(s.name)}</h2>" + form_html(s, f"/admin/styles/{_esc(s.id)}"))
+        vlink = ("" if s.media_type == "video" else
+                 f'<p><a class="btn s" href="/admin/styles/{_esc(s.id)}/variants">Variants · Add variant</a></p>')
+        return page("Edit style", f"<h2>Edit · {_esc(s.name)}</h2>" + vlink + form_html(s, f"/admin/styles/{_esc(s.id)}"))
+
+    # -- v11.66 style variants ---------------------------------------------------
+    def _photo_style(sid: str) -> Style:
+        s = get_store().get(sid)
+        if s is None or s.media_type != "photo":
+            raise HTTPException(status_code=404, detail="style not found")
+        return s
+
+    def _variant(vid: str) -> StyleVariant:
+        v = get_store().get_variant(vid)
+        if v is None:
+            raise HTTPException(status_code=404, detail="variant not found")
+        return v
+
+    def _vback(v_or_sid) -> RedirectResponse:
+        sid = v_or_sid if isinstance(v_or_sid, str) else v_or_sid.style_id
+        return RedirectResponse(f"/admin/styles/{sid}/variants", status_code=303)
+
+    def variant_form(s: Style, v: Optional[StyleVariant], action: str) -> str:
+        v = v or StyleVariant(id="", style_id=s.id, name="", prompt="", sort_order=len(
+            get_store().list_variants(s.id, include_disabled=True)))
+        cur = (f'<img class="t" src="{_esc(v.sample_url)}"> <label style="display:inline;font-weight:400">'
+               f'<input type="checkbox" name="remove_sample" value="1"> remove</label><br>') if v.sample_url else ""
+        return f"""<form method="post" action="{action}" enctype="multipart/form-data" style="max-width:640px">
+<label>Variant name (shown in the app)</label><input type="text" name="name" value="{_esc(v.name)}" required maxlength="40">
+<label>Sample photo (9:16, shown in the style card when this variant is swiped in)</label>{cur}<input type="file" name="sample" accept="image/*">
+<label>Hidden prompt for this variant (never shown in the app)</label><textarea name="prompt" required maxlength="2000">{_esc(v.prompt)}</textarea>
+<div class="muted">Credits ({s.credit_cost}), model, Pro flag and reference images come from the style "{_esc(s.name)}". The server always adds the identity-preserving instructions.</div>
+<label><input type="checkbox" name="enabled" value="1" {'checked' if v.enabled else ''}> Enabled (visible in the app)</label>
+<label>Sort order</label><input type="number" name="sort_order" value="{v.sort_order}">
+<p><button class="btn">Save</button> <a class="btn s" href="/admin/styles/{_esc(s.id)}/variants">Cancel</a></p></form>"""
+
+    async def _save_variant(v: StyleVariant, name: str, prompt: str, enabled: Optional[str], sort_order: int,
+                            sample: Optional[UploadFile], remove_sample: Optional[str]) -> None:
+        name, prompt = (name or "").strip()[:40], (prompt or "").strip()[:2000]
+        if not name or not prompt:
+            raise HTTPException(status_code=400, detail="name and prompt are required")
+        store = get_store()
+        v.name, v.prompt, v.enabled, v.sort_order = name, prompt, bool(enabled), int(sort_order)
+        if remove_sample:
+            store.remove_sample(v.sample_url)
+            v.sample_url = None
+        if sample is not None and sample.filename:
+            raw = await sample.read()
+            if raw:
+                try:
+                    url = store.save_sample(raw)
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"bad sample image: {e}") from e
+                store.remove_sample(v.sample_url)
+                v.sample_url = url
+        store.upsert_variant(v)
+
+    @r.get("/admin/styles/{sid}/variants")
+    async def variants_index(request: Request, sid: str):
+        if (g := guard(request)) is not None:
+            return g
+        s = _photo_style(sid)
+        vs = get_store().list_variants(sid, include_disabled=True)
+        rows = []
+        for v in vs:
+            img = f'<img class="t" src="{_esc(v.sample_url)}">' if v.sample_url else '<div class="t"></div>'
+            rows.append(f"""<tr class="{'' if v.enabled else 'off'}"><td>{img}</td>
+<td><b>{_esc(v.name)}</b><div class="muted">{_esc(v.id)}</div></td>
+<td><form class="i" method="post" action="/admin/variants/{_esc(v.id)}/toggle"><button class="btn s">{'Disable' if v.enabled else 'Enable'}</button></form></td>
+<td style="white-space:nowrap">
+<form class="i" method="post" action="/admin/variants/{_esc(v.id)}/move"><input type="hidden" name="direction" value="-1"><button class="btn s" title="Up">↑</button></form>
+<form class="i" method="post" action="/admin/variants/{_esc(v.id)}/move"><input type="hidden" name="direction" value="1"><button class="btn s" title="Down">↓</button></form>
+<a class="btn" href="/admin/variants/{_esc(v.id)}/edit">Edit</a>
+<form class="i" method="post" action="/admin/variants/{_esc(v.id)}/delete" onsubmit="return confirm('Delete {_esc(v.name)}?')"><button class="btn d">Delete</button></form>
+</td></tr>""")
+        add = (f'<a class="btn" href="/admin/styles/{_esc(sid)}/variants/new">+ Add variant</a>'
+               if len(vs) < MAX_VARIANTS else f'<span class="pill">Max {MAX_VARIANTS} variants</span>')
+        body = f"""<p><a href="/admin">← Photo styles</a></p><h2>Variants · {_esc(s.name)}</h2>
+<p>{add}<span class="muted"> With 2 or more enabled variants the app's style card becomes swipeable (dots + "2/7"); the visible variant is used on Apply. 0–1 variants → normal card with the style's own prompt. Same credits (⚡{s.credit_cost}) and model as the style.</span></p>
+<table><tr><th></th><th>Variant</th><th>Status</th><th></th></tr>{''.join(rows)}</table>"""
+        return page("Variants", body)
+
+    @r.get("/admin/styles/{sid}/variants/new")
+    async def variant_new_form(request: Request, sid: str):
+        if (g := guard(request)) is not None:
+            return g
+        s = _photo_style(sid)
+        return page("New variant", f"<h2>New variant · {_esc(s.name)}</h2>" +
+                    variant_form(s, None, f"/admin/styles/{_esc(s.id)}/variants"))
+
+    @r.post("/admin/styles/{sid}/variants")
+    async def variant_create(request: Request, sid: str, name: str = Form(""), prompt: str = Form(""),
+                             enabled: Optional[str] = Form(None), sort_order: Optional[int] = Form(None),
+                             sample: Optional[UploadFile] = File(None)):
+        if (g := guard(request)) is not None:
+            return g
+        s = _photo_style(sid)
+        n = len(get_store().list_variants(sid, include_disabled=True))
+        if n >= MAX_VARIANTS:
+            raise HTTPException(status_code=400, detail=f"max {MAX_VARIANTS} variants")
+        v = StyleVariant(id=new_variant_id(), style_id=s.id, name="", prompt="")
+        await _save_variant(v, name, prompt, enabled, n if sort_order is None else sort_order, sample, None)
+        return _vback(s.id)
+
+    @r.get("/admin/variants/{vid}/edit")
+    async def variant_edit_form(request: Request, vid: str):
+        if (g := guard(request)) is not None:
+            return g
+        v = _variant(vid)
+        s = _photo_style(v.style_id)
+        return page("Edit variant", f"<h2>Edit variant · {_esc(s.name)} · {_esc(v.name)}</h2>" +
+                    variant_form(s, v, f"/admin/variants/{_esc(v.id)}"))
+
+    @r.post("/admin/variants/{vid}")
+    async def variant_update(request: Request, vid: str, name: str = Form(""), prompt: str = Form(""),
+                             enabled: Optional[str] = Form(None), sort_order: int = Form(0),
+                             sample: Optional[UploadFile] = File(None), remove_sample: Optional[str] = Form(None)):
+        if (g := guard(request)) is not None:
+            return g
+        v = _variant(vid)
+        await _save_variant(v, name, prompt, enabled, sort_order, sample, remove_sample)
+        return _vback(v)
+
+    @r.post("/admin/variants/{vid}/delete")
+    async def variant_delete(request: Request, vid: str):
+        if (g := guard(request)) is not None:
+            return g
+        v = _variant(vid)
+        get_store().delete_variant(vid)
+        return _vback(v)
+
+    @r.post("/admin/variants/{vid}/toggle")
+    async def variant_toggle(request: Request, vid: str):
+        if (g := guard(request)) is not None:
+            return g
+        v = _variant(vid)
+        v.enabled = not v.enabled
+        get_store().upsert_variant(v)
+        return _vback(v)
+
+    @r.post("/admin/variants/{vid}/move")
+    async def variant_move(request: Request, vid: str, direction: int = Form(...)):
+        if (g := guard(request)) is not None:
+            return g
+        v = _variant(vid)
+        get_store().move_variant(vid, direction)
+        return _vback(v)
 
     async def _save(store: StyleStore, s: Style, display_image: Optional[UploadFile],
                     ref_images: list[UploadFile], remove_refs: list[str],

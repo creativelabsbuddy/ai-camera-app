@@ -10,7 +10,7 @@ def test_macro_credit_mapping():
 def test_input_plan_per_level():
     assert P.macro_input_plan("macro") == (2, 1536)  # v11.40
     assert P.macro_input_plan("close") == (2, 1536)  # v11.40
-    assert P.macro_input_plan("microscope") == (1, 1536)
+    assert P.macro_input_plan("microscope") == (2, 1536)  # v11.66 1.5x + 5x gates
     assert P.macro_input_plan("extreme") == (2, None)  # v11.40
     assert P.macro_input_plan("ultra") == (2, None)  # v11.40
 

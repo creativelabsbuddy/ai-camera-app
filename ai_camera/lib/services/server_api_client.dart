@@ -253,6 +253,7 @@ class ServerApiClient {
     bool zoomLadder = false,
     bool zoomClean = false,
     bool zoomSource = false,
+    bool microSteps = false,
     String? macroLevel,
     String? part,
     AiCancelToken? cancel,
@@ -310,6 +311,8 @@ class ServerApiClient {
       if (zoomClean) 'zoom_clean': 'true', // v11.34
       // v11.59: image = aligned sharp source, steps[0] = final (framing).
       if (zoomSource) 'zoom_source': 'true',
+      // v11.66: steps = 1.5x / 5x zoom-gate photos (Microscope levels).
+      if (microSteps) 'micro_steps': 'true',
     });
     final resp = await _sendAi(req, aiTimeout, cancel);
     _throwIfNotOk(resp, 'Enhance');
@@ -336,6 +339,7 @@ class ServerApiClient {
     required String deviceId,
     required File image,
     String? styleId,
+    String? variantId,
     String? customPrompt,
     QualityTier tier = QualityTier.fullHd,
     AiCancelToken? cancel,
@@ -356,6 +360,8 @@ class ServerApiClient {
       // v11.56: always one image (4 variations removed).
       'variations': '1',
       if (styleId != null) 'style_id': styleId,
+      // v11.66: only an id — the server picks the variant's prompt.
+      if (styleId != null && variantId != null) 'variant_id': variantId,
       if (styleId == null && customPrompt != null)
         'custom_prompt': customPrompt,
       if (styleId == null) 'quality': tier.id,
