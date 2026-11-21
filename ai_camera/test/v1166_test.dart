@@ -34,6 +34,10 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  test('version 1.11.66+79', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.66+79'));
+  });
+
   group('2: blur note in the waves', () {
     testWidgets('note sits centred over the waves while active', (t) async {
       await t.pumpWidget(

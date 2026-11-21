@@ -134,10 +134,10 @@ GreyImage cropGrey(GreyImage g, (int, int, int, int) r) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.65+78', () {
+  test('version 1.11.66+79', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.65+78'),
+      contains('version: 1.11.66+79'),
     );
   });
 
