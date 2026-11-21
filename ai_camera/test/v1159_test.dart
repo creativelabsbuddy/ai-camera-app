@@ -577,9 +577,10 @@ void main() {
   group('microscope fails closed (F6)', () {
     test('no lock / match error / mismatch → no AI flow', () {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
-      expect(h, contains('fail: kMicroNoLock'));
-      expect(h, contains('fail: kMicroNoMatch'));
-      expect(h, contains('matchError = true'));
+      // v11.66: no pixel match any more; not past 1.5x / fully blurry.
+      expect(h, contains('fail: kMicroZoomFirst'));
+      expect(h, contains('fail: kMicroTooBlurry'));
+      expect(h, isNot(contains('checkpointMatch(')));
       expect(h, isNot(contains('var score = 1.0;')));
       expect(h, isNot(contains('await _detectBoxArea(')));
       expect(

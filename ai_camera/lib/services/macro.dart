@@ -1869,7 +1869,7 @@ const int kMacroStepLongSide = 768;
 ({int maxSteps, int? cropLong, int stepLong}) macroInputPlan(String? level) =>
     switch (level) {
       'microscope' => (
-        maxSteps: 1, // v11.33: crop + one 1x–2x hint photo
+        maxSteps: 2, // v11.66: crop + the 1.5x / 5x zoom-gate photos
         cropLong: kMacroCropLongSide,
         stepLong: kMacroStepLongSide,
       ),

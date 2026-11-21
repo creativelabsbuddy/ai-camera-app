@@ -133,8 +133,16 @@ class EnhanceJob {
   /// v11.30 Extreme / Ultra: text prompt from the detected spot, no photo.
   /// v11.40: no spot detected → the zoomed view (+ context photos) instead.
   /// v11.47: Microscope too, but only with a detected spot ([part]).
+  /// v11.66: never with the zoom-gate photos ([microSteps]) — they go to
+  /// the AI with the level prompt.
   bool get deepTextOnly =>
-      aiMode == 'macro' && macroTextOnly(macroLevel, subject, part);
+      aiMode == 'macro' &&
+      !microSteps &&
+      macroTextOnly(macroLevel, subject, part);
+
+  /// v11.66 Microscope / Extreme / Ultra with zoom-gate photos (1.5x, 5x)
+  /// sent before the final frame.
+  bool get microSteps => isMicroscope && steps.isNotEmpty;
 
   bool get isMicroscope =>
       aiMode == 'macro' &&
@@ -215,6 +223,10 @@ class EnhanceJob {
       );
       final cf = colorFilterId;
       final cp = cf == null ? null : kColorFilterPrompts[cf];
+      // v11.66: zoom-gate photos → the steps line in front.
+      if (microSteps && hasContext && sentSteps.isNotEmpty) {
+        return '$kMicroStepsLine $mp';
+      }
       // v11.40: wider context photos line (not Microscope: its own prompt).
       final ctx =
           hasContext && sentSteps.isNotEmpty && macroLevel != 'microscope'
@@ -437,6 +449,7 @@ class EnhanceService {
             // (zoom_source needs the framing photo on the server).
             zoomClean: job.isZoomClean || job.isZoomSourceOnly,
             zoomSource: job.isZoomSource && !job.isZoomSourceOnly,
+            microSteps: job.microSteps && job.sentSteps.isNotEmpty,
             mainLong: job.mainLong,
             stepLong: job.stepLong,
             cancel: tok,

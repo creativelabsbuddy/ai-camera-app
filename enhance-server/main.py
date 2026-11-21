@@ -830,6 +830,7 @@ async def enhance_v1(
     zoom_ladder: bool = Form(False),
     zoom_clean: bool = Form(False),
     zoom_source: bool = Form(False),
+    micro_steps: bool = Form(False),
 ):
     dev = _check_device(device_id)
     mode = (mode or "photo").strip().lower()
@@ -918,7 +919,11 @@ async def enhance_v1(
             raise HTTPException(status_code=402, detail={"reason": d.reason})
 
         try:
-            _text_only = P.macro_text_only(level, subject, part)  # v11.47
+            # v11.66: Microscope levels with the 1.5x / 5x zoom-gate photos send
+            # the photos (never text-only).
+            _micro_steps = (bool(micro_steps) and level in P.MACRO_TEXT_LEVELS
+                            and bool(steps_raw))
+            _text_only = P.macro_text_only(level, subject, part) and not _micro_steps  # v11.47
             _max_steps, _crop_long = P.macro_input_plan(level) if level else (0, None)
             if ladder:
                 _crop_long = P.ZOOM_LADDER_MAIN_LONG  # v11.31: final photo 1536 px
@@ -953,7 +958,7 @@ async def enhance_v1(
         # v11.40: Extreme / Ultra with no detected spot → the zoomed photo (+ context
         # photos) instead of the spot-text-only call.
         # v11.47: Microscope too (detected spot only).
-        deep_text_only = P.macro_text_only(level, subject, part)
+        deep_text_only = _text_only
         if deep_text_only:
             # v11.19/20 (Ultra too): Extreme sends ONLY the spot text (no step photos /
             # boxed frame) — they made the model copy the whole object.
@@ -986,7 +991,9 @@ async def enhance_v1(
                 if with_ctx and not firsts and ctx_jpg:
                     firsts = [data_url(ctx_jpg)]
                 mt = mode_text
-                if firsts and level != "microscope":
+                if firsts and _micro_steps:
+                    mt = f"{P.MICRO_STEPS_LINE} {mt}"  # v11.66 zoom-gate photos first
+                elif firsts and level != "microscope":
                     mt = f"{mt} {P.MACRO_CONTEXT_LINE}"  # v11.40 wider context photos
                 mt = f"{mt} {color_text}".strip() if color_text else mt
                 # v11.30: Extreme / Ultra send NO photo — text prompt from the

@@ -235,7 +235,7 @@ void main() {
     test('input-photo counts per level', () {
       expect(macroInputPlan('macro').maxSteps, 2);
       expect(macroInputPlan('close').maxSteps, 2);
-      expect(macroInputPlan('microscope').maxSteps, 1); // v11.33
+      expect(macroInputPlan('microscope').maxSteps, 2); // v11.66 1.5x + 5x
       expect(macroInputPlan('extreme').maxSteps, 2);
       expect(macroInputPlan('ultra').maxSteps, 2);
       for (final l in ['macro', 'close', 'microscope']) {

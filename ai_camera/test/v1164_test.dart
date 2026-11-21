@@ -171,17 +171,15 @@ void main() {
     });
   });
 
-  test('home wiring: name once per shot, part step on retakes', () {
+  test('home wiring (v11.66): name at the 1.5x gate, part at 5x', () {
     final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
-    final a = h.indexOf('_coordinatedMicro(\n');
-    final body = h.substring(a, h.indexOf('/// v11.27: X on the result', a));
-    expect(body, contains('named ??= await _lockMicroObject(half, path, crop);'));
-    expect(body, contains('_detector.detectMicroPart('));
-    expect(body, contains('part: lock.isEmpty ? \'\' : microPartText(pp, lock),'));
-    expect(body, contains('fail: kMicroNoLock'));
-    expect(body, contains('fail: kMicroNoMatch'));
-    expect(h, contains('_detector.detectMicroNameTimed('));
-    expect(h, contains('await writeZoomCrop(shotPath, crop)'));
-    expect(kMicroRetakes, 2);
+    final a = h.indexOf('Future<void> _detectAtGate(');
+    final body = h.substring(a, h.indexOf('/// v11.66 shutter (Microscope', a));
+    expect(body, contains('_detector.detectMicroNameTimed(File(view), File(box))'));
+    expect(body, contains('_detector\n            .detectMicroPart('));
+    expect(h, contains('part: name.isEmpty ? \'\' : microPartText(lk?.part ?? \'\', name),'));
+    expect(h, contains('fail: kMicroZoomFirst'));
+    expect(h, contains('fail: kMicroTooBlurry'));
+    expect(h, isNot(contains('_coordinatedMicro(')));
   });
 }

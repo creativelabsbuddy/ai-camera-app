@@ -4,7 +4,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:ai_camera/config/ai_config.dart';
 import 'package:ai_camera/models/quality_tier.dart';
+import 'package:ai_camera/services/enhance_service.dart';
+import 'package:ai_camera/services/macro.dart';
+import 'package:ai_camera/services/macro_gates.dart';
+import 'package:ai_camera/services/mode_prompts.dart';
 import 'package:ai_camera/services/network_check.dart';
 import 'package:ai_camera/services/openrouter_client.dart';
 import 'package:ai_camera/services/runware_client.dart';
@@ -164,6 +169,108 @@ void main() {
         QualityTier.picker.map((q) => q.credits).toList(),
         [1, 2, 4],
       );
+    });
+  });
+
+  group('5: Microscope / Extreme / Ultra stepwise zoom', () {
+    const micro = [MacroLevel.microscope, MacroLevel.extreme, MacroLevel.ultra];
+
+    test('max 15x (device-capped), gates at 1.5x and 5x', () {
+      for (final l in micro) {
+        expect(macroLevelZoomMax(l, 30), 15);
+        expect(macroLevelZoomMax(l, 8), 8);
+        expect(macroGateZooms(l, 30), [1.5, 5.0]);
+        expect(macroGateZooms(l, 4), [1.5]); // 5x not reachable
+      }
+      expect(macroLevelZoomMax(MacroLevel.macro, 30), 10);
+      expect(macroLevelZoomMax(null, 30), 10);
+    });
+
+    test('zoom stops at each gate until its photo is done', () {
+      const l = MacroLevel.microscope;
+      expect(macroGateCap(l, 30, {}), 1.5);
+      expect(macroGateCap(l, 30, {1.5}), 5.0);
+      expect(macroGateCap(l, 30, {1.5, 5.0}), 15);
+      expect(macroGateDue(l, 30, {}, 1.2), isNull);
+      expect(macroGateDue(l, 30, {}, 1.5), 1.5);
+      expect(macroGateDue(l, 30, {1.5}, 3), isNull);
+      expect(macroGateDue(l, 30, {1.5}, 5), 5.0);
+      expect(macroGateDue(l, 30, {1.5, 5.0}, 12), isNull);
+      // zooming back out forgets the gates above
+      expect(macroGatesToDrop({1.5, 5.0}, 3), [5.0]);
+      expect(macroGatesToDrop({1.5, 5.0}, 1.0), [1.5, 5.0]);
+      expect(macroGatesToDrop({1.5, 5.0}, 5.0), isEmpty);
+    });
+
+    test('lock follows the highest gate; debug text', () {
+      expect(macroGateLock({}), isNull);
+      final lk = macroGateLock({
+        1.5: (name: 'white paper napkin', part: 'surface'),
+        5.0: (name: 'red soda can', part: 'side'),
+      });
+      expect(lk!.name, 'red soda can');
+      expect(
+        macroGateDebug(1.5, 'white paper napkin', 'surface'),
+        '1.5x: white paper napkin · surface',
+      );
+      expect(macroGateDebug(5, 'red soda can', 'side', newSubject: true),
+          '5x: red soda can · side · new subject');
+      expect(macroGateDebug(1.5, null, ''), '1.5x: detect failed');
+      expect(macroGateDebug(1.5, '', ''), '1.5x: (vague)');
+    });
+
+    test('fully blurry final frame → fail closed message', () {
+      expect(microFinalTooBlurry(0), isTrue);
+      expect(microFinalTooBlurry(40), isFalse);
+      expect(
+        kMicroTooBlurry,
+        'Too close or blurry. Move back and zoom in instead.',
+      );
+    });
+
+    test('3 photos to the AI: gate photos first, final last, name + part',
+        () {
+      final f = File('a.jpg');
+      final job = EnhanceJob(
+        image: f,
+        mode: 'macro',
+        macroLevel: 'extreme',
+        subject: 'red soda can',
+        part: 'side of a red soda can',
+        steps: [File('s15.jpg'), File('s5.jpg')],
+      );
+      expect(job.microSteps, isTrue);
+      expect(job.deepTextOnly, isFalse); // photos are sent
+      expect(job.sentSteps.length, 2);
+      if (AiConfig.kHasEmbeddedKey) {
+        final p = job.prompt(hasContext: true);
+        expect(p, startsWith(kMicroStepsLine));
+        expect(p, contains('side of a red soda can'));
+      }
+      // no gate photos → the old text-only spot prompt stays
+      final old = EnhanceJob(
+        image: f,
+        mode: 'macro',
+        macroLevel: 'extreme',
+        subject: 'red soda can',
+        part: 'side',
+      );
+      expect(old.microSteps, isFalse);
+      expect(old.deepTextOnly, isTrue);
+      expect(macroInputPlan('microscope').maxSteps, 2);
+    });
+
+    test('home wiring: gates, no pixel match, no post-shutter 1.5x', () {
+      final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
+      expect(h, contains('math.min(requested, _macroGateCapZoom)'));
+      expect(h, contains('_onMacroZoom();'));
+      expect(h, contains('await _refocusCentre();\n      await Future<void>.delayed(kMacroGateFocusWait);'));
+      expect(h, contains('gateSteps = _gateStepPhotos();'));
+      expect(h, contains('(gated ? 0 : kMacroCtxMargin)'));
+      expect(h, isNot(contains('checkpointMatch(')));
+      expect(h, isNot(contains('_microOneHalf')));
+      final sc = File('lib/services/server_api_client.dart').readAsStringSync();
+      expect(sc, contains("if (microSteps) 'micro_steps': 'true',"));
     });
   });
 }

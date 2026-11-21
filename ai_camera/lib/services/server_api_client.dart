@@ -253,6 +253,7 @@ class ServerApiClient {
     bool zoomLadder = false,
     bool zoomClean = false,
     bool zoomSource = false,
+    bool microSteps = false,
     String? macroLevel,
     String? part,
     AiCancelToken? cancel,
@@ -310,6 +311,8 @@ class ServerApiClient {
       if (zoomClean) 'zoom_clean': 'true', // v11.34
       // v11.59: image = aligned sharp source, steps[0] = final (framing).
       if (zoomSource) 'zoom_source': 'true',
+      // v11.66: steps = 1.5x / 5x zoom-gate photos (Microscope levels).
+      if (microSteps) 'micro_steps': 'true',
     });
     final resp = await _sendAi(req, aiTimeout, cancel);
     _throwIfNotOk(resp, 'Enhance');

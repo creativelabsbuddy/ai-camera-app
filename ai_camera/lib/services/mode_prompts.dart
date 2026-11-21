@@ -49,6 +49,11 @@ const String kMacroMicroscopePrompt =
     'anything this material would not really have. One single full-frame image, no text or '
     'labels. Photorealistic.';
 
+/// v11.66 Microscope / Extreme / Ultra with the zoom-gate photos: put in
+/// front of the level prompt (1.5x, 5x boxed photos first, final last).
+const String kMicroStepsLine =
+    'The first photos show the same object at 1.5x and 5x zoom; the red box marks the spot that is zoomed in. The last photo is the final zoomed frame of that spot. Use the earlier photos only to understand the object, its material and its true colours; do not draw the whole object. Create this image of the spot in the last photo:';
+
 /// v11.47: the old photo-based Microscope prompt (no spot detected).
 const String kMacroMicroscopePhotoPrompt =
     'Based on the last photo: a real brightfield microscope photograph, strongly zoomed in on the centre of the frame, with a soft backlit glow, ultra-shallow depth of field with softly blurred edges, fine natural micro-structure and texture at high magnification, semi-transparent edges and the true colours of the subject. Keep the subject\'s own natural colours, and do not let the background colour tint the subject. Photorealistic.';
