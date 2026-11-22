@@ -2836,13 +2836,23 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   bool get _macroActive => _shootMode == ShootMode.macro && _aiMode;
 
   /// Max zoom for the macro levels: min(10x, device max) (v11.41).
-  /// v11.66: Microscope / Extreme / Ultra min(15x, device max).
-  double get _macroMaxZoom =>
-      macroLevelZoomMax(_macroLevel, _range.hardwareMax);
+  /// v11.66: Microscope / Extreme / Ultra 15x. v11.67: past the camera's
+  /// own max (S24 Ultra 10x) by a centre digital crop, like Normal mode.
+  double get _macroMaxZoom => macroLevelZoomMax(_macroLevel, _macroLimit);
+
+  /// v11.67 zoom limit for [level]: camera max, or (Microscope / Extreme /
+  /// Ultra) the display max reached by digital crop.
+  double _macroLimitFor(MacroLevel? level) => macroZoomLimit(
+    level,
+    hardwareMax: _range.hardwareMax,
+    displayMax: _range.displayMax,
+  );
+
+  double get _macroLimit => _macroLimitFor(_macroLevel);
 
   /// v11.66: zoom stops at the next gate not done yet (else the level max).
   double get _macroGateCapZoom =>
-      macroGateCap(_macroLevel, _range.hardwareMax, _gatesDone);
+      macroGateCap(_macroLevel, _macroLimit, _gatesDone);
 
   /// Smooth automatic zoom (~1 s, eased; never jumps). A pinch or a new
   /// animation stops it.
@@ -2977,6 +2987,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _resetGates(); // v11.66: a new level starts its zoom gates again
     if (level == null) {
       _dropMicroHint(); // v11.49: 1x chip = no level, zoom stays
+      // v11.67: back within the plain macro max (a 15x crop zoom from
+      // Microscope / Extreme / Ultra is not kept without the level).
+      if (_zoom > _macroMaxZoom + 0.01) await _animateZoom(_macroMaxZoom);
       return;
     }
     _showToast(
@@ -2988,7 +3001,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     if (!mounted || _macroLevel != level) return;
     // Safety only: stay within the macro max (min(10x, phone max)).
     // v11.66: past the first zoom gate → back to it (its photo comes first).
-    final gates = macroGateZooms(level, _range.hardwareMax);
+    final gates = macroGateZooms(level, _macroLimitFor(level));
     final keep = gates.isNotEmpty && _zoom > gates.first + 0.01
         ? gates.first
         : math.min(_zoom, _macroMaxZoom).clamp(1.0, _macroMaxZoom).toDouble();
@@ -3029,7 +3042,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (drop.isNotEmpty) _dropGates(drop);
     }
     if (_gateBusy || _processingCapture || _captureLock) return;
-    final g = macroGateDue(level, _range.hardwareMax, _gatesDone, _zoom);
+    final g = macroGateDue(level, _macroLimitFor(level), _gatesDone, _zoom);
     if (g != null) unawaited(_runMacroGate(g));
   }
 
@@ -3191,7 +3204,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     String path,
     double crop,
   ) async {
-    final gates = macroGateZooms(_macroLevel, _range.hardwareMax);
+    final gates = macroGateZooms(_macroLevel, _macroLimit);
     if (gates.isNotEmpty && !_gatesDone.contains(gates.first)) {
       return (lock: null, part: null, fail: kMicroZoomFirst);
     }
@@ -4665,6 +4678,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (AiConfig.hasEmbeddedApiKey && level != null)
         Text(
           '${_boxCheck.debug} · zoom ${_zoom.toStringAsFixed(1)}/${_macroMaxZoom.toStringAsFixed(0)}'
+          '${_digitalZoom > 1.001 ? ' (cam ${_cameraZoom.toStringAsFixed(1)}x × crop ${_digitalZoom.toStringAsFixed(2)}x)' : ''}'
           '${_macroGateCapZoom < _macroMaxZoom - 0.01 ? ' · gate ${formatZoom(_macroGateCapZoom)}x' : ''}',
           key: const ValueKey('macro_box_debug'),
           style: small.copyWith(color: Colors.orange.shade300),
@@ -4729,7 +4743,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                 key: const ValueKey('macro_zoom_chips'),
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  for (final z in macroZoomChips(_range.hardwareMax))
+                  for (final z in macroLevelZoomChips(level, _macroLimit))
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 3),
                       child: GestureDetector(
@@ -5168,6 +5182,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
               if (d.pointerCount < 2) return;
               if (_macroActive) {
                 // v11.41: pinch 1x–10x (device max); stops any animation.
+                // v11.67: Microscope / Extreme / Ultra up to 15x (crop).
                 _stopZoomAnim();
                 unawaited(
                   _setZoom(

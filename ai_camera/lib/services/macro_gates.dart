@@ -9,7 +9,9 @@ import 'macro_box.dart' show macroLevelMaxZoom;
 // At the shutter the gate photos (lowest first) + the final frame go to the
 // AI. Pure helpers (tested); the camera work lives in the home screen.
 
-/// Microscope / Extreme / Ultra reach 15x (clamped to the device max).
+/// Microscope / Extreme / Ultra reach 15x. v11.67: past the camera's own
+/// max (S24 Ultra reports 10x) the rest is a centre digital crop, like
+/// Normal mode (see [macroZoomLimit]).
 const double kMicroLevelMaxZoom = 15;
 
 /// Microscope / Extreme / Ultra gates: object named at 1.5x, subject + part
@@ -34,6 +36,32 @@ const String kMicroTooBlurry =
 const String kMacroGateBusy = 'Hold steady · taking the zoom photo';
 const String kMicroZoomFirst =
     'Zoom in to 1.5x first so the AI can see the object. No credits used.';
+
+/// v11.67 the zoom limit fed to the level helpers below. Microscope /
+/// Extreme / Ultra may go past the camera's own max ([hardwareMax]) up to
+/// [displayMax] by a centre digital crop (camera stays <= hardwareMax; the
+/// crop is applied to the preview, the gate photos, the centre box and the
+/// captured still). Macro / Close stay on the camera's own zoom.
+double macroZoomLimit(
+  MacroLevel? level, {
+  required double hardwareMax,
+  required double displayMax,
+}) {
+  final hw = hardwareMax.isFinite && hardwareMax >= 1 ? hardwareMax : 1.0;
+  if (level == null || !level.isMicroscopic) return hw;
+  final d = displayMax.isFinite ? displayMax : hw;
+  return math.max(hw, d);
+}
+
+/// v11.67 manual zoom chips for a level: 1x, 2x, 3x, 5x, 10x (within the
+/// max) and 15x for Microscope / Extreme / Ultra when reachable.
+List<double> macroLevelZoomChips(MacroLevel? level, double limit) {
+  final m = macroLevelZoomMax(level, limit);
+  return [
+    for (final z in const [1.0, 2.0, 3.0, 5.0, 10.0, 15.0])
+      if (z <= m + 0.01) z,
+  ];
+}
 
 /// Max zoom for a level: Microscope / Extreme / Ultra 15x, the others 10x
 /// (both clamped to the device max, never below 1x).

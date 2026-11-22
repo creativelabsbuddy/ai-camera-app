@@ -24,7 +24,7 @@ void main() {
     expect(home, isNot(contains('macroLevelStartZoom(level')));
     expect(home, isNot(contains('await _animateZoom(kMicroscopeHintMaxZoom)')));
     // v11.66: only back to the first zoom gate (its photo comes first).
-    expect(home, contains('final gates = macroGateZooms(level, _range.hardwareMax);'));
+    expect(home, contains('final gates = macroGateZooms(level, _macroLimitFor(level));'));
   });
 
   test('3a: detect prompt asks for the name, mirrors JSON + device rule', () {
