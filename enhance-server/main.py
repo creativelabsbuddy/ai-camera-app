@@ -858,6 +858,7 @@ async def enhance_v1(
     gate_object: Optional[str] = Form(None),
     gate_part: Optional[str] = Form(None),
     gate_visible: Optional[str] = Form(None),
+    clear_ref: bool = Form(False),
 ):
     dev = _check_device(device_id)
     mode = (mode or "photo").strip().lower()
@@ -1037,8 +1038,11 @@ async def enhance_v1(
                 return build_payload(mt, quality, aspect, img, None, leading_urls=firsts)
             if zsrc and with_ctx:
                 # v11.59: the sharp source FIRST (content), the final zoom after it (framing).
-                return build_payload(P.zoom_source_prompt(filt, color_text), quality, aspect,
-                                     data_url(main_jpg), None,
+                zp = P.zoom_source_prompt(filt, color_text)
+                if clear_ref:  # v11.67 clear reference crop first
+                    zp = zp.replace(P.ZOOM_SOURCE_PROMPT,
+                                    f"{P.ZOOM_SOURCE_PROMPT} {P.CLEAR_REF_LINE}", 1)
+                return build_payload(zp, quality, aspect, data_url(main_jpg), None,
                                      extra_urls=[data_url(framing_jpg)])
             if zsrc:
                 # one-image fallback: the sharp source alone, the safe zoom prompt.

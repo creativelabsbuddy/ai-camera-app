@@ -256,6 +256,7 @@ class ServerApiClient {
     bool zoomSource = false,
     bool microSteps = false,
     GateDetect? gate,
+    bool clearRef = false,
     String? macroLevel,
     String? part,
     AiCancelToken? cancel,
@@ -322,6 +323,8 @@ class ServerApiClient {
       if (gate != null && gate.part.isNotEmpty) 'gate_part': gate.part,
       if (gate != null && gate.visible.isNotEmpty)
         'gate_visible': gate.visible,
+      // v11.67: image = clear reference crop (detail), steps[0] = final.
+      if (clearRef && zoomSource) 'clear_ref': 'true',
     });
     final resp = await _sendAi(req, aiTimeout, cancel);
     _throwIfNotOk(resp, 'Enhance');

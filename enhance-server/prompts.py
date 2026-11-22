@@ -1098,3 +1098,8 @@ def simple_macro_prompt(level: Optional[str], obj: Optional[str] = None,
         return "Show how this object would look under a light microscope at 100x magnification."
     return (f"{lead}{', zoomed on ' + pt if pt else ''}{', showing ' + v if v else ''}. "
             "Show how it would look under a light microscope at 100x magnification.")
+
+
+# v11.67 clear reference (= Dart kClearRefLine): image = the final frame's area
+# cut from the photo taken at the clear limit, steps[0] = the final frame.
+CLEAR_REF_LINE = "Use the first image for real detail; keep the framing of the second image."

@@ -199,3 +199,35 @@ def test_extreme_ultra_and_old_clients_untouched(env):  # noqa: F811
     # old client (no simple_macro) → the old level prompt
     assert _macro_shot(c, dev, "macro", {}).status_code == 200
     assert up.calls[-1]["prompt"].startswith("A natural close-up macro photograph")
+
+
+# --- 5: clear reference (sharp crop first, final framing second) -----------
+
+def _zpost(c, dev, data, image, steps):
+    c.post("/v1/purchase", json={"device_id": dev, "product_id": "pack_25"})
+    files = [("image", ("i.jpg", image, "image/jpeg"))] + [
+        ("steps", (f"s{i}.jpg", b, "image/jpeg")) for i, b in enumerate(steps)]
+    return c.post("/v1/enhance", data={"device_id": dev, "quality": "hd", **data}, files=files)
+
+
+def test_clear_ref_line_added_only_when_asked(env):  # noqa: F811
+    c, _, _, up = env
+    source = scene(600, 450, seed=4)
+    final = scene(1200, 900, seed=4)
+    up.reply = enc(source, "PNG")
+    r = _zpost(c, "dev_v1167_cr", {"zoom": "22", "optical_limit": "2", "zoom_source": "true",
+                                   "clear_ref": "true"}, enc(source), [enc(final)])
+    assert r.status_code == 200, r.text
+    pl = up.calls[-1]
+    assert pl["prompt"] == P.ZOOM_SOURCE_PROMPT + " " + P.CLEAR_REF_LINE
+    assert len(pl["input_references"]) == 2  # clear crop first, final second
+    r = _zpost(c, "dev_v1167_cr2", {"zoom": "22", "optical_limit": "2", "zoom_source": "true"},
+               enc(source), [enc(final)])
+    assert up.calls[-1]["prompt"] == P.ZOOM_SOURCE_PROMPT  # older apps unchanged
+
+
+def test_clear_ref_line_matches_app():
+    src = _dart("clear_ref.dart")
+    assert _dart_string_const(src, "kClearRefLine") == P.CLEAR_REF_LINE
+    assert P.CLEAR_REF_LINE == ("Use the first image for real detail; keep the framing of the "
+                                "second image.")

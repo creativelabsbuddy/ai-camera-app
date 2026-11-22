@@ -28,6 +28,7 @@ import '../services/barcode_actions.dart';
 import '../services/camera_permission.dart';
 import '../services/burst_merge.dart' show deleteQuietly, uprightSize;
 import '../services/capture_crop.dart';
+import '../services/clear_ref.dart';
 import '../services/document_scan.dart';
 import '../services/enhance_policy.dart';
 import '../services/entitlements.dart';
@@ -331,6 +332,13 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   final Map<double, GateDetect?> _gateInfo = {};
   bool _gateBusy = false;
   int _gateGen = 0;
+
+  /// v11.67 clear reference (Pro AI photo past the clear limit; switch:
+  /// [kClearRefEnabled]): the one silent photo at the clear limit.
+  ClearRef? _clearRef;
+  bool _clearRefBusy = false;
+  Timer? _clearRefTimer;
+  DateTime? _clearRefFailedAt;
   final Set<MacroLevel> _levelTipsShown = {};
   int _zoomAnimGen = 0;
   String? _boxDbg; // key-build debug line (last shutter detection)
@@ -767,6 +775,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   @override
   void dispose() {
+    _clearRefTimer?.cancel();
+    _dropClearRef();
     _gyroSub?.cancel();
     _stopFpsMeter();
     _zoomAfTimer?.cancel();
@@ -1126,7 +1136,22 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final want = _macroActive && _macroLevel != null
         ? math.min(requested, _macroGateCapZoom)
         : requested;
-    final plan = planZoom(requested: want, range: _range);
+    final plan0 = planZoom(requested: want, range: _range);
+    // v11.67 clear reference: until its photo is taken the camera stays at
+    // the clear limit (the rest is a centre crop on the preview meanwhile).
+    final hold = clearRefHold(
+      active: _clearRefWanted,
+      selected: plan0.selected,
+      cameraZoom: plan0.cameraZoom,
+      limit: _clearRefLimit,
+    );
+    final plan = hold == null
+        ? plan0
+        : ZoomPlan(
+            selected: plan0.selected,
+            cameraZoom: hold,
+            digitalZoom: plan0.selected / hold,
+          );
     if ((plan.selected - _zoom).abs() < 0.005 &&
         (plan.digitalZoom - _digitalZoom).abs() < 0.001 &&
         _pendingZoom == null) {
@@ -1151,6 +1176,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _scheduleContextSnap();
     _onLadderZoom();
     _onMacroZoom();
+    _onClearRefZoom();
 
     final target = plan.cameraZoom;
     if ((target - _cameraZoom).abs() < 0.005 && _pendingZoom == null) return;
@@ -1809,6 +1835,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         }
       }
       await _awaitContextSnap();
+      await _awaitClearRef(); // v11.67: a reference photo in flight
       if (!mounted) return;
       _captureLock = true;
       try {
@@ -2230,6 +2257,20 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       }
       if (beyond) zoomLabel = kBeyondClearLabel;
     }
+    // v11.67 clear reference: the final frame's area from the photo taken at
+    // the clear limit goes FIRST (detail), the final frame second (framing).
+    var clearRef = false;
+    if (snap.ai && aiModeId == 'photo' && modeOverride != CaptureMode.normal) {
+      final (src, dbg) = await _clearRefSource(snap, crop.path);
+      if (src != null) {
+        zoomSource = src;
+        zoomSourceOnly = false;
+        clearRef = true;
+      }
+      if (dbg != null && AiConfig.hasEmbeddedApiKey) {
+        captureNote = captureNote == null ? dbg : '$captureNote · $dbg';
+      }
+    }
     if (!mounted) return;
     ZoomInfoService.lastCaptureCalibration = _calibrationLine(
       selected: snap.zoom,
@@ -2297,6 +2338,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           zoomLadder: false,
           zoomSourceFile: zoomSource,
           zoomSourceOnly: zoomSourceOnly,
+          clearRef: clearRef,
           zoomLabel: zoomLabel,
           zoomClean: zoomFlow != ZoomFlow.normal,
           macroLevel: macroLevel,
@@ -3097,6 +3139,155 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _macroLevel = null;
     _boxCheck.reset();
     _dropMicroHint();
+  }
+
+  // ---- v11.67 clear reference ------------------------------------------------
+
+  /// Pro AI photo on the back camera (Normal mode has no AI call; Macro
+  /// takes its still at the optical limit already + its gate photos).
+  bool get _clearRefOn =>
+      kClearRefEnabled &&
+      _snapshotMode &&
+      !_macroActive &&
+      _mode == CaptureMode.pro &&
+      _lens == CameraLensDirection.back;
+
+  /// The phone's clear limit (S24 Ultra ~10x, cheap phones ~2–3x).
+  double get _clearRefLimit => clearRefLimit(
+    lowEnd: _macroLowEnd,
+    opticalLimit: _optical.opticalLimit,
+    hardwareMax: _range.hardwareMax,
+    observedClear: _clearLimit,
+    pixelClear: _pixelClearLimit,
+  );
+
+  /// A reference is wanted now (none yet, no recent failure).
+  bool get _clearRefWanted =>
+      _clearRefOn &&
+      _clearRef == null &&
+      !_processingCapture &&
+      (_clearRefFailedAt == null ||
+          DateTime.now().difference(_clearRefFailedAt!) >
+              const Duration(seconds: 5));
+
+  /// Every zoom change: zoomed back below the limit → the reference is
+  /// stale (dropped); reaching the limit with none → take it.
+  void _onClearRefZoom() {
+    if (!_clearRefOn) {
+      _clearRefTimer?.cancel();
+      _clearRefTimer = null;
+      _dropClearRef();
+      return;
+    }
+    final lim = _clearRefLimit;
+    if (lim >= _range.displayMax - 0.01) return; // nothing past the limit
+    if (_zoom < lim - 0.05) {
+      _clearRefTimer?.cancel();
+      _clearRefTimer = null;
+      _dropClearRef();
+      return;
+    }
+    if (_clearRef != null || _clearRefBusy || !_clearRefWanted) return;
+    _clearRefTimer ??= Timer(
+      const Duration(milliseconds: 120),
+      () => unawaited(_captureClearRef()),
+    );
+  }
+
+  void _dropClearRef() {
+    final old = _clearRef?.path;
+    _clearRef = null;
+    if (old != null) {
+      unawaited(File(old).delete().then((_) {}, onError: (_) {}));
+    }
+  }
+
+  /// ONE silent photo with the camera at the clear limit (no merge), then
+  /// the camera follows the user's zoom again.
+  Future<void> _captureClearRef() async {
+    _clearRefTimer = null;
+    final c = _controller;
+    if (c == null ||
+        !c.value.isInitialized ||
+        !_clearRefWanted ||
+        _clearRefBusy ||
+        _processingCapture ||
+        _captureLock ||
+        _ladderBusy ||
+        _ctxBusy ||
+        _gateBusy ||
+        c.value.isTakingPicture ||
+        c.value.flashMode != FlashMode.off) {
+      return;
+    }
+    final lim = _clearRefLimit;
+    if (_zoom < lim - 0.05) return;
+    _clearRefBusy = true;
+    var ok = false;
+    try {
+      await _waitZoomSettled();
+      if (!mounted || !identical(c, _controller)) return;
+      final cam = _cameraZoom;
+      if (cam > lim + 0.05) return; // camera not at the limit (no hold)
+      final shot = await c.takePicture();
+      if (!mounted || !_clearRefOn || _zoom < lim - 0.05) {
+        unawaited(File(shot.path).delete().then((_) {}, onError: (_) {}));
+        return;
+      }
+      _dropClearRef();
+      _clearRef = ClearRef(path: shot.path, cameraZoom: cam, at: DateTime.now());
+      ok = true;
+      debugPrint('Clear ref @ ${cam.toStringAsFixed(2)}x');
+    } catch (e) {
+      debugPrint('Clear ref failed: $e');
+    } finally {
+      _clearRefBusy = false;
+      if (!ok) _clearRefFailedAt = DateTime.now();
+      // Release the hold: the camera follows the user's zoom again.
+      if (mounted) unawaited(_setZoom(_zoom));
+    }
+  }
+
+  /// Shutter waits for a reference photo in flight (≤1.2 s).
+  Future<void> _awaitClearRef() async {
+    for (var i = 0; i < 24 && (_clearRefBusy || _clearRefTimer != null); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  /// At the shutter: the final frame's area cut from the reference (the
+  /// detail source), or null (final only) + the debug text.
+  Future<(File?, String?)> _clearRefSource(
+    _ShotSnap snap,
+    String finalCropPath,
+  ) async {
+    if (!_clearRefOn) return (null, null);
+    final lim = _clearRefLimit;
+    if (!clearRefNeeded(snap.zoom, lim)) return (null, null);
+    final ref = _clearRef;
+    final why = clearRefStaleReason(ref, DateTime.now(), snap.zoom);
+    if (why.isNotEmpty) return (null, clearRefDebug(reason: why));
+    try {
+      final dir = (await getTemporaryDirectory()).path;
+      final (path, score) = await writeClearRefCrop(
+        refPath: ref!.path,
+        refCameraZoom: ref.cameraZoom,
+        finalZoom: snap.zoom,
+        portraitRatio: snap.ratio.portrait,
+        finalCropPath: finalCropPath,
+        outPath: '$dir/clear_ref_${DateTime.now().microsecondsSinceEpoch}.jpg',
+      );
+      if (path == null) {
+        return (null, clearRefDebug(reason: 'stale', match: score));
+      }
+      return (
+        File(path),
+        clearRefDebug(refZoom: ref.cameraZoom, match: score),
+      );
+    } catch (e) {
+      debugPrint('Clear ref crop failed: $e');
+      return (null, clearRefDebug(reason: 'failed'));
+    }
   }
 
   // ---- v11.30 100x zoom ladder (cheap phones) --------------------------------

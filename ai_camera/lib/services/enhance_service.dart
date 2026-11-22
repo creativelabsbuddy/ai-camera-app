@@ -11,6 +11,7 @@ import 'account_service.dart';
 import 'ai_call.dart';
 import 'entitlements.dart';
 import 'image_guard.dart';
+import 'clear_ref.dart' show kClearRefLine;
 import 'gate_detect.dart' show GateDetect;
 import 'macro.dart' show macroCreditsFor, macroInputPlan;
 import 'local_filters.dart';
@@ -53,7 +54,11 @@ class EnhanceJob {
     this.zoomSource,
     this.zoomSourceOnly = false,
     this.gate,
+    this.clearRef = false,
   });
+
+  /// v11.67 [zoomSource] is the clear reference crop → kClearRefLine.
+  final bool clearRef;
 
   /// v11.67 the 5x / 10x zoom-gate detection of a macro shot (an empty one
   /// = the new flow without a detection, e.g. Macro below 5x). Non-null →
@@ -264,6 +269,7 @@ class EnhanceJob {
       final st = stylePrompt;
       return [
         kZoomSourcePrompt,
+        if (clearRef) kClearRefLine, // v11.67
         if (st != null) 'Style: $st',
         if (cp != null) 'Color look: $cp $kColorFilterTail',
       ].join(' ');
@@ -474,6 +480,7 @@ class EnhanceService {
             zoomSource: job.isZoomSource && !job.isZoomSourceOnly,
             microSteps: job.microSteps && job.sentSteps.isNotEmpty,
             gate: job.simpleMacro ? job.gate : null, // v11.67
+            clearRef: job.clearRef && job.isZoomSource, // v11.67
             mainLong: job.mainLong,
             stepLong: job.stepLong,
             cancel: tok,

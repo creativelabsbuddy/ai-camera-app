@@ -69,6 +69,7 @@ class PreviewScreen extends StatefulWidget {
     this.zoomClean = false,
     this.zoomSourceFile,
     this.zoomSourceOnly = false,
+    this.clearRef = false,
     this.aiInputFile,
     this.subjectSure = false,
     this.spotSource,
@@ -152,6 +153,10 @@ class PreviewScreen extends StatefulWidget {
 
   /// v11.13 Extreme: tighter spot sent instead of the crop.
   final File? aiInputFile;
+
+  /// v11.67 [zoomSourceFile] is the clear reference crop (the photo at the
+  /// clear limit) → its prompt line is added.
+  final bool clearRef;
 
   /// v11.67 the 5x / 10x zoom-gate detection (macro shots; empty = none
   /// reached) → simple Macro / Close / Microscope prompts.
@@ -414,6 +419,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     zoomClean: widget.zoomClean,
     zoomSource: widget.zoomSourceFile,
     zoomSourceOnly: widget.zoomSourceOnly,
+    clearRef: widget.clearRef && widget.zoomSourceFile != null,
     context: widget.contextFile,
     tier: widget.tier,
     zoom: widget.captureZoom,

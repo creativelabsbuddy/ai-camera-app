@@ -7,9 +7,12 @@ import 'package:camera/camera.dart' show ExposureMode, FocusMode;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:image/image.dart' as im;
 
 import 'package:ai_camera/services/gate_detect.dart';
 import 'package:ai_camera/config/ai_config.dart';
+import 'package:ai_camera/services/capture_crop.dart' show computeCaptureCrop;
+import 'package:ai_camera/services/clear_ref.dart';
 import 'package:ai_camera/services/enhance_service.dart';
 import 'package:ai_camera/services/macro.dart';
 import 'package:ai_camera/services/mode_prompts.dart';
@@ -405,6 +408,120 @@ void main() {
       expect(await f.preCapture(), isTrue);
       expect(afConverged(null), isFalse);
       f.dispose();
+    });
+  });
+
+  group('5: clear reference (behind kClearRefEnabled)', () {
+    test('switch on; limit S24 Ultra 10x, cheap phones ~2-3x', () {
+      expect(kClearRefEnabled, isTrue);
+      // S24 Ultra: optical 5x tele, camera max 10x → 10x
+      expect(
+        clearRefLimit(lowEnd: false, opticalLimit: 5, hardwareMax: 10, pixelClear: 6),
+        10,
+      );
+      // cheap phone: observed clear limit wins, else the real-pixel one
+      expect(
+        clearRefLimit(lowEnd: true, opticalLimit: 1, hardwareMax: 8, observedClear: 2.5, pixelClear: 3),
+        2.5,
+      );
+      expect(
+        clearRefLimit(lowEnd: true, opticalLimit: 1, hardwareMax: 8, pixelClear: 2.7),
+        2.7,
+      );
+      expect(clearRefNeeded(22, 10), isTrue);
+      expect(clearRefNeeded(10.3, 10), isFalse);
+      // hold the camera at the limit until the reference is taken
+      expect(clearRefHold(active: true, selected: 6, cameraZoom: 6, limit: 2.5), 2.5);
+      expect(clearRefHold(active: false, selected: 6, cameraZoom: 6, limit: 2.5), isNull);
+      expect(clearRefHold(active: true, selected: 22, cameraZoom: 10, limit: 10), isNull);
+      expect(kClearRefLine, 'Use the first image for real detail; keep the framing of the second image.');
+    });
+
+    test('stale reasons', () {
+      final now = DateTime(2026, 1, 1, 12);
+      expect(clearRefStaleReason(null, now, 22), 'none');
+      final f = File('${Directory.systemTemp.path}/v1167_ref_exists.jpg')..writeAsBytesSync([1]);
+      final ref = ClearRef(path: f.path, cameraZoom: 10, at: now);
+      expect(clearRefStaleReason(ref, now, 22), '');
+      expect(clearRefStaleReason(ref, now.add(const Duration(minutes: 2)), 22), 'old');
+      expect(clearRefStaleReason(ref, now, 10.2), 'not past');
+      expect(clearRefDebug(refZoom: 10, match: 0.8), 'clear ref 10x · match 0.80');
+      expect(clearRefDebug(reason: 'none'), 'clear ref none (final only)');
+    });
+
+    test('crop = the final area of the reference; other scene → final only', () async {
+      final dir = Directory.systemTemp.createTempSync('v1167cr');
+      // reference at 10x: a pattern
+      final ref = im.Image(width: 800, height: 600);
+      for (final p in ref) {
+        final v = ((p.x ~/ 20 + p.y ~/ 30) % 2) * 200 + (p.x * 50 ~/ 800);
+        p..r = v..g = (p.y * 255 ~/ 600)..b = 255 - v;
+      }
+      final refPath = '${dir.path}/ref.jpg';
+      File(refPath).writeAsBytesSync(im.encodeJpg(ref, quality: 95));
+      // final at 20x = the centre half of the reference (portrait 3:4 crop
+      // of a landscape frame here), blurred
+      final r = computeCaptureCrop(iw: 800, ih: 600, portraitRatio: 3 / 4, digitalZoom: 2);
+      final fin = im.gaussianBlur(
+        im.copyCrop(ref, x: r.x, y: r.y, width: r.width, height: r.height),
+        radius: 3,
+      );
+      final finPath = '${dir.path}/fin.jpg';
+      File(finPath).writeAsBytesSync(im.encodeJpg(fin));
+      final (path, score) = await writeClearRefCrop(
+        refPath: refPath,
+        refCameraZoom: 10,
+        finalZoom: 20,
+        portraitRatio: 3 / 4,
+        finalCropPath: finPath,
+        outPath: '${dir.path}/out.jpg',
+      );
+      expect(path, isNotNull);
+      expect(score, greaterThan(0.8));
+      final out = im.decodeImage(File(path!).readAsBytesSync())!;
+      expect((out.width, out.height), (r.width, r.height));
+      // a different scene → no reference
+      final other = im.Image(width: r.width, height: r.height);
+      for (final p in other) {
+        p..r = (p.y * 255 ~/ r.height)..g = 255 - (p.x * 255 ~/ r.width)..b = 0;
+      }
+      final otherPath = '${dir.path}/other.jpg';
+      File(otherPath).writeAsBytesSync(im.encodeJpg(other));
+      final (p2, s2) = await writeClearRefCrop(
+        refPath: refPath,
+        refCameraZoom: 10,
+        finalZoom: 20,
+        portraitRatio: 3 / 4,
+        finalCropPath: otherPath,
+        outPath: '${dir.path}/out2.jpg',
+      );
+      expect(p2, isNull);
+      expect(s2, lessThan(kClearRefMinMatch));
+      dir.deleteSync(recursive: true);
+    });
+
+    test('wiring: capture at the limit, crop at the shutter, prompt line', () {
+      expect(home, contains('_onClearRefZoom();'));
+      expect(home, contains('final hold = clearRefHold('));
+      expect(home, contains('await _awaitClearRef();'));
+      expect(home, contains('final (src, dbg) = await _clearRefSource(snap, crop.path);'));
+      expect(home, contains('clearRef: clearRef,'));
+      // Pro AI photo only (Normal has no AI call; Macro has its own path)
+      expect(home, contains('      kClearRefEnabled &&\n      _snapshotMode &&\n      !_macroActive &&'));
+      final es = File('lib/services/enhance_service.dart').readAsStringSync();
+      expect(es, contains('if (clearRef) kClearRefLine, // v11.67'));
+      final sc = File('lib/services/server_api_client.dart').readAsStringSync();
+      expect(sc, contains("if (clearRef && zoomSource) 'clear_ref': 'true',"));
+      final job = EnhanceJob(
+        image: File('f.jpg'),
+        zoomSource: File('src.jpg'),
+        clearRef: true,
+      );
+      expect(job.isZoomSource, isTrue);
+      expect(job.sentSteps.single.path, 'f.jpg'); // final second (framing)
+      if (AiConfig.kHasEmbeddedKey) {
+        expect(job.prompt(hasContext: true), contains(kClearRefLine));
+      }
     });
   });
 }
