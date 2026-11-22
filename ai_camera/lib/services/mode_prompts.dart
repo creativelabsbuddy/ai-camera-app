@@ -52,7 +52,7 @@ const String kMacroMicroscopePrompt =
 /// v11.66 Microscope / Extreme / Ultra with the zoom-gate photos: put in
 /// front of the level prompt (1.5x, 5x boxed photos first, final last).
 const String kMicroStepsLine =
-    'The first photos show the same object at 1.5x and 5x zoom; the red box marks the spot that is zoomed in. The last photo is the final zoomed frame of that spot. Use the earlier photos only to understand the object, its material and its true colours; do not draw the whole object. Create this image of the spot in the last photo:';
+    'The first photos show the same object at lower zoom (5x / 10x); the red box marks the spot that is zoomed in. The last photo is the final zoomed frame of that spot. Use the earlier photos only to understand the object, its material and its true colours; do not draw the whole object. Create this image of the spot in the last photo:';
 
 /// v11.47: the old photo-based Microscope prompt (no spot detected).
 const String kMacroMicroscopePhotoPrompt =

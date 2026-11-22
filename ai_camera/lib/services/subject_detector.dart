@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'account_service.dart';
+import 'gate_detect.dart';
 import 'macro_fill.dart';
 import 'mode_prompts.dart';
 import 'openrouter_client.dart';
@@ -410,6 +411,76 @@ class SubjectDetector {
     lastReason = 'ok';
     return PartResult(sameSubject: ins, part: part);
   });
+
+  /// v11.67 zoom-gate detection (5x / 10x, every macro level): the user's
+  /// view at the gate with the centre box drawn ([boxedView]); [earlier] =
+  /// the 5x answer (10x call; null → first look). Server: /v1/macro/
+  /// gate-detect; an older server → its micro-name step (name + part only).
+  /// Null on failure / timeout / cancel. ONE overall [timeout].
+  Future<GateDetect?> detectGateTimed(
+    File boxedView, {
+    GateDetect? earlier,
+    double gate = 5,
+    File? view,
+    Duration timeout = kDetectSubjectTimeout,
+  }) async {
+    cancelInFlight();
+    _reasonAfterCancel = null;
+    final gen = ++_subjectGen;
+    final first = earlier == null || earlier.isEmpty;
+    try {
+      final r = await _guard(() async {
+        final url = await _serverUrl();
+        if (url.isNotEmpty) {
+          final j = await _server.macroDetect(
+            baseUrl: url,
+            deviceId: await _deviceId(),
+            files: [('image', boxedView)],
+            endpoint: 'gate-detect',
+            fields: {
+              'gate': gate.toStringAsFixed(1),
+              if (!first) 'earlier': earlier.toEarlierJson(),
+            },
+          );
+          if (j != null) {
+            final g = GateDetect.fromJson(j);
+            lastReason = g.isEmpty ? 'empty' : 'ok';
+            return g.isEmpty ? null : g;
+          }
+          // Older server (no gate-detect endpoint): name + part only.
+          final o = await _server.macroDetect(
+            baseUrl: url,
+            deviceId: await _deviceId(),
+            files: [('wide', view ?? boxedView), ('zoom', boxedView)],
+            endpoint: 'micro-name',
+          );
+          if (o == null) {
+            lastReason = 'server error';
+            return null;
+          }
+          final n = gateObjectName(stripLookWords(o['name'] as String?));
+          final p = sanitizeDetected(stripLookWords(o['part'] as String?));
+          lastReason = n.isEmpty ? 'vague' : 'ok (old server)';
+          return GateDetect(object: n, part: first ? '' : p);
+        }
+        final raw = await _openRouter.detectGate(
+          boxedView,
+          gateDetectPrompt(earlier),
+        );
+        if (raw.trim().isEmpty) {
+          lastReason = _direct('');
+          return null;
+        }
+        final g = parseGateReply(raw);
+        lastReason = g == null ? 'unparsed' : 'ok';
+        return g;
+      }).timeout(timeout);
+      return gen == _subjectGen ? r : null;
+    } on TimeoutException {
+      if (gen == _subjectGen) cancelInFlight('timeout ${timeout.inSeconds}s');
+      return null;
+    }
+  }
 }
 
 /// v11.24: one overall limit for the 1.5x detection (prep + network).

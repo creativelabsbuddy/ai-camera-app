@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import '../config/ai_config.dart';
 import '../models/quality_tier.dart';
 import 'ai_call.dart';
+import 'gate_detect.dart' show kDetectGateMaxTokens;
 import 'mode_prompts.dart'
     show
         kDetectModel,
@@ -506,6 +507,17 @@ class OpenRouterClient {
         ),
         kDetectJsonMaxTokens,
       );
+
+  /// v11.67 zoom-gate detection (flash-lite): the user's view at the gate
+  /// with the centre box drawn → raw JSON (5x {object, context, visible};
+  /// 10x with the 5x answer in [prompt] {object, part, visible,
+  /// same_object}).
+  Future<String> detectGate(File boxedView, String prompt) => _visionText(
+    [boxedView],
+    prompt,
+    kDetectGateMaxTokens,
+    requestTimeout: kDetectSubjectRequestTimeout,
+  );
 
   Future<http.Response> _post(
     String body,

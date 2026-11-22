@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'gate_detect.dart' show kGateZooms;
 import 'macro.dart' show MacroLevel;
 import 'macro_box.dart' show macroLevelMaxZoom;
 
@@ -14,13 +15,12 @@ import 'macro_box.dart' show macroLevelMaxZoom;
 /// Normal mode (see [macroZoomLimit]).
 const double kMicroLevelMaxZoom = 15;
 
-/// Microscope / Extreme / Ultra gates: object named at 1.5x, subject + part
-/// checked again at 5x.
-const List<double> kMicroGateZooms = [1.5, 5.0];
-
-/// v11.66 Macro / Close gates: plain step photos at 2x and 5x (no
-/// detection; kMacroGeneralSubject stays).
-const List<double> kMacroGateZooms = [2.0, 5.0];
+/// v11.67 every macro level (Macro, Close, Microscope, Extreme, Ultra):
+/// gates at 5x (object + what is around it) and 10x (the part of that
+/// object), each with a Flash-Lite detection. The v11.66 1.5x (micro) and
+/// 2x (Macro / Close) gates are gone.
+const List<double> kMicroGateZooms = kGateZooms;
+const List<double> kMacroGateZooms = kGateZooms;
 
 /// Focus settle after the centre AF pass at a gate, before the photo.
 const Duration kMacroGateFocusWait = Duration(milliseconds: 450);
@@ -35,7 +35,7 @@ const String kMicroTooBlurry =
     'Too close or blurry. Move back and zoom in instead.';
 const String kMacroGateBusy = 'Hold steady · taking the zoom photo';
 const String kMicroZoomFirst =
-    'Zoom in to 1.5x first so the AI can see the object. No credits used.';
+    'Zoom in to 5x first so the AI can see the object. No credits used.';
 
 /// v11.67 the zoom limit fed to the level helpers below. Microscope /
 /// Extreme / Ultra may go past the camera's own max ([hardwareMax]) up to
@@ -71,13 +71,15 @@ double macroLevelZoomMax(MacroLevel? level, double deviceMax) =>
     : macroLevelMaxZoom(deviceMax);
 
 /// Gate zooms of [level] that are reachable on this device (lowest first).
+/// v11.67: a gate AT the level max counts too (Macro / Close max 10x → the
+/// 10x gate still runs there, so the part is known at 10x).
 List<double> macroGateZooms(MacroLevel? level, double deviceMax) {
   if (level == null) return const [];
   final m = macroLevelZoomMax(level, deviceMax);
   final gates = level.isMicroscopic ? kMicroGateZooms : kMacroGateZooms;
   return [
     for (final z in gates)
-      if (z < m - 0.01) z,
+      if (z <= m + 0.01) z,
   ];
 }
 

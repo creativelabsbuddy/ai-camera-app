@@ -773,6 +773,25 @@ async def macro_micro_part(device_id: str = Form(...), parent: str = Form(...),
     return {"part": P.micro_part_only(part), "in_scene": ins}
 
 
+@app.post("/v1/macro/gate-detect")
+async def macro_gate_detect(device_id: str = Form(...), image: UploadFile = File(...),
+                            gate: str = Form("5"), earlier: str = Form("")):
+    """v11.67 zoom-gate detection (flash-lite), every macro level: the view at
+    the 5x / 10x gate with the centre box drawn → {object, context, part,
+    visible, same_object}. 10x sends the 5x answer as [earlier] (JSON). Free."""
+    _check_device(device_id)
+    a, _, _ = prepare(await image.read(), DETECT_LONG)
+    try:
+        prev = json.loads(earlier) if earlier else None
+    except Exception:  # noqa: BLE001
+        prev = None
+    prompt = P.gate_detect_prompt(P.gate_earlier_json(prev))
+    text = await _vision_text(detect_payload(prompt, [a], P.GATE_DETECT_MAX_TOKENS))
+    out = P.parse_gate_reply(text)
+    out["model"] = P.DETECT_MODEL
+    return out
+
+
 @app.post("/v1/macro/spot")
 async def macro_spot(device_id: str = Form(...), subject: str = Form(""),
                      others: str = Form(""),

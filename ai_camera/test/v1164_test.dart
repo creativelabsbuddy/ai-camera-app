@@ -174,9 +174,10 @@ void main() {
   test('home wiring (v11.66): name at the 1.5x gate, part at 5x', () {
     final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
     final a = h.indexOf('Future<void> _detectAtGate(');
-    final body = h.substring(a, h.indexOf('/// v11.66 shutter (Microscope', a));
-    expect(body, contains('_detector.detectMicroNameTimed(File(view), File(box))'));
-    expect(body, contains('_detector\n            .detectMicroPart('));
+    final body = h.substring(a, h.indexOf('/// v11.66 shutter: no new detection', a));
+    // v11.67: one connected gate detection (5x → 10x) replaced these.
+    expect(body, contains('_detector.detectGateTimed('));
+    expect(body, contains('earlier: earlier,'));
     expect(h, contains('part: name.isEmpty ? \'\' : microPartText(lk?.part ?? \'\', name),'));
     expect(h, contains('fail: kMicroZoomFirst'));
     expect(h, contains('fail: kMicroTooBlurry'));

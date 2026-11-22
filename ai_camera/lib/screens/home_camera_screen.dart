@@ -40,6 +40,7 @@ import '../services/context_snapshot.dart';
 import '../config/ai_config.dart';
 import '../services/macro.dart';
 import '../services/macro_box.dart';
+import '../services/gate_detect.dart';
 import '../services/macro_gates.dart';
 import '../services/micro_lock.dart';
 import '../services/mode_prompts.dart' show kMacroGeneralSubject;
@@ -324,10 +325,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   /// v11.66 stepwise macro zoom: gates done (a failed photo still opens
   /// the gate so the user is never stuck), the gate photos, their detection
-  /// results (Microscope / Extreme / Ultra) and the run in flight.
+  /// results and the run in flight. v11.67: 5x / 10x gates with detection
+  /// on every level ([GateDetect]; null = detection failed).
   final Map<double, ContextSnapshot> _gateShots = {};
   final Set<double> _gatesDone = {};
-  final Map<double, ({String name, String part})> _gateInfo = {};
+  final Map<double, GateDetect?> _gateInfo = {};
   bool _gateBusy = false;
   int _gateGen = 0;
   final Set<MacroLevel> _levelTipsShown = {};
@@ -1917,11 +1919,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         var (path, note, crop) = await _takeMacro(c);
         String? lockName;
         String? lockPart;
-        if (level != null && level.isMicroscopic) {
-          // v11.66: the zoom gates (1.5x name, 5x subject + part) already
-          // ran; no pixel match, no retake. Not past 1.5x or a fully
-          // blurry final frame → fail closed.
-          final gm = await _microFromGates(path, crop);
+        if (level != null) {
+          // v11.67: the zoom gates (5x object, 10x part, every level)
+          // already ran; no pixel match, no retake. Microscope levels not
+          // past 5x or a fully blurry final frame → fail closed.
+          final gm = await _fromGates(path, crop, level);
           lockName = gm.lock;
           lockPart = gm.part;
           if (!mounted) return;
@@ -1939,9 +1941,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           }
           note = '$note · locked: '
               '${lockName == kMacroGeneralSubject ? '(vague)' : lockName}';
-          gateSteps = _gateStepPhotos();
-        } else if (level != null) {
-          // v11.66 Macro / Close: the 2x / 5x zoom-gate photos (no detection).
+          if (_boxDbg != null && AiConfig.hasEmbeddedApiKey) {
+            note = '$note · ${_boxDbg!.replaceAll('\n', ' | ')}';
+          }
+          // Gate photos (5x, 10x below the shot) go with the final frame.
           gateSteps = _gateStepPhotos();
         }
         shotPath = path;
@@ -1956,6 +1959,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         if (level != null && level.isMicroscopic && lockName != null && lockPart != null) {
           // v11.58: locked object + its part → material-aware text prompt.
           microSpot = lockPart;
+          subject = lockName;
+        } else if (level != null && lockName != null) {
+          // v11.67 Macro / Close: the gate-detected object (or the
+          // general subject below 5x / when vague).
           subject = lockName;
         } else {
           subject = kMacroGeneralSubject;
@@ -2074,13 +2081,15 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         : null;
     // v11.40: wider context photos (Macro / Close / Extreme / Ultra).
     // v11.66: the zoom-gate photos (sent whole, the shot area boxed).
+    // v11.67: a gate photo just below the shot (10x gate, 11x shot) is sent
+    // too; only one at the same zoom as the shot is skipped.
     final gated = gateSteps != null && gateSteps.isNotEmpty;
     final macroCtx = aiModeId == 'macro' && snap.ai
         ? [
             for (final s in gateSteps ?? const <ContextSnapshot>[])
               if (File(s.path).existsSync() &&
                   snapshotRegionZoom(snap.zoom, s.cameraZoom) >=
-                      kMacroCtxMinWider)
+                      (gated ? kGateStepMinWider : kMacroCtxMinWider))
                 s,
           ]
         : const <ContextSnapshot>[];
@@ -2122,8 +2131,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         // wider, never nearly the same area). v11.60: ladder references are
         // cut at their TRACKED region below, not at the centre here.
         stepCropMargin: macroCtx.isNotEmpty
-            ? (gated && (macroLevel?.isMicroscopic ?? false)
-                  ? 0
+            ? (gated
+                  ? 0 // v11.67: gate photos whole (shot area boxed), all levels
                   : kMacroCtxMargin)
             : microHint == null
             ? 0
@@ -3047,14 +3056,18 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   }
 
   void _dropGates(Iterable<double> gates) {
+    var had = false;
     for (final g in gates.toList()) {
       _gatesDone.remove(g);
+      had = _gateInfo.containsKey(g) || had;
       _gateInfo.remove(g);
       final shot = _gateShots.remove(g);
       if (shot != null) {
         unawaited(File(shot.path).delete().then((_) {}, onError: (_) {}));
       }
     }
+    // v11.67: the debug line forgets a dropped gate's detection too.
+    if (had) _boxDbg = _gateInfo.isEmpty ? null : _gateDebug();
   }
 
   /// Level change / new macro flow: every gate forgotten, a run in flight
@@ -3066,9 +3079,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   }
 
   /// v11.66 one gate: the zoom is held at [g], the phone focuses on the
-  /// centre, takes a photo, and (Microscope levels) names the object in the
-  /// centre box (1.5x) / checks subject + part (5x). Only then the gate
-  /// opens and the zoom can go further.
+  /// centre, takes ONE photo, and Flash-Lite describes it (v11.67: every
+  /// level; 5x object + what is around it, 10x the part of that object,
+  /// told the 5x answer). Only then the gate opens and the zoom can go
+  /// further.
   Future<void> _runMacroGate(double g) async {
     final c = _controller;
     final level = _macroLevel;
@@ -3095,7 +3109,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         cameraZoom: cam,
         at: DateTime.now(),
       );
-      if (level.isMicroscopic) await _detectAtGate(g, shot.path, dig, gen);
+      // v11.67: every level detects at its gates (5x object, 10x part).
+      await _detectAtGate(g, shot.path, dig, gen);
       ok = true;
     } catch (e) {
       debugPrint('Macro gate ${g}x failed: $e');
@@ -3112,10 +3127,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     }
   }
 
-  /// v11.66 Microscope / Extreme / Ultra gate detection (Flash-Lite). The
-  /// first gate names the object in the centre box; a later gate checks the
-  /// part of that object, and a new subject (not in the earlier photo) is
-  /// named again so the lock follows what the user zoomed to.
+  /// v11.67 gate detection (Flash-Lite), every macro level. The photo is
+  /// cut to the user's view (digital crop) and the centre box drawn. 5x:
+  /// object in the box + what else is in the frame + what is visible. 10x:
+  /// the 5x answer goes along; the part of that object in the box + what is
+  /// visible on it; a different object → the lock follows it.
   Future<void> _detectAtGate(
     double g,
     String path,
@@ -3129,65 +3145,30 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       return out;
     }
 
-    Future<({String name, String part})?> nameIt() async {
-      final view = await tmp(writeZoomCrop(path, dig));
-      final box = await tmp(writeZoomCrop(path, dig / kMacroBoxFraction));
-      final r = await _detector.detectMicroNameTimed(File(view), File(box));
-      if (r == null) return null;
-      final (name, part) = r;
-      return (name: isUsableLock(name) ? name : '', part: part);
-    }
-
     try {
+      final view = await tmp(writeZoomCrop(path, dig));
+      final boxed = await tmp(writeZoomBoxed(view, 1 / kMacroBoxFraction));
       final lower = [
         for (final k in _gateInfo.keys)
-          if (k < g && _gateShots[k] != null) k,
+          if (k < g && _gateInfo[k] != null) k,
       ];
-      final prev = lower.isEmpty ? null : _gateInfo[lower.reduce(math.max)];
-      final prevShot = lower.isEmpty ? null : _gateShots[lower.reduce(math.max)];
-      if (prev == null || prevShot == null) {
-        final r = await nameIt();
-        if (gen != _gateGen) return;
-        _gateInfo[g] = r ?? (name: '', part: '');
-        _boxDbg = macroGateDebug(g, r?.name, r?.part ?? '');
-      } else {
-        final boxed = await tmp(writeZoomBoxed(path, dig));
-        _detector.cancelInFlight();
-        final pr = await _detector
-            .detectMicroPart(
-              File(prevShot.path),
-              File(boxed),
-              prev.name.isEmpty ? 'object' : prev.name,
-            )
-            .timeout(
-              kDetectSubjectTimeout,
-              onTimeout: () {
-                _detector.cancelInFlight('timeout');
-                return null;
-              },
-            );
-        if (gen != _gateGen) return;
-        if (pr?.sameSubject == false) {
-          // The user moved to another subject → the lock follows it.
-          final r = await nameIt();
-          if (gen != _gateGen) return;
-          _gateInfo[g] = r ?? (name: '', part: '');
-          _boxDbg = macroGateDebug(
-            g,
-            r?.name,
-            r?.part ?? '',
-            newSubject: true,
-          );
-        } else {
-          final part = (pr?.part ?? '').isNotEmpty ? pr!.part : prev.part;
-          _gateInfo[g] = (name: prev.name, part: part);
-          _boxDbg = macroGateDebug(g, prev.name, part);
-        }
-      }
+      final earlier = lower.isEmpty ? null : _gateInfo[lower.reduce(math.max)];
+      final r = await _detector.detectGateTimed(
+        File(boxed),
+        earlier: earlier,
+        gate: g,
+        view: File(view),
+      );
+      if (gen != _gateGen) return;
+      _gateInfo[g] = r == null ? null : mergeGate(earlier, r);
+      _boxDbg = _gateDebug();
       debugPrint('Macro gate: $_boxDbg');
     } catch (e) {
       debugPrint('Macro gate detection failed: $e');
-      if (gen == _gateGen) _boxDbg = macroGateDebug(g, null, '');
+      if (gen == _gateGen) {
+        _gateInfo[g] = null;
+        _boxDbg = _gateDebug();
+      }
     } finally {
       for (final t in temps) {
         unawaited(File(t).delete().then((_) {}, onError: (_) {}));
@@ -3195,29 +3176,43 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     }
   }
 
-  /// v11.66 shutter (Microscope / Extreme / Ultra): no new detection, no
-  /// pixel match — the gates already named the object and its part. The
-  /// first gate must be done (else the AI never saw the object) and the
-  /// final frame must not be fully blurry; both fail closed (no AI call,
-  /// nothing charged).
-  Future<({String? lock, String? part, String? fail})> _microFromGates(
-    String path,
-    double crop,
-  ) async {
-    final gates = macroGateZooms(_macroLevel, _macroLimit);
-    if (gates.isNotEmpty && !_gatesDone.contains(gates.first)) {
-      return (lock: null, part: null, fail: kMicroZoomFirst);
+  /// v11.67 key-build debug: the 5x / 10x detections, one line each.
+  String _gateDebug() =>
+      gateDebugText(_gateInfo.keys.toList()..sort(), _gateInfo);
+
+  /// v11.66 shutter: no new detection, no pixel match — the gates already
+  /// described the object and its part. v11.67: every level. Microscope /
+  /// Extreme / Ultra: the first gate (5x) must be done (else the AI never
+  /// saw the object) and the final frame must not be fully blurry; both
+  /// fail closed (no AI call, nothing charged). Macro / Close below 5x go
+  /// on with the final frame only and the general subject.
+  Future<
+    ({String? lock, String? part, GateDetect? detect, String? fail})
+  >
+  _fromGates(String path, double crop, MacroLevel level) async {
+    final micro = level.isMicroscopic;
+    final gates = macroGateZooms(level, _macroLimitFor(level));
+    if (micro && gates.isNotEmpty && !_gatesDone.contains(gates.first)) {
+      return (lock: null, part: null, detect: null, fail: kMicroZoomFirst);
     }
-    final sharp = await photoRegionSharpness(path, crop);
-    if (microFinalTooBlurry(sharp)) {
-      _boxDbg = 'final blur ${sharp.toStringAsFixed(1)}';
-      return (lock: null, part: null, fail: kMicroTooBlurry);
+    if (micro) {
+      final sharp = await photoRegionSharpness(path, crop);
+      if (microFinalTooBlurry(sharp)) {
+        _boxDbg = 'final blur ${sharp.toStringAsFixed(1)}';
+        return (lock: null, part: null, detect: null, fail: kMicroTooBlurry);
+      }
     }
-    final lk = macroGateLock(_gateInfo);
-    final name = lk?.name ?? '';
+    // Shutter below 10x → only the 5x detection (10x was forgotten when
+    // zooming back out); below 5x → none.
+    final lk = gateLock({
+      for (final e in _gateInfo.entries)
+        if (e.value != null) e.key: e.value!,
+    });
+    final name = lk?.object ?? '';
     return (
       lock: name.isEmpty ? kMacroGeneralSubject : name,
       part: name.isEmpty ? '' : microPartText(lk?.part ?? '', name),
+      detect: lk,
       fail: null,
     );
   }
@@ -3817,8 +3812,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     try {
       final (path, note) = await _burstSharpest(c, n, crop, merge: lowEnd);
       // v11.66: every level uses its zoom-gate photos, taken DURING the
-      // zoom (Macro / Close 2x · 5x, Microscope levels 1.5x · 5x) — no
-      // post-shutter step photos any more.
+      // zoom (v11.67: 5x · 10x on every level) — no post-shutter step
+      // photos any more.
       return (path, note, crop);
     } finally {
       unawaited(_focus.afterCapture(ourAf));
