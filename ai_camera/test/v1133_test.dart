@@ -208,9 +208,9 @@ void main() {
     expect(h, contains("ValueKey('macro_box')"));
     expect(h, isNot(contains('DriftPopup(')));
     expect(h, isNot(contains('_SubjectPicker')));
-    // closing the result → 1x, burst + merge kept.
+    // closing the result → 1x. v11.67: one frame (no burst / merge).
     expect(h, contains('_freshMacroStart()'));
-    expect(h, contains('_burstSharpest(c, n, crop, merge: lowEnd)'));
+    expect(h, isNot(contains('_burstSharpest(')));
     final e = File('lib/services/enhance_service.dart').readAsStringSync();
     expect(e, contains('macroCreditsFor(macroLevel, quality: tier.id)'));
   });

@@ -26,12 +26,12 @@ import '../models/style_preset.dart';
 import '../services/account_service.dart';
 import '../services/barcode_actions.dart';
 import '../services/camera_permission.dart';
+import '../services/burst_merge.dart' show deleteQuietly, uprightSize;
 import '../services/capture_crop.dart';
 import '../services/document_scan.dart';
 import '../services/enhance_policy.dart';
 import '../services/entitlements.dart';
 import '../services/focus_mapping.dart';
-import '../services/hdr_merge.dart';
 import '../services/live_look.dart';
 import '../services/live_policies.dart';
 import '../services/frame_stats.dart';
@@ -59,7 +59,6 @@ import '../services/pose_catalog.dart';
 import '../services/scene_suggest.dart';
 import '../services/night_pipeline.dart';
 import '../services/zoom_ladder.dart';
-import '../services/burst_merge.dart';
 import '../services/image_register.dart' show GreyImage, Similarity;
 import '../services/tracked_source.dart';
 import '../services/zoom_preview_policy.dart';
@@ -372,7 +371,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   Timer? _afReleaseTimer;
   Similarity? _prevTrack;
   double _trackMotion = 1;
-  BurstJob? _burstJob;
   bool _ladderNoteShown = false;
 
   /// v11.9 context snapshot (sharp low-zoom still for the AI).
@@ -388,6 +386,12 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _vision.addListener(_onVision);
+    // v11.67: the shutter skips a fresh AF pass when the preview's own AF
+    // already converged (camera AF state).
+    _focus.afStateReader = () async {
+      final af = (await CameraExtras.info())['afState'];
+      return af is num ? af.toInt() : null;
+    };
     // Warm the native lens probe in parallel with permission / camera open.
     unawaited(ZoomInfoService.load());
     unawaited(_loadPrefs());
@@ -767,7 +771,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _stopFpsMeter();
     _zoomAfTimer?.cancel();
     _afReleaseTimer?.cancel();
-    _burstJob?.cancel();
     _trackWorker?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _ladderTimer?.cancel();
@@ -1240,8 +1243,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   }
 
   /// v11.36: no centre AF pass while the far-bright latch holds focus.
-  Future<bool> _preCapture() =>
-      _brightApplied ? Future.value(false) : _focus.preCapture();
+  Future<bool> _preCapture({bool force = false}) => _brightApplied
+      ? Future.value(false)
+      : _focus.preCapture(force: force);
 
   /// v11.36: Zoom mode is on and usable (Pro AI photo, back camera).
   bool get _zoomModeActive =>
@@ -1888,15 +1892,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         ? zoomFlowFor(ai: snap.ai, lowEnd: _macroLowEnd, zoom: snap.zoom)
         : ZoomFlow.normal;
     if (flow == ZoomFlow.ladder) await _awaitLadderShot();
-    // v11.9 coverage kept: Pro AI Zoom mode at ≥ 2x on cheap phones.
-    final nativeZoomMerge =
-        snap.ai &&
-        _zoomModeActive &&
-        shouldMergeZoom(
-          lowEnd: _macroLowEnd,
-          zoom: snap.zoom,
-          opticalLimit: snap.optical.opticalLimit,
-        );
+    // v11.67: ONE frame at the shutter everywhere except Night (the cheap-
+    // phone zoom burst / native zoom merge is gone).
     // v11.60: the tracked view at the shutter (fresh + valid only).
     // Same device orientation + a verified still rotation required.
     final trackOk =
@@ -1915,6 +1912,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     try {
       await _waitZoomSettled();
       if (hdr) {
+        // v11.67: no multi-exposure HDR any more (one frame).
         shotPath = await _takeHdr(c, (note) => captureNote = note);
       } else if (macro) {
         var (path, note, crop) = await _takeMacro(c);
@@ -1971,23 +1969,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           subject = kMacroGeneralSubject;
         }
         if (!mounted) return;
-      } else if (route.capture == CaptureKind.single &&
-          route.aiMode == 'photo' &&
-          _shootMode == ShootMode.photo &&
-          (!_aiMode || _zoomModeActive) &&
-          _macroLowEnd &&
-          _lens == CameraLensDirection.back &&
-          (snap.digital > 1.2 || nativeZoomMerge)) {
-        // v11.60 cheap phones: digitally zoomed (Normal, offline too) or a
-        // Pro AI Zoom-mode shot at 2x … native max (v11.9 merge coverage,
-        // now banded). Short adaptive burst, aligned robust denoise merge.
-        final b = await _zoomBurst(c, snap, nativeZoom: nativeZoomMerge);
-        shotPath = b.path;
-        captureNote = b.note;
-        if (b.frac != null) {
-          finalFrac = b.frac;
-          snap = snap.withDigital(1.0);
-        }
       } else {
         shotPath = await _takeSingle(c);
       }
@@ -2341,132 +2322,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     setState(() => _nightFlash = FlashChoice.on);
     unawaited(_savePref(_kNightFlashKey, _nightFlash.name));
     _showToast('Night · Flash on');
-  }
-
-  /// v11.60 zoom burst: [kBurstMinFrames]–[kBurstMaxFrames] stills while
-  /// they fit [kBurstBudgetMs] (a slow capture ends it), only the zoomed
-  /// region (+ margin) decoded, merged in a cancellable isolate. Returns
-  /// the merged REGION (frac = its share of the still) or, when not
-  /// merged, the first full still (frac null). Temporary files removed.
-  Future<({String path, String? note, (double, double)? frac})> _zoomBurst(
-    CameraController c,
-    _ShotSnap snap, {
-    bool nativeZoom = false,
-  }) async {
-    final ourAf = await _preCapture();
-    final paths = <String>[];
-    final sw = Stopwatch()..start();
-    var lastMs = 0;
-    (int, int)? size;
-    CropRect? rect;
-    if (mounted) setState(() => _holdSteady = true);
-    try {
-      while (burstWantsMore(
-        taken: paths.length,
-        elapsedMs: sw.elapsedMilliseconds,
-        lastCaptureMs: lastMs,
-      )) {
-        if (!mounted || !identical(c, _controller) || !c.value.isInitialized) {
-          break;
-        }
-        final t0 = sw.elapsedMilliseconds;
-        try {
-          paths.add((await c.takePicture()).path);
-        } catch (e) {
-          if (paths.isEmpty) rethrow;
-          break;
-        }
-        lastMs = sw.elapsedMilliseconds - t0;
-        if (paths.length == 1) {
-          final sz = await uprightSize(paths.first);
-          size = sz;
-          final r = computeCaptureCrop(
-            iw: sz.$1,
-            ih: sz.$2,
-            portraitRatio: snap.ratio.portrait,
-            digitalZoom: snap.digital,
-          );
-          rect = r;
-          if (!shouldBurstZoom(
-            lowEnd: true,
-            digital: snap.digital,
-            regionPixels: r.width * r.height,
-            plainPhoto: true,
-            nativeZoom: nativeZoom,
-          )) {
-            break; // region too large for a safe merge → single shot
-          }
-        }
-      }
-    } finally {
-      unawaited(_focus.afterCapture(ourAf));
-      if (mounted) {
-        setState(() {
-          _holdSteady = false;
-          _afterFrames = true;
-        });
-      }
-    }
-    final ms = sw.elapsedMilliseconds;
-    final sz = size, r = rect;
-    if (paths.length < 2 || sz == null || r == null || !mounted) {
-      _deletePaths(paths.skip(1).toList());
-      return (path: paths.first, note: null, frac: null);
-    }
-    final (iw, ih) = sz;
-    final mx = (r.width * kBurstMargin).round();
-    final my = (r.height * kBurstMargin).round();
-    final ox = math.max(0, r.x - mx), oy = math.max(0, r.y - my);
-    final ow = math.min(iw, r.x + r.width + mx) - ox;
-    final oh = math.min(ih, r.y + r.height + my) - oy;
-    final dir = (await getTemporaryDirectory()).path;
-    final stamp = DateTime.now().millisecondsSinceEpoch;
-    final out = '$dir/zoomburst_$stamp.jpg';
-    try {
-      // Banded merge in a killable isolate (native region decode per band:
-      // memory stays bounded for full 2x … native-max frames).
-      final job = await BurstJob.start(
-        paths: paths,
-        region: (ox, oy, ow, oh),
-        inner: (r.x - ox, r.y - oy, r.width, r.height),
-        outJpeg: out,
-      );
-      _burstJob = job;
-      final res = await job.result;
-      _burstJob = null;
-      if (res == null) throw StateError('merge cancelled / failed');
-      if (!mounted) {
-        deleteQuietly([out, ...paths]);
-        return (path: paths.first, note: null, frac: null);
-      }
-      final n = paths.length;
-      if (res.timedOut || !File(out).existsSync()) {
-        // Over budget: the sharpest frame's own full photo (no half merge).
-        final keep = paths[res.anchor];
-        _deletePaths([for (final p in paths) if (p != keep) p]);
-        deleteQuietly([out]);
-        return (
-          path: keep,
-          note: AiConfig.hasEmbeddedApiKey
-              ? 'Zoom burst $n frames ${ms}ms · merge over time → sharpest'
-              : 'Sharpest of $n',
-          frac: null,
-        );
-      }
-      _deletePaths(paths);
-      final note = AiConfig.hasEmbeddedApiKey
-          ? 'Zoom burst $n frames ${ms}ms · ${res.debugText}'
-          : res.used >= 2
-          ? 'Merged ${res.used} of $n frames'
-          : 'Sharpest of $n';
-      debugPrint('Zoom burst: $note');
-      return (path: out, note: note, frac: (r.width / iw, r.height / ih));
-    } catch (e) {
-      debugPrint('Zoom burst merge failed: $e');
-      deleteQuietly([out]);
-      _deletePaths(paths.skip(1).toList());
-      return (path: paths.first, note: 'Single frame', frac: null);
-    }
   }
 
   Future<String> _takeSingle(CameraController c) async {
@@ -3790,7 +3645,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   bool get _macroLowEnd => _cameraClass.lowEnd;
 
   /// v11.8 shutter: camera to the optical limit (real pixels) → settle →
-  /// centre AF → sharpest of 4 (7 on low-end) → restore the preview zoom.
+  /// centre AF → v11.67 ONE frame → restore the preview zoom.
   /// Returns (path, note, crop factor still → user's region).
   Future<(String, String, double)> _takeMacro(CameraController c) async {
     final cap = macroCaptureZoom(
@@ -3811,12 +3666,22 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         debugPrint('Macro capture zoom failed: $e');
       }
     }
-    final lowEnd = _macroLowEnd;
-    final n = macroBurstCount(lowEnd: lowEnd);
     final crop = moved ? cap.crop : _digitalZoom;
-    final ourAf = await _preCapture(); // centre AF unless tapped
+    // v11.67: no fresh AF pass when the preview AF already converged (the
+    // camera zoom moved for the still → always one pass).
+    final ourAf = await _preCapture(force: moved);
     try {
-      final (path, note) = await _burstSharpest(c, n, crop, merge: lowEnd);
+      // v11.67: ONE frame (no sharpest-of burst, no low-end merge).
+      final path = (await c.takePicture()).path;
+      if (mounted) {
+        setState(() {
+          _afterFrames = true; // v11.29: "you can move now" once it is in
+        });
+      }
+      final af = _focus.lastPreCapture;
+      final note = AiConfig.hasEmbeddedApiKey && af.isNotEmpty
+          ? 'Single frame · $af'
+          : 'Single frame';
       // v11.66: every level uses its zoom-gate photos, taken DURING the
       // zoom (v11.67: 5x · 10x on every level) — no post-shutter step
       // photos any more.
@@ -3827,89 +3692,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         unawaited(c.setZoomLevel(previewCam).catchError((Object _) {}));
       }
     }
-  }
-
-  /// Burst of [n] with a "Hold steady · N" countdown; scores the user's
-  /// region (centre 1/[crop]); [merge] = align + average the sharpest 5
-  /// (low-end), else the sharpest frame wins.
-  Future<(String, String)> _burstSharpest(
-    CameraController c,
-    int n,
-    double crop, {
-    bool merge = false,
-  }) async {
-    final paths = <String>[];
-    if (mounted) {
-      setState(() {
-        _holdSteady = true;
-        _nightStage = holdSteadyCountdown(n);
-      });
-    }
-    try {
-      for (var i = 0; i < n; i++) {
-        if (!identical(c, _controller) || !c.value.isInitialized) break;
-        try {
-          paths.add((await c.takePicture()).path);
-        } catch (e) {
-          if (paths.isEmpty) rethrow;
-          break;
-        }
-        if (mounted) {
-          setState(() => _nightStage = holdSteadyCountdown(n - i - 1));
-        }
-      }
-    } finally {
-      // v11.29: "Hold steady" only while the frames are captured.
-      if (mounted) {
-        setState(() {
-          _nightStage = null;
-          _holdSteady = false;
-          _afterFrames = true;
-        });
-      }
-    }
-    if (paths.length == 1) return (paths.first, 'Single frame');
-    final scores = <double>[];
-    for (final p in paths) {
-      try {
-        final g = await grayProxy(
-          await File(p).readAsBytes(),
-          (360 * math.min(crop, 6)).round(),
-        );
-        scores.add(regionSharpness(g.values, g.width, g.height, crop));
-      } catch (_) {
-        scores.add(0);
-      }
-    }
-    final order = sharpestFirst(scores);
-    debugPrint('Burst sharpness: $scores → $order');
-    if (merge && order.length >= 2) {
-      try {
-        final (out, used, errs) = await mergeZoomRegion(
-          [for (final i in order) paths[i]],
-          crop,
-          (await getTemporaryDirectory()).path,
-        );
-        // v11.30 key builds: merge result + alignment error per frame.
-        final dbg = mergeDebugText(used, paths.length, errs);
-        debugPrint('Zoom merge: $dbg');
-        if (used >= 2) {
-          return (
-            out,
-            AiConfig.hasEmbeddedApiKey
-                ? dbg
-                : 'Merged $used of ${paths.length} frames',
-          );
-        }
-        return (
-          paths[order.first],
-          AiConfig.hasEmbeddedApiKey ? dbg : 'Sharpest of ${paths.length}',
-        );
-      } catch (e) {
-        debugPrint('Zoom merge failed: $e');
-      }
-    }
-    return (paths[order.first], 'Sharpest of ${paths.length}');
   }
 
   void _showBlockedNote(ModeBlock b) {
@@ -4277,64 +4059,14 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   // ---- Capture helpers -----------------------------------------------------
 
-  /// HDR: 3 frames at 0 / −s / +s EV, aligned + exposure-fused on device.
+  /// v11.67 HDR (no mode routes here since v11.49): ONE frame, no
+  /// exposure bracket / merge.
   Future<String> _takeHdr(
     CameraController c,
     void Function(String note) onNote,
   ) async {
-    final ourAf = await _preCapture();
-    var minEv = 0.0;
-    var maxEv = 0.0;
-    try {
-      minEv = await c.getMinExposureOffset();
-      maxEv = await c.getMaxExposureOffset();
-    } catch (_) {}
-    final plan = hdrBracketEv(minEv: minEv, maxEv: maxEv);
-    final paths = <String>[];
-    try {
-      if (plan.isEmpty) {
-        onNote('HDR not supported here · single photo');
-        return (await c.takePicture()).path;
-      }
-      for (final ev in plan) {
-        if (!identical(c, _controller) || !c.value.isInitialized) break;
-        try {
-          await c.setExposureOffset(ev);
-          // Let AE settle on the new compensation.
-          await Future<void>.delayed(const Duration(milliseconds: 150));
-        } catch (_) {}
-        try {
-          paths.add((await c.takePicture()).path);
-        } catch (e) {
-          if (paths.isEmpty) rethrow;
-          break;
-        }
-      }
-    } finally {
-      try {
-        await c.setExposureOffset(0);
-      } catch (_) {}
-      unawaited(_focus.afterCapture(ourAf));
-    }
-    if (mounted) setState(() => _holdSteady = false);
-    if (paths.length < 2) {
-      onNote('HDR · single photo');
-      return paths.first;
-    }
-    try {
-      final r = await mergeHdrFiles(paths, File(paths.first).parent.path);
-      debugPrint('HDR merge: ${r.used}/${paths.length}, shifts ${r.shifts}');
-      onNote(
-        r.used >= 2
-            ? 'HDR · ${r.used} exposures merged'
-            : 'HDR · single photo (camera moved)',
-      );
-      return r.path;
-    } catch (e) {
-      debugPrint('HDR merge failed: $e');
-      onNote('HDR · single photo');
-      return paths.first;
-    }
+    onNote('Single frame');
+    return _takeSingle(c);
   }
 
   /// Document: Google's on-device scanner (edge detect, crop, clean-up)

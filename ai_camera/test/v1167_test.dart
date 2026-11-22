@@ -2,6 +2,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+
+import 'package:camera/camera.dart' show ExposureMode, FocusMode;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -14,8 +16,21 @@ import 'package:ai_camera/services/mode_prompts.dart';
 import 'package:ai_camera/services/openrouter_client.dart';
 import 'package:ai_camera/services/server_api_client.dart';
 import 'package:ai_camera/services/subject_detector.dart';
+import 'package:ai_camera/services/tap_focus.dart';
 import 'package:ai_camera/services/macro_gates.dart';
 import 'package:ai_camera/services/zoom_range.dart';
+
+class _Ops implements FocusOps {
+  final calls = <String>[];
+  @override
+  Future<void> setFocusPoint(Offset? p) async => calls.add('AF:$p');
+  @override
+  Future<void> setExposurePoint(Offset? p) async => calls.add('AE:$p');
+  @override
+  Future<void> setFocusMode(FocusMode m) async => calls.add('AFmode:${m.name}');
+  @override
+  Future<void> setExposureMode(ExposureMode m) async => calls.add('AEmode:${m.name}');
+}
 
 http.Response _reply(String text) => http.Response(
   jsonEncode({
@@ -339,6 +354,57 @@ void main() {
       final sc = File('lib/services/server_api_client.dart').readAsStringSync();
       expect(sc, contains("if (gate != null) 'simple_macro': 'true',"));
       expect(sc, contains("'gate_visible': gate.visible,"));
+    });
+  });
+
+  group('4: one frame everywhere except Night; no AF pass when focused', () {
+    test('no burst / merge / HDR bracket at the shutter', () {
+      expect(home, isNot(contains('_zoomBurst(')));
+      expect(home, isNot(contains('_burstSharpest(')));
+      expect(home, isNot(contains('nativeZoomMerge')));
+      expect(home, isNot(contains('mergeHdrFiles(')));
+      expect(home, isNot(contains('mergeZoomRegion(')));
+      expect(home, contains("onNote('Single frame');\n    return _takeSingle(c);"));
+      expect(home, contains('// v11.67: ONE frame (no sharpest-of burst, no low-end merge).'));
+      // Night keeps its burst + merge
+      expect(home, contains('NightBridge.capture('));
+      expect(home, contains('NightBridge.mergeJpegs('));
+      // the camera zoom moved for the macro still → always one AF pass
+      expect(home, contains('await _preCapture(force: moved);'));
+      expect(home, contains('_focus.afStateReader = () async {'));
+    });
+
+    test('preCapture: converged preview AF → no fresh pass', () async {
+      final ops = _Ops();
+      final f = TapFocusController();
+      await f.attach(ops);
+      ops.calls.clear();
+      var st = kAfPassiveFocused;
+      f.afStateReader = () async => st;
+      expect(await f.preCapture(), isFalse);
+      expect(ops.calls, isEmpty);
+      expect(f.lastPreCapture, 'af ok (no pass)');
+      st = kAfFocusedLocked;
+      expect(await f.preCapture(), isFalse);
+      expect(ops.calls, isEmpty);
+      // still hunting / unfocused → one centre pass as before
+      for (final s in [1, 3, 5, 6, 0]) {
+        st = s;
+        ops.calls.clear();
+        expect(await f.preCapture(), isTrue);
+        expect(ops.calls.single, startsWith('AF:Offset(0.5, 0.5)'));
+      }
+      // forced (camera zoom moved) → pass even when focused
+      st = kAfPassiveFocused;
+      ops.calls.clear();
+      expect(await f.preCapture(force: true), isTrue);
+      expect(ops.calls, hasLength(1));
+      // unknown state (no reader) → pass as before
+      f.afStateReader = null;
+      ops.calls.clear();
+      expect(await f.preCapture(), isTrue);
+      expect(afConverged(null), isFalse);
+      f.dispose();
     });
   });
 }
