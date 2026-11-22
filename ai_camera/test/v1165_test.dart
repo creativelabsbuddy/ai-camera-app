@@ -55,8 +55,8 @@ class _Be implements VideoBackend {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.66+79', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.66+79'));
+  test('version 1.11.67+80', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.67+80'));
   });
 
   group('prompts', () {

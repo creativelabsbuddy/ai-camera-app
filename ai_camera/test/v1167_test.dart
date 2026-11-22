@@ -48,6 +48,10 @@ http.Response _reply(String text) => http.Response(
 );
 
 void main() {
+  test('version 1.11.67+80', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.67+80'));
+  });
+
   final home = File('lib/screens/home_camera_screen.dart').readAsStringSync();
 
   group('1: Microscope / Extreme / Ultra 15x via digital crop', () {
