@@ -887,7 +887,7 @@ def macro_input_plan(level):
 # v11.66 (= Dart kMicroStepsLine): Microscope / Extreme / Ultra with the 1.5x / 5x
 # zoom-gate photos — put in front of the level prompt.
 MICRO_STEPS_LINE = (
-    "The first photos show the same object at 1.5x and 5x zoom; the red box marks the spot that is zoomed in. The last photo is the final zoomed frame of that spot. Use the earlier photos only to understand the object, its material and its true colours; do not draw the whole object. Create this image of the spot in the last photo:"
+    "The first photos show the same object at lower zoom (5x / 10x); the red box marks the spot that is zoomed in. The last photo is the final zoomed frame of that spot. Use the earlier photos only to understand the object, its material and its true colours; do not draw the whole object. Create this image of the spot in the last photo:"
 )
 
 
@@ -951,3 +951,155 @@ def zoom_source_prompt(style_prompt: str | None = None, color_prompt: str | None
     if color_prompt and color_prompt.strip():
         parts.append(f"Color look: {color_prompt.strip()} {COLOR_FILTER_TAIL}")
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# v11.67 zoom-gate detection for EVERY macro level (= Dart gate_detect.dart).
+# The zoom stops at 5x and 10x; one photo each, Flash-Lite describes it. The
+# 10x call gets the 5x answer (connected detections).
+# ---------------------------------------------------------------------------
+
+GATE_DETECT_MAX_TOKENS = 300  # measured ~190 needed for the JSON
+
+GATE_DETECT_5_PROMPT = (
+    "Look at this photo. What is the object in the centre box (red outline), and what else is in the frame? "
+    "Describe what is visible: colours, texture, shapes, patterns, raised or sunken areas, marks, text or symbols if any. "
+    "Only what is really visible; do not guess. Keep visible under 40 words. "
+    'Reply only as JSON {"object": "<object name>", "context": "<what else is in the frame>", "visible": "<what is visible>"}.'
+)
+
+GATE_DETECT_10_PROMPT = (
+    "Earlier (5x) this was seen: {earlier}. Now zoomed in: which part of that object is in the centre box (red outline), "
+    "and what is visible on that part (colours, texture, shapes, raised/sunken areas, marks, text/symbols)? "
+    "If it is a different object now, say so. Keep visible under 40 words. "
+    'Reply only as JSON {"object": "<object name>", "part": "<part of the object>", "visible": "<what is visible>", "same_object": true}.'
+)
+
+GATE_VISIBLE_MAX_WORDS = 45
+_VISIBLE_RE = re.compile(r"[^A-Za-z0-9 ,.;:&'()/%+-]+")
+
+
+def sanitize_visible(raw: Optional[str]) -> str:
+    """Free model text (visible / context): plain words + simple punctuation,
+    ≤45 words, ≤320 chars (= Dart sanitizeVisible)."""
+    s = _VISIBLE_RE.sub(" ", raw or "")
+    words = [w for w in s.strip().split() if w]
+    s = " ".join(words[:GATE_VISIBLE_MAX_WORDS])[:320]
+    return re.sub(r"[,;:]+$", "", s.strip()).strip()
+
+
+def gate_object_name(raw: Optional[str]) -> str:
+    """≤8 plain words; '' when vague (= Dart gateObjectName)."""
+    n = sanitize_detected(raw)
+    return n if n and not is_vague_detect(n) else ""
+
+
+def gate_earlier_json(earlier: Optional[dict]) -> str:
+    """The 5x answer for the 10x prompt (cleaned; '' when nothing usable)."""
+    if not isinstance(earlier, dict):
+        return ""
+    obj = gate_object_name(earlier.get("object") if isinstance(earlier.get("object"), str) else "")
+    ctx = sanitize_visible(earlier.get("context") if isinstance(earlier.get("context"), str) else "")
+    part = sanitize_detected(earlier.get("part") if isinstance(earlier.get("part"), str) else "")
+    vis = sanitize_visible(earlier.get("visible") if isinstance(earlier.get("visible"), str) else "")
+    if not (obj or part or vis):
+        return ""
+    d = {"object": obj}
+    if ctx:
+        d["context"] = ctx
+    if part:
+        d["part"] = part
+    d["visible"] = vis
+    return json.dumps(d, ensure_ascii=False, separators=(",", ":"))
+
+
+def gate_detect_prompt(earlier_json: str) -> str:
+    """5x prompt (first look) or the 10x prompt with the 5x answer."""
+    return (GATE_DETECT_10_PROMPT.replace("{earlier}", earlier_json) if earlier_json
+            else GATE_DETECT_5_PROMPT)
+
+
+def parse_gate_reply(text: Optional[str]) -> dict:
+    """Model reply → {object, context, part, visible, same_object}; empty
+    strings / None when nothing usable."""
+    out = {"object": "", "context": "", "part": "", "visible": "", "same_object": None}
+    m = re.search(r"\{.*\}", (text or "").strip(), re.S)
+    if not m:
+        return out
+    try:
+        j = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return out
+    if not isinstance(j, dict):
+        return out
+
+    def s(k):
+        v = j.get(k)
+        return v if isinstance(v, str) else ""
+
+    so = j.get("same_object")
+    out.update(object=gate_object_name(s("object")), context=sanitize_visible(s("context")),
+               part=sanitize_detected(s("part")), visible=sanitize_visible(s("visible")),
+               same_object=so if isinstance(so, bool) else None)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# v11.67 simple final prompts (Macro, Close, Microscope) filled from the 5x /
+# 10x gate detections (= Dart simpleMacroPrompt). Extreme / Ultra unchanged.
+# ---------------------------------------------------------------------------
+
+SIMPLE_MACRO_LEVELS = ("macro", "close", "microscope")
+SIMPLE_MACRO_PROMPT = "This is a {object}. Show it as a sharp macro-lens close-up."
+SIMPLE_CLOSE_PROMPT = (
+    "This is a {object}, {part}. Show it as an extreme macro close-up with fine surface detail."
+)
+SIMPLE_MICROSCOPE_PROMPT = (
+    "This is a {object}, zoomed on {part}, showing {visible}. Show how it would look under a "
+    "light microscope at 100x magnification."
+)
+
+
+def with_article(noun: str) -> str:
+    n = (noun or "").strip()
+    if not n:
+        return n
+    if re.match(r"^(a|an|the|some)\s", n, re.I):
+        return n
+    return f"{'an' if n[0].lower() in 'aeiou' else 'a'} {n}"
+
+
+def simple_macro_prompt(level: Optional[str], obj: Optional[str] = None,
+                        part: Optional[str] = None, visible: Optional[str] = None) -> Optional[str]:
+    """v11.67 simple prompt for [level] (None = not a simple level). Missing
+    fields degrade gracefully: no object → "this object"; a missing part /
+    visible clause is left out."""
+    if level not in SIMPLE_MACRO_LEVELS:
+        return None
+    o = sanitize_detected(obj)
+    if o in ("the subject", "close-up") or is_vague_detect(o):
+        o = ""
+    pt = sanitize_detected(part)
+    if pt == o:
+        pt = ""
+    v = re.sub(r"\s+", " ", _VISIBLE_RE.sub(" ", visible or "")).strip()
+    v = re.sub(r"[\s.,;:]+$", "", v)
+    thing = with_article(o) if o else "this object"
+    lead = f"This is {thing}"
+    if level == "macro":
+        return ("Show this object as a sharp macro-lens close-up." if not o
+                else SIMPLE_MACRO_PROMPT.replace("a {object}", thing))
+    if level == "close":
+        if not o and not pt:
+            return "Show this object as an extreme macro close-up with fine surface detail."
+        return (f"{lead}{', ' + pt if pt else ''}. Show it as an extreme macro close-up "
+                "with fine surface detail.")
+    if not o and not pt and not v:
+        return "Show how this object would look under a light microscope at 100x magnification."
+    return (f"{lead}{', zoomed on ' + pt if pt else ''}{', showing ' + v if v else ''}. "
+            "Show how it would look under a light microscope at 100x magnification.")
+
+
+# v11.67 clear reference (= Dart kClearRefLine): image = the final frame's area
+# cut from the photo taken at the clear limit, steps[0] = the final frame.
+CLEAR_REF_LINE = "Use the first image for real detail; keep the framing of the second image."

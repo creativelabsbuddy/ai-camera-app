@@ -11,6 +11,8 @@ import 'account_service.dart';
 import 'ai_call.dart';
 import 'entitlements.dart';
 import 'image_guard.dart';
+import 'clear_ref.dart' show kClearRefLine;
+import 'gate_detect.dart' show GateDetect;
 import 'macro.dart' show macroCreditsFor, macroInputPlan;
 import 'local_filters.dart';
 import 'color_match.dart';
@@ -51,7 +53,24 @@ class EnhanceJob {
     this.zoomClean = false,
     this.zoomSource,
     this.zoomSourceOnly = false,
+    this.gate,
+    this.clearRef = false,
   });
+
+  /// v11.67 [zoomSource] is the clear reference crop → kClearRefLine.
+  final bool clearRef;
+
+  /// v11.67 the 5x / 10x zoom-gate detection of a macro shot (an empty one
+  /// = the new flow without a detection, e.g. Macro below 5x). Non-null →
+  /// Macro / Close / Microscope use the simple prompts ([simpleMacro]).
+  final GateDetect? gate;
+
+  /// v11.67 simple final prompt (Macro, Close, Microscope; never Extreme /
+  /// Ultra). Sends the photo (never text-only).
+  bool get simpleMacro =>
+      aiMode == 'macro' &&
+      gate != null &&
+      kSimpleMacroLevels.contains(macroLevel);
 
   /// v11.34 high zoom (2x+ photo): the zoom clean-up prompt, final photo
   /// only (flagships, or a ladder with no matching checkpoint).
@@ -138,6 +157,7 @@ class EnhanceJob {
   bool get deepTextOnly =>
       aiMode == 'macro' &&
       !microSteps &&
+      !simpleMacro &&
       macroTextOnly(macroLevel, subject, part);
 
   /// v11.66 Microscope / Extreme / Ultra with zoom-gate photos (1.5x, 5x)
@@ -215,12 +235,20 @@ class EnhanceJob {
     // full frame). Microscope sends ONLY its own prompt.
     if (AiConfig.kHasEmbeddedKey && aiMode == 'macro') {
       // v11.12: the level prompt alone (step photos first, crop last).
-      final mp = macroPrompt(
-        subject,
-        level: macroLevel ?? 'macro',
-        zoom: zoom,
-        part: part,
-      );
+      // v11.67: Macro / Close / Microscope simple prompt from the gates.
+      final mp = simpleMacro
+          ? simpleMacroPrompt(
+              macroLevel,
+              object: gate!.object,
+              part: gate!.part,
+              visible: gate!.visible,
+            )!
+          : macroPrompt(
+              subject,
+              level: macroLevel ?? 'macro',
+              zoom: zoom,
+              part: part,
+            );
       final cf = colorFilterId;
       final cp = cf == null ? null : kColorFilterPrompts[cf];
       // v11.66: zoom-gate photos → the steps line in front.
@@ -241,6 +269,7 @@ class EnhanceJob {
       final st = stylePrompt;
       return [
         kZoomSourcePrompt,
+        if (clearRef) kClearRefLine, // v11.67
         if (st != null) 'Style: $st',
         if (cp != null) 'Color look: $cp $kColorFilterTail',
       ].join(' ');
@@ -450,6 +479,8 @@ class EnhanceService {
             zoomClean: job.isZoomClean || job.isZoomSourceOnly,
             zoomSource: job.isZoomSource && !job.isZoomSourceOnly,
             microSteps: job.microSteps && job.sentSteps.isNotEmpty,
+            gate: job.simpleMacro ? job.gate : null, // v11.67
+            clearRef: job.clearRef && job.isZoomSource, // v11.67
             mainLong: job.mainLong,
             stepLong: job.stepLong,
             cancel: tok,

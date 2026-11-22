@@ -24,7 +24,7 @@ void main() {
     expect(home, isNot(contains('macroLevelStartZoom(level')));
     expect(home, isNot(contains('await _animateZoom(kMicroscopeHintMaxZoom)')));
     // v11.66: only back to the first zoom gate (its photo comes first).
-    expect(home, contains('final gates = macroGateZooms(level, _range.hardwareMax);'));
+    expect(home, contains('final gates = macroGateZooms(level, _macroLimitFor(level));'));
   });
 
   test('3a: detect prompt asks for the name, mirrors JSON + device rule', () {
@@ -36,7 +36,9 @@ void main() {
   });
 
   test('3b/3c: sharpest patch + widest step photo for all 3 deep levels', () {
-    expect(home, contains('if (level != null && level.isMicroscopic) {'));
+    // v11.67: the gate result path runs for every level (Microscope
+    // levels still fail closed inside _fromGates).
+    expect(home, contains('final gm = await _fromGates(path, crop, level);'));
     // v11.59 F6: the detect-only fallback is gone (fails closed instead).
     expect(home, isNot(contains('widePath: _macroWidePath(snap.zoom)')));
     expect(home, contains('_snack(fail ?? kMicroNoLock)')); // v11.66

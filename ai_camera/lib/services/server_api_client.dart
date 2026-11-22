@@ -10,6 +10,7 @@ import '../config/ai_config.dart';
 import '../models/quality_tier.dart';
 import 'ai_call.dart';
 import 'entitlements.dart';
+import 'gate_detect.dart' show GateDetect;
 import 'upload_prep.dart';
 
 class ServerApiException implements Exception {
@@ -254,6 +255,8 @@ class ServerApiClient {
     bool zoomClean = false,
     bool zoomSource = false,
     bool microSteps = false,
+    GateDetect? gate,
+    bool clearRef = false,
     String? macroLevel,
     String? part,
     AiCancelToken? cancel,
@@ -313,6 +316,15 @@ class ServerApiClient {
       if (zoomSource) 'zoom_source': 'true',
       // v11.66: steps = 1.5x / 5x zoom-gate photos (Microscope levels).
       if (microSteps) 'micro_steps': 'true',
+      // v11.67: simple Macro / Close / Microscope prompt from the 5x / 10x
+      // gate detections (an older server ignores these → its old prompts).
+      if (gate != null) 'simple_macro': 'true',
+      if (gate != null && gate.object.isNotEmpty) 'gate_object': gate.object,
+      if (gate != null && gate.part.isNotEmpty) 'gate_part': gate.part,
+      if (gate != null && gate.visible.isNotEmpty)
+        'gate_visible': gate.visible,
+      // v11.67: image = clear reference crop (detail), steps[0] = final.
+      if (clearRef && zoomSource) 'clear_ref': 'true',
     });
     final resp = await _sendAi(req, aiTimeout, cancel);
     _throwIfNotOk(resp, 'Enhance');

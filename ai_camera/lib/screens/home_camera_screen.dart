@@ -26,12 +26,13 @@ import '../models/style_preset.dart';
 import '../services/account_service.dart';
 import '../services/barcode_actions.dart';
 import '../services/camera_permission.dart';
+import '../services/burst_merge.dart' show deleteQuietly, uprightSize;
 import '../services/capture_crop.dart';
+import '../services/clear_ref.dart';
 import '../services/document_scan.dart';
 import '../services/enhance_policy.dart';
 import '../services/entitlements.dart';
 import '../services/focus_mapping.dart';
-import '../services/hdr_merge.dart';
 import '../services/live_look.dart';
 import '../services/live_policies.dart';
 import '../services/frame_stats.dart';
@@ -40,6 +41,7 @@ import '../services/context_snapshot.dart';
 import '../config/ai_config.dart';
 import '../services/macro.dart';
 import '../services/macro_box.dart';
+import '../services/gate_detect.dart';
 import '../services/macro_gates.dart';
 import '../services/micro_lock.dart';
 import '../services/mode_prompts.dart' show kMacroGeneralSubject;
@@ -58,7 +60,6 @@ import '../services/pose_catalog.dart';
 import '../services/scene_suggest.dart';
 import '../services/night_pipeline.dart';
 import '../services/zoom_ladder.dart';
-import '../services/burst_merge.dart';
 import '../services/image_register.dart' show GreyImage, Similarity;
 import '../services/tracked_source.dart';
 import '../services/zoom_preview_policy.dart';
@@ -324,12 +325,20 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   /// v11.66 stepwise macro zoom: gates done (a failed photo still opens
   /// the gate so the user is never stuck), the gate photos, their detection
-  /// results (Microscope / Extreme / Ultra) and the run in flight.
+  /// results and the run in flight. v11.67: 5x / 10x gates with detection
+  /// on every level ([GateDetect]; null = detection failed).
   final Map<double, ContextSnapshot> _gateShots = {};
   final Set<double> _gatesDone = {};
-  final Map<double, ({String name, String part})> _gateInfo = {};
+  final Map<double, GateDetect?> _gateInfo = {};
   bool _gateBusy = false;
   int _gateGen = 0;
+
+  /// v11.67 clear reference (Pro AI photo past the clear limit; switch:
+  /// [kClearRefEnabled]): the one silent photo at the clear limit.
+  ClearRef? _clearRef;
+  bool _clearRefBusy = false;
+  Timer? _clearRefTimer;
+  DateTime? _clearRefFailedAt;
   final Set<MacroLevel> _levelTipsShown = {};
   int _zoomAnimGen = 0;
   String? _boxDbg; // key-build debug line (last shutter detection)
@@ -370,7 +379,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   Timer? _afReleaseTimer;
   Similarity? _prevTrack;
   double _trackMotion = 1;
-  BurstJob? _burstJob;
   bool _ladderNoteShown = false;
 
   /// v11.9 context snapshot (sharp low-zoom still for the AI).
@@ -386,6 +394,12 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _vision.addListener(_onVision);
+    // v11.67: the shutter skips a fresh AF pass when the preview's own AF
+    // already converged (camera AF state).
+    _focus.afStateReader = () async {
+      final af = (await CameraExtras.info())['afState'];
+      return af is num ? af.toInt() : null;
+    };
     // Warm the native lens probe in parallel with permission / camera open.
     unawaited(ZoomInfoService.load());
     unawaited(_loadPrefs());
@@ -761,11 +775,12 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   @override
   void dispose() {
+    _clearRefTimer?.cancel();
+    _dropClearRef();
     _gyroSub?.cancel();
     _stopFpsMeter();
     _zoomAfTimer?.cancel();
     _afReleaseTimer?.cancel();
-    _burstJob?.cancel();
     _trackWorker?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _ladderTimer?.cancel();
@@ -1121,7 +1136,22 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final want = _macroActive && _macroLevel != null
         ? math.min(requested, _macroGateCapZoom)
         : requested;
-    final plan = planZoom(requested: want, range: _range);
+    final plan0 = planZoom(requested: want, range: _range);
+    // v11.67 clear reference: until its photo is taken the camera stays at
+    // the clear limit (the rest is a centre crop on the preview meanwhile).
+    final hold = clearRefHold(
+      active: _clearRefWanted,
+      selected: plan0.selected,
+      cameraZoom: plan0.cameraZoom,
+      limit: _clearRefLimit,
+    );
+    final plan = hold == null
+        ? plan0
+        : ZoomPlan(
+            selected: plan0.selected,
+            cameraZoom: hold,
+            digitalZoom: plan0.selected / hold,
+          );
     if ((plan.selected - _zoom).abs() < 0.005 &&
         (plan.digitalZoom - _digitalZoom).abs() < 0.001 &&
         _pendingZoom == null) {
@@ -1146,6 +1176,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _scheduleContextSnap();
     _onLadderZoom();
     _onMacroZoom();
+    _onClearRefZoom();
 
     final target = plan.cameraZoom;
     if ((target - _cameraZoom).abs() < 0.005 && _pendingZoom == null) return;
@@ -1238,8 +1269,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   }
 
   /// v11.36: no centre AF pass while the far-bright latch holds focus.
-  Future<bool> _preCapture() =>
-      _brightApplied ? Future.value(false) : _focus.preCapture();
+  Future<bool> _preCapture({bool force = false}) => _brightApplied
+      ? Future.value(false)
+      : _focus.preCapture(force: force);
 
   /// v11.36: Zoom mode is on and usable (Pro AI photo, back camera).
   bool get _zoomModeActive =>
@@ -1803,6 +1835,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         }
       }
       await _awaitContextSnap();
+      await _awaitClearRef(); // v11.67: a reference photo in flight
       if (!mounted) return;
       _captureLock = true;
       try {
@@ -1872,6 +1905,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     String? microSpot; // v11.47 Microscope detected spot
     String? captureNote;
     List<ContextSnapshot>? gateSteps; // v11.66 zoom-gate photos
+    GateDetect? gateDetect; // v11.67 5x / 10x detection at the shutter
     setState(() {
       _processingCapture = true;
       _holdSteady = hdr;
@@ -1885,15 +1919,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         ? zoomFlowFor(ai: snap.ai, lowEnd: _macroLowEnd, zoom: snap.zoom)
         : ZoomFlow.normal;
     if (flow == ZoomFlow.ladder) await _awaitLadderShot();
-    // v11.9 coverage kept: Pro AI Zoom mode at ≥ 2x on cheap phones.
-    final nativeZoomMerge =
-        snap.ai &&
-        _zoomModeActive &&
-        shouldMergeZoom(
-          lowEnd: _macroLowEnd,
-          zoom: snap.zoom,
-          opticalLimit: snap.optical.opticalLimit,
-        );
+    // v11.67: ONE frame at the shutter everywhere except Night (the cheap-
+    // phone zoom burst / native zoom merge is gone).
     // v11.60: the tracked view at the shutter (fresh + valid only).
     // Same device orientation + a verified still rotation required.
     final trackOk =
@@ -1912,18 +1939,21 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     try {
       await _waitZoomSettled();
       if (hdr) {
+        // v11.67: no multi-exposure HDR any more (one frame).
         shotPath = await _takeHdr(c, (note) => captureNote = note);
       } else if (macro) {
         var (path, note, crop) = await _takeMacro(c);
         String? lockName;
         String? lockPart;
-        if (level != null && level.isMicroscopic) {
-          // v11.66: the zoom gates (1.5x name, 5x subject + part) already
-          // ran; no pixel match, no retake. Not past 1.5x or a fully
-          // blurry final frame → fail closed.
-          final gm = await _microFromGates(path, crop);
+        if (level != null) {
+          // v11.67: the zoom gates (5x object, 10x part, every level)
+          // already ran; no pixel match, no retake. Microscope levels not
+          // past 5x or a fully blurry final frame → fail closed.
+          final gm = await _fromGates(path, crop, level);
           lockName = gm.lock;
           lockPart = gm.part;
+          // v11.67: the gate detection (empty = none) → simple prompts.
+          gateDetect = gm.detect ?? const GateDetect();
           if (!mounted) return;
           final fail = gm.fail;
           if (fail != null || lockName == null || lockPart == null) {
@@ -1939,9 +1969,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           }
           note = '$note · locked: '
               '${lockName == kMacroGeneralSubject ? '(vague)' : lockName}';
-          gateSteps = _gateStepPhotos();
-        } else if (level != null) {
-          // v11.66 Macro / Close: the 2x / 5x zoom-gate photos (no detection).
+          if (_boxDbg != null && AiConfig.hasEmbeddedApiKey) {
+            note = '$note · ${_boxDbg!.replaceAll('\n', ' | ')}';
+          }
+          // Gate photos (5x, 10x below the shot) go with the final frame.
           gateSteps = _gateStepPhotos();
         }
         shotPath = path;
@@ -1957,27 +1988,14 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           // v11.58: locked object + its part → material-aware text prompt.
           microSpot = lockPart;
           subject = lockName;
+        } else if (level != null && lockName != null) {
+          // v11.67 Macro / Close: the gate-detected object (or the
+          // general subject below 5x / when vague).
+          subject = lockName;
         } else {
           subject = kMacroGeneralSubject;
         }
         if (!mounted) return;
-      } else if (route.capture == CaptureKind.single &&
-          route.aiMode == 'photo' &&
-          _shootMode == ShootMode.photo &&
-          (!_aiMode || _zoomModeActive) &&
-          _macroLowEnd &&
-          _lens == CameraLensDirection.back &&
-          (snap.digital > 1.2 || nativeZoomMerge)) {
-        // v11.60 cheap phones: digitally zoomed (Normal, offline too) or a
-        // Pro AI Zoom-mode shot at 2x … native max (v11.9 merge coverage,
-        // now banded). Short adaptive burst, aligned robust denoise merge.
-        final b = await _zoomBurst(c, snap, nativeZoom: nativeZoomMerge);
-        shotPath = b.path;
-        captureNote = b.note;
-        if (b.frac != null) {
-          finalFrac = b.frac;
-          snap = snap.withDigital(1.0);
-        }
       } else {
         shotPath = await _takeSingle(c);
       }
@@ -2006,6 +2024,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       spotSource: macro ? _detector.lastSpotModel : null,
       macroLevel: level,
       gateSteps: gateSteps,
+      gateDetect: gateDetect,
       zoomFlow: flow,
       trackAtShutter: trackAtShutter,
       trackRot: trackRot,
@@ -2033,6 +2052,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     String? spotSource,
     MacroLevel? macroLevel,
     List<ContextSnapshot>? gateSteps,
+    GateDetect? gateDetect,
     CaptureMode? modeOverride,
     ZoomFlow zoomFlow = ZoomFlow.normal,
     Similarity? trackAtShutter,
@@ -2074,13 +2094,15 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         : null;
     // v11.40: wider context photos (Macro / Close / Extreme / Ultra).
     // v11.66: the zoom-gate photos (sent whole, the shot area boxed).
+    // v11.67: a gate photo just below the shot (10x gate, 11x shot) is sent
+    // too; only one at the same zoom as the shot is skipped.
     final gated = gateSteps != null && gateSteps.isNotEmpty;
     final macroCtx = aiModeId == 'macro' && snap.ai
         ? [
             for (final s in gateSteps ?? const <ContextSnapshot>[])
               if (File(s.path).existsSync() &&
                   snapshotRegionZoom(snap.zoom, s.cameraZoom) >=
-                      kMacroCtxMinWider)
+                      (gated ? kGateStepMinWider : kMacroCtxMinWider))
                 s,
           ]
         : const <ContextSnapshot>[];
@@ -2122,8 +2144,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         // wider, never nearly the same area). v11.60: ladder references are
         // cut at their TRACKED region below, not at the centre here.
         stepCropMargin: macroCtx.isNotEmpty
-            ? (gated && (macroLevel?.isMicroscopic ?? false)
-                  ? 0
+            ? (gated
+                  ? 0 // v11.67: gate photos whole (shot area boxed), all levels
                   : kMacroCtxMargin)
             : microHint == null
             ? 0
@@ -2235,6 +2257,20 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       }
       if (beyond) zoomLabel = kBeyondClearLabel;
     }
+    // v11.67 clear reference: the final frame's area from the photo taken at
+    // the clear limit goes FIRST (detail), the final frame second (framing).
+    var clearRef = false;
+    if (snap.ai && aiModeId == 'photo' && modeOverride != CaptureMode.normal) {
+      final (src, dbg) = await _clearRefSource(snap, crop.path);
+      if (src != null) {
+        zoomSource = src;
+        zoomSourceOnly = false;
+        clearRef = true;
+      }
+      if (dbg != null && AiConfig.hasEmbeddedApiKey) {
+        captureNote = captureNote == null ? dbg : '$captureNote · $dbg';
+      }
+    }
     if (!mounted) return;
     ZoomInfoService.lastCaptureCalibration = _calibrationLine(
       selected: snap.zoom,
@@ -2302,9 +2338,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           zoomLadder: false,
           zoomSourceFile: zoomSource,
           zoomSourceOnly: zoomSourceOnly,
+          clearRef: clearRef,
           zoomLabel: zoomLabel,
           zoomClean: zoomFlow != ZoomFlow.normal,
           macroLevel: macroLevel,
+          gateDetect: gateDetect,
           captureNote: captureNote,
         ),
       ),
@@ -2326,132 +2364,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     setState(() => _nightFlash = FlashChoice.on);
     unawaited(_savePref(_kNightFlashKey, _nightFlash.name));
     _showToast('Night · Flash on');
-  }
-
-  /// v11.60 zoom burst: [kBurstMinFrames]–[kBurstMaxFrames] stills while
-  /// they fit [kBurstBudgetMs] (a slow capture ends it), only the zoomed
-  /// region (+ margin) decoded, merged in a cancellable isolate. Returns
-  /// the merged REGION (frac = its share of the still) or, when not
-  /// merged, the first full still (frac null). Temporary files removed.
-  Future<({String path, String? note, (double, double)? frac})> _zoomBurst(
-    CameraController c,
-    _ShotSnap snap, {
-    bool nativeZoom = false,
-  }) async {
-    final ourAf = await _preCapture();
-    final paths = <String>[];
-    final sw = Stopwatch()..start();
-    var lastMs = 0;
-    (int, int)? size;
-    CropRect? rect;
-    if (mounted) setState(() => _holdSteady = true);
-    try {
-      while (burstWantsMore(
-        taken: paths.length,
-        elapsedMs: sw.elapsedMilliseconds,
-        lastCaptureMs: lastMs,
-      )) {
-        if (!mounted || !identical(c, _controller) || !c.value.isInitialized) {
-          break;
-        }
-        final t0 = sw.elapsedMilliseconds;
-        try {
-          paths.add((await c.takePicture()).path);
-        } catch (e) {
-          if (paths.isEmpty) rethrow;
-          break;
-        }
-        lastMs = sw.elapsedMilliseconds - t0;
-        if (paths.length == 1) {
-          final sz = await uprightSize(paths.first);
-          size = sz;
-          final r = computeCaptureCrop(
-            iw: sz.$1,
-            ih: sz.$2,
-            portraitRatio: snap.ratio.portrait,
-            digitalZoom: snap.digital,
-          );
-          rect = r;
-          if (!shouldBurstZoom(
-            lowEnd: true,
-            digital: snap.digital,
-            regionPixels: r.width * r.height,
-            plainPhoto: true,
-            nativeZoom: nativeZoom,
-          )) {
-            break; // region too large for a safe merge → single shot
-          }
-        }
-      }
-    } finally {
-      unawaited(_focus.afterCapture(ourAf));
-      if (mounted) {
-        setState(() {
-          _holdSteady = false;
-          _afterFrames = true;
-        });
-      }
-    }
-    final ms = sw.elapsedMilliseconds;
-    final sz = size, r = rect;
-    if (paths.length < 2 || sz == null || r == null || !mounted) {
-      _deletePaths(paths.skip(1).toList());
-      return (path: paths.first, note: null, frac: null);
-    }
-    final (iw, ih) = sz;
-    final mx = (r.width * kBurstMargin).round();
-    final my = (r.height * kBurstMargin).round();
-    final ox = math.max(0, r.x - mx), oy = math.max(0, r.y - my);
-    final ow = math.min(iw, r.x + r.width + mx) - ox;
-    final oh = math.min(ih, r.y + r.height + my) - oy;
-    final dir = (await getTemporaryDirectory()).path;
-    final stamp = DateTime.now().millisecondsSinceEpoch;
-    final out = '$dir/zoomburst_$stamp.jpg';
-    try {
-      // Banded merge in a killable isolate (native region decode per band:
-      // memory stays bounded for full 2x … native-max frames).
-      final job = await BurstJob.start(
-        paths: paths,
-        region: (ox, oy, ow, oh),
-        inner: (r.x - ox, r.y - oy, r.width, r.height),
-        outJpeg: out,
-      );
-      _burstJob = job;
-      final res = await job.result;
-      _burstJob = null;
-      if (res == null) throw StateError('merge cancelled / failed');
-      if (!mounted) {
-        deleteQuietly([out, ...paths]);
-        return (path: paths.first, note: null, frac: null);
-      }
-      final n = paths.length;
-      if (res.timedOut || !File(out).existsSync()) {
-        // Over budget: the sharpest frame's own full photo (no half merge).
-        final keep = paths[res.anchor];
-        _deletePaths([for (final p in paths) if (p != keep) p]);
-        deleteQuietly([out]);
-        return (
-          path: keep,
-          note: AiConfig.hasEmbeddedApiKey
-              ? 'Zoom burst $n frames ${ms}ms · merge over time → sharpest'
-              : 'Sharpest of $n',
-          frac: null,
-        );
-      }
-      _deletePaths(paths);
-      final note = AiConfig.hasEmbeddedApiKey
-          ? 'Zoom burst $n frames ${ms}ms · ${res.debugText}'
-          : res.used >= 2
-          ? 'Merged ${res.used} of $n frames'
-          : 'Sharpest of $n';
-      debugPrint('Zoom burst: $note');
-      return (path: out, note: note, frac: (r.width / iw, r.height / ih));
-    } catch (e) {
-      debugPrint('Zoom burst merge failed: $e');
-      deleteQuietly([out]);
-      _deletePaths(paths.skip(1).toList());
-      return (path: paths.first, note: 'Single frame', frac: null);
-    }
   }
 
   Future<String> _takeSingle(CameraController c) async {
@@ -2836,13 +2748,23 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   bool get _macroActive => _shootMode == ShootMode.macro && _aiMode;
 
   /// Max zoom for the macro levels: min(10x, device max) (v11.41).
-  /// v11.66: Microscope / Extreme / Ultra min(15x, device max).
-  double get _macroMaxZoom =>
-      macroLevelZoomMax(_macroLevel, _range.hardwareMax);
+  /// v11.66: Microscope / Extreme / Ultra 15x. v11.67: past the camera's
+  /// own max (S24 Ultra 10x) by a centre digital crop, like Normal mode.
+  double get _macroMaxZoom => macroLevelZoomMax(_macroLevel, _macroLimit);
+
+  /// v11.67 zoom limit for [level]: camera max, or (Microscope / Extreme /
+  /// Ultra) the display max reached by digital crop.
+  double _macroLimitFor(MacroLevel? level) => macroZoomLimit(
+    level,
+    hardwareMax: _range.hardwareMax,
+    displayMax: _range.displayMax,
+  );
+
+  double get _macroLimit => _macroLimitFor(_macroLevel);
 
   /// v11.66: zoom stops at the next gate not done yet (else the level max).
   double get _macroGateCapZoom =>
-      macroGateCap(_macroLevel, _range.hardwareMax, _gatesDone);
+      macroGateCap(_macroLevel, _macroLimit, _gatesDone);
 
   /// Smooth automatic zoom (~1 s, eased; never jumps). A pinch or a new
   /// animation stops it.
@@ -2977,6 +2899,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _resetGates(); // v11.66: a new level starts its zoom gates again
     if (level == null) {
       _dropMicroHint(); // v11.49: 1x chip = no level, zoom stays
+      // v11.67: back within the plain macro max (a 15x crop zoom from
+      // Microscope / Extreme / Ultra is not kept without the level).
+      if (_zoom > _macroMaxZoom + 0.01) await _animateZoom(_macroMaxZoom);
       return;
     }
     _showToast(
@@ -2988,7 +2913,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     if (!mounted || _macroLevel != level) return;
     // Safety only: stay within the macro max (min(10x, phone max)).
     // v11.66: past the first zoom gate → back to it (its photo comes first).
-    final gates = macroGateZooms(level, _range.hardwareMax);
+    final gates = macroGateZooms(level, _macroLimitFor(level));
     final keep = gates.isNotEmpty && _zoom > gates.first + 0.01
         ? gates.first
         : math.min(_zoom, _macroMaxZoom).clamp(1.0, _macroMaxZoom).toDouble();
@@ -3029,19 +2954,23 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (drop.isNotEmpty) _dropGates(drop);
     }
     if (_gateBusy || _processingCapture || _captureLock) return;
-    final g = macroGateDue(level, _range.hardwareMax, _gatesDone, _zoom);
+    final g = macroGateDue(level, _macroLimitFor(level), _gatesDone, _zoom);
     if (g != null) unawaited(_runMacroGate(g));
   }
 
   void _dropGates(Iterable<double> gates) {
+    var had = false;
     for (final g in gates.toList()) {
       _gatesDone.remove(g);
+      had = _gateInfo.containsKey(g) || had;
       _gateInfo.remove(g);
       final shot = _gateShots.remove(g);
       if (shot != null) {
         unawaited(File(shot.path).delete().then((_) {}, onError: (_) {}));
       }
     }
+    // v11.67: the debug line forgets a dropped gate's detection too.
+    if (had) _boxDbg = _gateInfo.isEmpty ? null : _gateDebug();
   }
 
   /// Level change / new macro flow: every gate forgotten, a run in flight
@@ -3053,9 +2982,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   }
 
   /// v11.66 one gate: the zoom is held at [g], the phone focuses on the
-  /// centre, takes a photo, and (Microscope levels) names the object in the
-  /// centre box (1.5x) / checks subject + part (5x). Only then the gate
-  /// opens and the zoom can go further.
+  /// centre, takes ONE photo, and Flash-Lite describes it (v11.67: every
+  /// level; 5x object + what is around it, 10x the part of that object,
+  /// told the 5x answer). Only then the gate opens and the zoom can go
+  /// further.
   Future<void> _runMacroGate(double g) async {
     final c = _controller;
     final level = _macroLevel;
@@ -3082,7 +3012,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         cameraZoom: cam,
         at: DateTime.now(),
       );
-      if (level.isMicroscopic) await _detectAtGate(g, shot.path, dig, gen);
+      // v11.67: every level detects at its gates (5x object, 10x part).
+      await _detectAtGate(g, shot.path, dig, gen);
       ok = true;
     } catch (e) {
       debugPrint('Macro gate ${g}x failed: $e');
@@ -3099,10 +3030,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     }
   }
 
-  /// v11.66 Microscope / Extreme / Ultra gate detection (Flash-Lite). The
-  /// first gate names the object in the centre box; a later gate checks the
-  /// part of that object, and a new subject (not in the earlier photo) is
-  /// named again so the lock follows what the user zoomed to.
+  /// v11.67 gate detection (Flash-Lite), every macro level. The photo is
+  /// cut to the user's view (digital crop) and the centre box drawn. 5x:
+  /// object in the box + what else is in the frame + what is visible. 10x:
+  /// the 5x answer goes along; the part of that object in the box + what is
+  /// visible on it; a different object → the lock follows it.
   Future<void> _detectAtGate(
     double g,
     String path,
@@ -3116,65 +3048,30 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       return out;
     }
 
-    Future<({String name, String part})?> nameIt() async {
-      final view = await tmp(writeZoomCrop(path, dig));
-      final box = await tmp(writeZoomCrop(path, dig / kMacroBoxFraction));
-      final r = await _detector.detectMicroNameTimed(File(view), File(box));
-      if (r == null) return null;
-      final (name, part) = r;
-      return (name: isUsableLock(name) ? name : '', part: part);
-    }
-
     try {
+      final view = await tmp(writeZoomCrop(path, dig));
+      final boxed = await tmp(writeZoomBoxed(view, 1 / kMacroBoxFraction));
       final lower = [
         for (final k in _gateInfo.keys)
-          if (k < g && _gateShots[k] != null) k,
+          if (k < g && _gateInfo[k] != null) k,
       ];
-      final prev = lower.isEmpty ? null : _gateInfo[lower.reduce(math.max)];
-      final prevShot = lower.isEmpty ? null : _gateShots[lower.reduce(math.max)];
-      if (prev == null || prevShot == null) {
-        final r = await nameIt();
-        if (gen != _gateGen) return;
-        _gateInfo[g] = r ?? (name: '', part: '');
-        _boxDbg = macroGateDebug(g, r?.name, r?.part ?? '');
-      } else {
-        final boxed = await tmp(writeZoomBoxed(path, dig));
-        _detector.cancelInFlight();
-        final pr = await _detector
-            .detectMicroPart(
-              File(prevShot.path),
-              File(boxed),
-              prev.name.isEmpty ? 'object' : prev.name,
-            )
-            .timeout(
-              kDetectSubjectTimeout,
-              onTimeout: () {
-                _detector.cancelInFlight('timeout');
-                return null;
-              },
-            );
-        if (gen != _gateGen) return;
-        if (pr?.sameSubject == false) {
-          // The user moved to another subject → the lock follows it.
-          final r = await nameIt();
-          if (gen != _gateGen) return;
-          _gateInfo[g] = r ?? (name: '', part: '');
-          _boxDbg = macroGateDebug(
-            g,
-            r?.name,
-            r?.part ?? '',
-            newSubject: true,
-          );
-        } else {
-          final part = (pr?.part ?? '').isNotEmpty ? pr!.part : prev.part;
-          _gateInfo[g] = (name: prev.name, part: part);
-          _boxDbg = macroGateDebug(g, prev.name, part);
-        }
-      }
+      final earlier = lower.isEmpty ? null : _gateInfo[lower.reduce(math.max)];
+      final r = await _detector.detectGateTimed(
+        File(boxed),
+        earlier: earlier,
+        gate: g,
+        view: File(view),
+      );
+      if (gen != _gateGen) return;
+      _gateInfo[g] = r == null ? null : mergeGate(earlier, r);
+      _boxDbg = _gateDebug();
       debugPrint('Macro gate: $_boxDbg');
     } catch (e) {
       debugPrint('Macro gate detection failed: $e');
-      if (gen == _gateGen) _boxDbg = macroGateDebug(g, null, '');
+      if (gen == _gateGen) {
+        _gateInfo[g] = null;
+        _boxDbg = _gateDebug();
+      }
     } finally {
       for (final t in temps) {
         unawaited(File(t).delete().then((_) {}, onError: (_) {}));
@@ -3182,29 +3079,43 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     }
   }
 
-  /// v11.66 shutter (Microscope / Extreme / Ultra): no new detection, no
-  /// pixel match — the gates already named the object and its part. The
-  /// first gate must be done (else the AI never saw the object) and the
-  /// final frame must not be fully blurry; both fail closed (no AI call,
-  /// nothing charged).
-  Future<({String? lock, String? part, String? fail})> _microFromGates(
-    String path,
-    double crop,
-  ) async {
-    final gates = macroGateZooms(_macroLevel, _range.hardwareMax);
-    if (gates.isNotEmpty && !_gatesDone.contains(gates.first)) {
-      return (lock: null, part: null, fail: kMicroZoomFirst);
+  /// v11.67 key-build debug: the 5x / 10x detections, one line each.
+  String _gateDebug() =>
+      gateDebugText(_gateInfo.keys.toList()..sort(), _gateInfo);
+
+  /// v11.66 shutter: no new detection, no pixel match — the gates already
+  /// described the object and its part. v11.67: every level. Microscope /
+  /// Extreme / Ultra: the first gate (5x) must be done (else the AI never
+  /// saw the object) and the final frame must not be fully blurry; both
+  /// fail closed (no AI call, nothing charged). Macro / Close below 5x go
+  /// on with the final frame only and the general subject.
+  Future<
+    ({String? lock, String? part, GateDetect? detect, String? fail})
+  >
+  _fromGates(String path, double crop, MacroLevel level) async {
+    final micro = level.isMicroscopic;
+    final gates = macroGateZooms(level, _macroLimitFor(level));
+    if (micro && gates.isNotEmpty && !_gatesDone.contains(gates.first)) {
+      return (lock: null, part: null, detect: null, fail: kMicroZoomFirst);
     }
-    final sharp = await photoRegionSharpness(path, crop);
-    if (microFinalTooBlurry(sharp)) {
-      _boxDbg = 'final blur ${sharp.toStringAsFixed(1)}';
-      return (lock: null, part: null, fail: kMicroTooBlurry);
+    if (micro) {
+      final sharp = await photoRegionSharpness(path, crop);
+      if (microFinalTooBlurry(sharp)) {
+        _boxDbg = 'final blur ${sharp.toStringAsFixed(1)}';
+        return (lock: null, part: null, detect: null, fail: kMicroTooBlurry);
+      }
     }
-    final lk = macroGateLock(_gateInfo);
-    final name = lk?.name ?? '';
+    // Shutter below 10x → only the 5x detection (10x was forgotten when
+    // zooming back out); below 5x → none.
+    final lk = gateLock({
+      for (final e in _gateInfo.entries)
+        if (e.value != null) e.key: e.value!,
+    });
+    final name = lk?.object ?? '';
     return (
       lock: name.isEmpty ? kMacroGeneralSubject : name,
       part: name.isEmpty ? '' : microPartText(lk?.part ?? '', name),
+      detect: lk,
       fail: null,
     );
   }
@@ -3228,6 +3139,155 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     _macroLevel = null;
     _boxCheck.reset();
     _dropMicroHint();
+  }
+
+  // ---- v11.67 clear reference ------------------------------------------------
+
+  /// Pro AI photo on the back camera (Normal mode has no AI call; Macro
+  /// takes its still at the optical limit already + its gate photos).
+  bool get _clearRefOn =>
+      kClearRefEnabled &&
+      _snapshotMode &&
+      !_macroActive &&
+      _mode == CaptureMode.pro &&
+      _lens == CameraLensDirection.back;
+
+  /// The phone's clear limit (S24 Ultra ~10x, cheap phones ~2–3x).
+  double get _clearRefLimit => clearRefLimit(
+    lowEnd: _macroLowEnd,
+    opticalLimit: _optical.opticalLimit,
+    hardwareMax: _range.hardwareMax,
+    observedClear: _clearLimit,
+    pixelClear: _pixelClearLimit,
+  );
+
+  /// A reference is wanted now (none yet, no recent failure).
+  bool get _clearRefWanted =>
+      _clearRefOn &&
+      _clearRef == null &&
+      !_processingCapture &&
+      (_clearRefFailedAt == null ||
+          DateTime.now().difference(_clearRefFailedAt!) >
+              const Duration(seconds: 5));
+
+  /// Every zoom change: zoomed back below the limit → the reference is
+  /// stale (dropped); reaching the limit with none → take it.
+  void _onClearRefZoom() {
+    if (!_clearRefOn) {
+      _clearRefTimer?.cancel();
+      _clearRefTimer = null;
+      _dropClearRef();
+      return;
+    }
+    final lim = _clearRefLimit;
+    if (lim >= _range.displayMax - 0.01) return; // nothing past the limit
+    if (_zoom < lim - 0.05) {
+      _clearRefTimer?.cancel();
+      _clearRefTimer = null;
+      _dropClearRef();
+      return;
+    }
+    if (_clearRef != null || _clearRefBusy || !_clearRefWanted) return;
+    _clearRefTimer ??= Timer(
+      const Duration(milliseconds: 120),
+      () => unawaited(_captureClearRef()),
+    );
+  }
+
+  void _dropClearRef() {
+    final old = _clearRef?.path;
+    _clearRef = null;
+    if (old != null) {
+      unawaited(File(old).delete().then((_) {}, onError: (_) {}));
+    }
+  }
+
+  /// ONE silent photo with the camera at the clear limit (no merge), then
+  /// the camera follows the user's zoom again.
+  Future<void> _captureClearRef() async {
+    _clearRefTimer = null;
+    final c = _controller;
+    if (c == null ||
+        !c.value.isInitialized ||
+        !_clearRefWanted ||
+        _clearRefBusy ||
+        _processingCapture ||
+        _captureLock ||
+        _ladderBusy ||
+        _ctxBusy ||
+        _gateBusy ||
+        c.value.isTakingPicture ||
+        c.value.flashMode != FlashMode.off) {
+      return;
+    }
+    final lim = _clearRefLimit;
+    if (_zoom < lim - 0.05) return;
+    _clearRefBusy = true;
+    var ok = false;
+    try {
+      await _waitZoomSettled();
+      if (!mounted || !identical(c, _controller)) return;
+      final cam = _cameraZoom;
+      if (cam > lim + 0.05) return; // camera not at the limit (no hold)
+      final shot = await c.takePicture();
+      if (!mounted || !_clearRefOn || _zoom < lim - 0.05) {
+        unawaited(File(shot.path).delete().then((_) {}, onError: (_) {}));
+        return;
+      }
+      _dropClearRef();
+      _clearRef = ClearRef(path: shot.path, cameraZoom: cam, at: DateTime.now());
+      ok = true;
+      debugPrint('Clear ref @ ${cam.toStringAsFixed(2)}x');
+    } catch (e) {
+      debugPrint('Clear ref failed: $e');
+    } finally {
+      _clearRefBusy = false;
+      if (!ok) _clearRefFailedAt = DateTime.now();
+      // Release the hold: the camera follows the user's zoom again.
+      if (mounted) unawaited(_setZoom(_zoom));
+    }
+  }
+
+  /// Shutter waits for a reference photo in flight (≤1.2 s).
+  Future<void> _awaitClearRef() async {
+    for (var i = 0; i < 24 && (_clearRefBusy || _clearRefTimer != null); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  /// At the shutter: the final frame's area cut from the reference (the
+  /// detail source), or null (final only) + the debug text.
+  Future<(File?, String?)> _clearRefSource(
+    _ShotSnap snap,
+    String finalCropPath,
+  ) async {
+    if (!_clearRefOn) return (null, null);
+    final lim = _clearRefLimit;
+    if (!clearRefNeeded(snap.zoom, lim)) return (null, null);
+    final ref = _clearRef;
+    final why = clearRefStaleReason(ref, DateTime.now(), snap.zoom);
+    if (why.isNotEmpty) return (null, clearRefDebug(reason: why));
+    try {
+      final dir = (await getTemporaryDirectory()).path;
+      final (path, score) = await writeClearRefCrop(
+        refPath: ref!.path,
+        refCameraZoom: ref.cameraZoom,
+        finalZoom: snap.zoom,
+        portraitRatio: snap.ratio.portrait,
+        finalCropPath: finalCropPath,
+        outPath: '$dir/clear_ref_${DateTime.now().microsecondsSinceEpoch}.jpg',
+      );
+      if (path == null) {
+        return (null, clearRefDebug(reason: 'stale', match: score));
+      }
+      return (
+        File(path),
+        clearRefDebug(refZoom: ref.cameraZoom, match: score),
+      );
+    } catch (e) {
+      debugPrint('Clear ref crop failed: $e');
+      return (null, clearRefDebug(reason: 'failed'));
+    }
   }
 
   // ---- v11.30 100x zoom ladder (cheap phones) --------------------------------
@@ -3776,7 +3836,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   bool get _macroLowEnd => _cameraClass.lowEnd;
 
   /// v11.8 shutter: camera to the optical limit (real pixels) → settle →
-  /// centre AF → sharpest of 4 (7 on low-end) → restore the preview zoom.
+  /// centre AF → v11.67 ONE frame → restore the preview zoom.
   /// Returns (path, note, crop factor still → user's region).
   Future<(String, String, double)> _takeMacro(CameraController c) async {
     final cap = macroCaptureZoom(
@@ -3797,15 +3857,25 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         debugPrint('Macro capture zoom failed: $e');
       }
     }
-    final lowEnd = _macroLowEnd;
-    final n = macroBurstCount(lowEnd: lowEnd);
     final crop = moved ? cap.crop : _digitalZoom;
-    final ourAf = await _preCapture(); // centre AF unless tapped
+    // v11.67: no fresh AF pass when the preview AF already converged (the
+    // camera zoom moved for the still → always one pass).
+    final ourAf = await _preCapture(force: moved);
     try {
-      final (path, note) = await _burstSharpest(c, n, crop, merge: lowEnd);
+      // v11.67: ONE frame (no sharpest-of burst, no low-end merge).
+      final path = (await c.takePicture()).path;
+      if (mounted) {
+        setState(() {
+          _afterFrames = true; // v11.29: "you can move now" once it is in
+        });
+      }
+      final af = _focus.lastPreCapture;
+      final note = AiConfig.hasEmbeddedApiKey && af.isNotEmpty
+          ? 'Single frame · $af'
+          : 'Single frame';
       // v11.66: every level uses its zoom-gate photos, taken DURING the
-      // zoom (Macro / Close 2x · 5x, Microscope levels 1.5x · 5x) — no
-      // post-shutter step photos any more.
+      // zoom (v11.67: 5x · 10x on every level) — no post-shutter step
+      // photos any more.
       return (path, note, crop);
     } finally {
       unawaited(_focus.afterCapture(ourAf));
@@ -3813,89 +3883,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         unawaited(c.setZoomLevel(previewCam).catchError((Object _) {}));
       }
     }
-  }
-
-  /// Burst of [n] with a "Hold steady · N" countdown; scores the user's
-  /// region (centre 1/[crop]); [merge] = align + average the sharpest 5
-  /// (low-end), else the sharpest frame wins.
-  Future<(String, String)> _burstSharpest(
-    CameraController c,
-    int n,
-    double crop, {
-    bool merge = false,
-  }) async {
-    final paths = <String>[];
-    if (mounted) {
-      setState(() {
-        _holdSteady = true;
-        _nightStage = holdSteadyCountdown(n);
-      });
-    }
-    try {
-      for (var i = 0; i < n; i++) {
-        if (!identical(c, _controller) || !c.value.isInitialized) break;
-        try {
-          paths.add((await c.takePicture()).path);
-        } catch (e) {
-          if (paths.isEmpty) rethrow;
-          break;
-        }
-        if (mounted) {
-          setState(() => _nightStage = holdSteadyCountdown(n - i - 1));
-        }
-      }
-    } finally {
-      // v11.29: "Hold steady" only while the frames are captured.
-      if (mounted) {
-        setState(() {
-          _nightStage = null;
-          _holdSteady = false;
-          _afterFrames = true;
-        });
-      }
-    }
-    if (paths.length == 1) return (paths.first, 'Single frame');
-    final scores = <double>[];
-    for (final p in paths) {
-      try {
-        final g = await grayProxy(
-          await File(p).readAsBytes(),
-          (360 * math.min(crop, 6)).round(),
-        );
-        scores.add(regionSharpness(g.values, g.width, g.height, crop));
-      } catch (_) {
-        scores.add(0);
-      }
-    }
-    final order = sharpestFirst(scores);
-    debugPrint('Burst sharpness: $scores → $order');
-    if (merge && order.length >= 2) {
-      try {
-        final (out, used, errs) = await mergeZoomRegion(
-          [for (final i in order) paths[i]],
-          crop,
-          (await getTemporaryDirectory()).path,
-        );
-        // v11.30 key builds: merge result + alignment error per frame.
-        final dbg = mergeDebugText(used, paths.length, errs);
-        debugPrint('Zoom merge: $dbg');
-        if (used >= 2) {
-          return (
-            out,
-            AiConfig.hasEmbeddedApiKey
-                ? dbg
-                : 'Merged $used of ${paths.length} frames',
-          );
-        }
-        return (
-          paths[order.first],
-          AiConfig.hasEmbeddedApiKey ? dbg : 'Sharpest of ${paths.length}',
-        );
-      } catch (e) {
-        debugPrint('Zoom merge failed: $e');
-      }
-    }
-    return (paths[order.first], 'Sharpest of ${paths.length}');
   }
 
   void _showBlockedNote(ModeBlock b) {
@@ -4263,64 +4250,14 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   // ---- Capture helpers -----------------------------------------------------
 
-  /// HDR: 3 frames at 0 / −s / +s EV, aligned + exposure-fused on device.
+  /// v11.67 HDR (no mode routes here since v11.49): ONE frame, no
+  /// exposure bracket / merge.
   Future<String> _takeHdr(
     CameraController c,
     void Function(String note) onNote,
   ) async {
-    final ourAf = await _preCapture();
-    var minEv = 0.0;
-    var maxEv = 0.0;
-    try {
-      minEv = await c.getMinExposureOffset();
-      maxEv = await c.getMaxExposureOffset();
-    } catch (_) {}
-    final plan = hdrBracketEv(minEv: minEv, maxEv: maxEv);
-    final paths = <String>[];
-    try {
-      if (plan.isEmpty) {
-        onNote('HDR not supported here · single photo');
-        return (await c.takePicture()).path;
-      }
-      for (final ev in plan) {
-        if (!identical(c, _controller) || !c.value.isInitialized) break;
-        try {
-          await c.setExposureOffset(ev);
-          // Let AE settle on the new compensation.
-          await Future<void>.delayed(const Duration(milliseconds: 150));
-        } catch (_) {}
-        try {
-          paths.add((await c.takePicture()).path);
-        } catch (e) {
-          if (paths.isEmpty) rethrow;
-          break;
-        }
-      }
-    } finally {
-      try {
-        await c.setExposureOffset(0);
-      } catch (_) {}
-      unawaited(_focus.afterCapture(ourAf));
-    }
-    if (mounted) setState(() => _holdSteady = false);
-    if (paths.length < 2) {
-      onNote('HDR · single photo');
-      return paths.first;
-    }
-    try {
-      final r = await mergeHdrFiles(paths, File(paths.first).parent.path);
-      debugPrint('HDR merge: ${r.used}/${paths.length}, shifts ${r.shifts}');
-      onNote(
-        r.used >= 2
-            ? 'HDR · ${r.used} exposures merged'
-            : 'HDR · single photo (camera moved)',
-      );
-      return r.path;
-    } catch (e) {
-      debugPrint('HDR merge failed: $e');
-      onNote('HDR · single photo');
-      return paths.first;
-    }
+    onNote('Single frame');
+    return _takeSingle(c);
   }
 
   /// Document: Google's on-device scanner (edge detect, crop, clean-up)
@@ -4665,6 +4602,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (AiConfig.hasEmbeddedApiKey && level != null)
         Text(
           '${_boxCheck.debug} · zoom ${_zoom.toStringAsFixed(1)}/${_macroMaxZoom.toStringAsFixed(0)}'
+          '${_digitalZoom > 1.001 ? ' (cam ${_cameraZoom.toStringAsFixed(1)}x × crop ${_digitalZoom.toStringAsFixed(2)}x)' : ''}'
           '${_macroGateCapZoom < _macroMaxZoom - 0.01 ? ' · gate ${formatZoom(_macroGateCapZoom)}x' : ''}',
           key: const ValueKey('macro_box_debug'),
           style: small.copyWith(color: Colors.orange.shade300),
@@ -4729,7 +4667,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                 key: const ValueKey('macro_zoom_chips'),
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  for (final z in macroZoomChips(_range.hardwareMax))
+                  for (final z in macroLevelZoomChips(level, _macroLimit))
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 3),
                       child: GestureDetector(
@@ -5168,6 +5106,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
               if (d.pointerCount < 2) return;
               if (_macroActive) {
                 // v11.41: pinch 1x–10x (device max); stops any animation.
+                // v11.67: Microscope / Extreme / Ultra up to 15x (crop).
                 _stopZoomAnim();
                 unawaited(
                   _setZoom(

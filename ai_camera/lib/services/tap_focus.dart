@@ -44,6 +44,14 @@ class CameraFocusOps implements FocusOps {
 ///   waits up to [preCaptureWait] so stills are never taken mid-hunt.
 ///
 /// Every camera call is guarded — a plugin error never breaks the camera.
+/// Camera2 CONTROL_AF_STATE values meaning "in focus" (v11.67).
+const int kAfPassiveFocused = 2;
+const int kAfFocusedLocked = 4;
+
+/// The preview's AF has converged (no fresh pass needed at the shutter).
+bool afConverged(int? afState) =>
+    afState == kAfPassiveFocused || afState == kAfFocusedLocked;
+
 class TapFocusController extends ChangeNotifier {
   TapFocusController({
     this.hold = kTapFocusHold,
@@ -233,16 +241,31 @@ class TapFocusController extends ChangeNotifier {
     unawaited(reset());
   }
 
+  /// v11.67 reads the camera's own AF state (Camera2 CONTROL_AF_STATE;
+  /// null = unknown). Set by the home screen.
+  Future<int?> Function()? afStateReader;
+
+  /// v11.67 key-build note: what the last [preCapture] did.
+  String lastPreCapture = '';
+
   /// Before a still: make sure AF has converged. Returns true when an AF
   /// pass was started by us (so the caller can call [afterCapture]).
-  Future<bool> preCapture() async {
+  /// v11.67: no fresh AF pass when the preview's continuous AF already
+  /// converged (camera reports PASSIVE_FOCUSED / FOCUSED_LOCKED) and no
+  /// tap / face asks for another point; [force] (e.g. the camera zoom was
+  /// just moved for the still) always runs the pass.
+  Future<bool> preCapture({bool force = false}) async {
     final ops = _ops;
-    if (ops == null || locked) return false;
+    if (ops == null || locked) {
+      lastPreCapture = locked ? 'af locked' : '';
+      return false;
+    }
     final last = lastFocusAt;
     if (point != null &&
         last != null &&
         _now().difference(last) < recentWindow &&
         focused) {
+      lastPreCapture = 'af tap ok';
       return false; // User just focused here and AF converged.
     }
     final fa = faceAt;
@@ -250,6 +273,20 @@ class TapFocusController extends ChangeNotifier {
         facePoint != null && fa != null && _now().difference(fa) < faceFresh
         ? facePoint
         : null;
+    final read = afStateReader;
+    if (!force && point == null && face == null && read != null) {
+      int? st;
+      try {
+        st = await read().timeout(const Duration(milliseconds: 250));
+      } catch (_) {
+        st = null;
+      }
+      if (afConverged(st)) {
+        lastPreCapture = 'af ok (no pass)';
+        return false;
+      }
+    }
+    lastPreCapture = 'af pass';
     final p = point ?? face ?? const Offset(0.5, 0.5);
     await _guard(() => ops.setFocusPoint(p).timeout(preCaptureWait));
     return point == null;

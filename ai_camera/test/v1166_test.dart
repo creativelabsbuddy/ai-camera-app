@@ -1,4 +1,4 @@
-// v11.66 (1.11.66+79) tests: one group per agreed change.
+// v11.66 (1.11.67+80) tests: one group per agreed change.
 import 'dart:convert';
 import 'dart:io';
 
@@ -34,8 +34,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  test('version 1.11.66+79', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.66+79'));
+  test('version 1.11.67+80', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.67+80'));
   });
 
   group('2: blur note in the waves', () {
@@ -191,12 +191,13 @@ void main() {
   group('5: Microscope / Extreme / Ultra stepwise zoom', () {
     const micro = [MacroLevel.microscope, MacroLevel.extreme, MacroLevel.ultra];
 
-    test('max 15x (device-capped), gates at 1.5x and 5x', () {
+    test('max 15x (device-capped), gates (v11.67: 5x and 10x)', () {
       for (final l in micro) {
         expect(macroLevelZoomMax(l, 30), 15);
         expect(macroLevelZoomMax(l, 8), 8);
-        expect(macroGateZooms(l, 30), [1.5, 5.0]);
-        expect(macroGateZooms(l, 4), [1.5]); // 5x not reachable
+        expect(macroGateZooms(l, 30), [5.0, 10.0]);
+        expect(macroGateZooms(l, 8), [5.0]); // 10x not reachable
+        expect(macroGateZooms(l, 4), isEmpty);
       }
       expect(macroLevelZoomMax(MacroLevel.macro, 30), 10);
       expect(macroLevelZoomMax(null, 30), 10);
@@ -204,18 +205,19 @@ void main() {
 
     test('zoom stops at each gate until its photo is done', () {
       const l = MacroLevel.microscope;
-      expect(macroGateCap(l, 30, {}), 1.5);
-      expect(macroGateCap(l, 30, {1.5}), 5.0);
-      expect(macroGateCap(l, 30, {1.5, 5.0}), 15);
-      expect(macroGateDue(l, 30, {}, 1.2), isNull);
-      expect(macroGateDue(l, 30, {}, 1.5), 1.5);
-      expect(macroGateDue(l, 30, {1.5}, 3), isNull);
-      expect(macroGateDue(l, 30, {1.5}, 5), 5.0);
-      expect(macroGateDue(l, 30, {1.5, 5.0}, 12), isNull);
+      // v11.67 gates 5x / 10x
+      expect(macroGateCap(l, 30, {}), 5.0);
+      expect(macroGateCap(l, 30, {5.0}), 10.0);
+      expect(macroGateCap(l, 30, {5.0, 10.0}), 15);
+      expect(macroGateDue(l, 30, {}, 4.2), isNull);
+      expect(macroGateDue(l, 30, {}, 5), 5.0);
+      expect(macroGateDue(l, 30, {5.0}, 8), isNull);
+      expect(macroGateDue(l, 30, {5.0}, 10), 10.0);
+      expect(macroGateDue(l, 30, {5.0, 10.0}, 12), isNull);
       // zooming back out forgets the gates above
-      expect(macroGatesToDrop({1.5, 5.0}, 3), [5.0]);
-      expect(macroGatesToDrop({1.5, 5.0}, 1.0), [1.5, 5.0]);
-      expect(macroGatesToDrop({1.5, 5.0}, 5.0), isEmpty);
+      expect(macroGatesToDrop({5.0, 10.0}, 7), [10.0]);
+      expect(macroGatesToDrop({5.0, 10.0}, 1.0), [5.0, 10.0]);
+      expect(macroGatesToDrop({5.0, 10.0}, 10.0), isEmpty);
     });
 
     test('lock follows the highest gate; debug text', () {
@@ -282,7 +284,7 @@ void main() {
       expect(h, contains('_onMacroZoom();'));
       expect(h, contains('await _refocusCentre();\n      await Future<void>.delayed(kMacroGateFocusWait);'));
       expect(h, contains('gateSteps = _gateStepPhotos();'));
-      expect(h, contains('? (gated && (macroLevel?.isMicroscopic ?? false)'));
+      expect(h, contains('? (gated\n                  ? 0 // v11.67'));
       expect(h, isNot(contains('checkpointMatch(')));
       expect(h, isNot(contains('_microOneHalf')));
       final sc = File('lib/services/server_api_client.dart').readAsStringSync();
@@ -291,24 +293,26 @@ void main() {
   });
 
   group('6: Macro / Close step photos during the zoom', () {
-    test('gates at 2x and 5x below the 10x max, no detection', () {
+    test('v11.67: gates at 5x and 10x (10x = the max still runs)', () {
       for (final l in [MacroLevel.macro, MacroLevel.close]) {
         expect(macroLevelZoomMax(l, 30), 10);
-        expect(macroGateZooms(l, 30), [2.0, 5.0]);
-        expect(macroGateZooms(l, 3), [2.0]);
-        expect(macroGateCap(l, 30, {}), 2.0);
-        expect(macroGateCap(l, 30, {2.0}), 5.0);
-        expect(macroGateCap(l, 30, {2.0, 5.0}), 10);
-        expect(macroGateDue(l, 30, {}, 2.0), 2.0);
-        expect(macroGateDue(l, 30, {2.0}, 4.9), isNull);
+        expect(macroGateZooms(l, 30), [5.0, 10.0]);
+        expect(macroGateZooms(l, 3), isEmpty);
+        expect(macroGateCap(l, 30, {}), 5.0);
+        expect(macroGateCap(l, 30, {5.0}), 10.0);
+        expect(macroGateCap(l, 30, {5.0, 10.0}), 10);
+        expect(macroGateDue(l, 30, {}, 5.0), 5.0);
+        expect(macroGateDue(l, 30, {5.0}, 9.9), isNull);
+        expect(macroGateDue(l, 30, {5.0}, 10), 10.0);
       }
       expect(macroGateZooms(null, 30), isEmpty);
     });
 
     test('home wiring: gate photos at the shutter, no post-shutter steps', () {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
-      expect(h, contains('if (level.isMicroscopic) await _detectAtGate('));
-      expect(h, contains('// v11.66 Macro / Close: the 2x / 5x zoom-gate photos'));
+      // v11.67: every level detects at its gates.
+      expect(h, contains('      await _detectAtGate(g, shot.path, dig, gen);'));
+      expect(h, isNot(contains('if (level.isMicroscopic) await _detectAtGate(')));
       expect(h, isNot(contains('_takeMacroContext(')));
       expect(h, isNot(contains('_macroCtx')));
       expect(h, contains('subject = kMacroGeneralSubject;'));

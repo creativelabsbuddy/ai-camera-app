@@ -31,6 +31,7 @@ import '../services/zoom_range.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ai_working_frame.dart';
 import '../widgets/compare_slider.dart';
+import '../services/gate_detect.dart' show GateDetect;
 import '../services/macro.dart';
 import '../widgets/pro_upgrade_sheet.dart';
 import '../widgets/style_card_strip.dart';
@@ -68,11 +69,13 @@ class PreviewScreen extends StatefulWidget {
     this.zoomClean = false,
     this.zoomSourceFile,
     this.zoomSourceOnly = false,
+    this.clearRef = false,
     this.aiInputFile,
     this.subjectSure = false,
     this.spotSource,
     this.contextBoxed = false,
     this.macroLevel,
+    this.gateDetect,
     this.enhanceService,
     this.source,
     this.captureNote,
@@ -150,6 +153,14 @@ class PreviewScreen extends StatefulWidget {
 
   /// v11.13 Extreme: tighter spot sent instead of the crop.
   final File? aiInputFile;
+
+  /// v11.67 [zoomSourceFile] is the clear reference crop (the photo at the
+  /// clear limit) → its prompt line is added.
+  final bool clearRef;
+
+  /// v11.67 the 5x / 10x zoom-gate detection (macro shots; empty = none
+  /// reached) → simple Macro / Close / Microscope prompts.
+  final GateDetect? gateDetect;
 
   /// v11.9: clear subject label (prompt treats it as true).
   final bool subjectSure;
@@ -408,6 +419,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     zoomClean: widget.zoomClean,
     zoomSource: widget.zoomSourceFile,
     zoomSourceOnly: widget.zoomSourceOnly,
+    clearRef: widget.clearRef && widget.zoomSourceFile != null,
     context: widget.contextFile,
     tier: widget.tier,
     zoom: widget.captureZoom,
@@ -420,6 +432,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     subjectSure: widget.subjectSure,
     contextBoxed: widget.contextBoxed,
     macroLevel: widget.macroLevel?.id,
+    gate: widget.aiMode == 'macro' ? widget.gateDetect : null, // v11.67
     // v11.9: colour filters are off at Microscope / Extreme.
     colorFilter:
         aiFilter == null &&

@@ -36,8 +36,8 @@ class _SlowBackend implements VideoBackend {
 }
 
 void main() {
-  test('version (v11.65: 1.11.66+79)', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.66+79'));
+  test('version (v11.65: 1.11.67+80)', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.67+80'));
   });
 
   group('microscope: lock at 1.5x, part only, material-aware', () {
@@ -80,9 +80,10 @@ void main() {
     test('home wiring (v11.66): 1.5x / 5x zoom gates, no retake', () {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
       expect(h, isNot(contains('planZoom(requested: kMacroDetectZoom')));
-      // v11.64: name step (1.5x + zoomed) once, then the part-only step.
-      expect(h, contains('_detector.detectMicroNameTimed('));
-      expect(h, contains('.detectMicroPart('));
+      // v11.67: one connected detection per gate (5x object, 10x part
+      // told the 5x answer) replaced the name / part steps.
+      expect(h, contains('_detector.detectGateTimed('));
+      expect(h, isNot(contains('.detectMicroPart(')));
       expect(h, isNot(contains('_showToast(kMicroHoldSteady)')));
       expect(h, isNot(contains('final r = await _takeMacro(c);')));
       expect(h, contains('bool get _macroLowEnd => _cameraClass.lowEnd;'));

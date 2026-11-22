@@ -106,9 +106,8 @@ void main() {
       expect(kZoomModeHint, 'Tap Zoom mode for more');
       expect(hcs, contains("route.aiMode == 'photo' && _zoomModeActive"));
       expect(hcs, contains('_zoomMode &&\n      _macroLowEnd'));
-      // v11.60: the zoom burst keeps the gate for Pro AI (Normal has no
-      // Zoom mode and may burst on its own).
-      expect(hcs, contains('(!_aiMode || _zoomModeActive) &&'));
+      // v11.67: no zoom burst any more (one frame everywhere but Night).
+      expect(hcs, isNot(contains('(!_aiMode || _zoomModeActive) &&')));
       // v11.66: bright-spot exposure is manual, still Zoom-mode only.
       expect(hcs, contains('if (!_zoomModeActive) {\n      if (_brightApplied) unawaited(_releaseLatch());'));
       expect(hcs, contains('await _setMode(CaptureMode.pro)'));

@@ -134,10 +134,10 @@ GreyImage cropGrey(GreyImage g, (int, int, int, int) r) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.66+79', () {
+  test('version 1.11.67+80', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.66+79'),
+      contains('version: 1.11.67+80'),
     );
   });
 
@@ -928,31 +928,12 @@ void main() {
       expect(b[1], 60); // y = 20 → 60
     });
 
-    test('home: Normal + Pro, offline too; temp files cleaned', () {
+    test('home (v11.67): the zoom burst / merge is gone (one frame)', () {
       final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
-      final i = h.indexOf(
-        'final b = await _zoomBurst(c, snap, nativeZoom: nativeZoomMerge);',
-      );
-      expect(i, greaterThan(0));
-      final cond = h.substring(h.lastIndexOf('} else if (', i), i);
-      expect(cond, isNot(contains('snap.ai')), reason: 'Normal mode too');
-      expect(cond, isNot(contains('online')), reason: 'local, works offline');
-      expect(cond, contains('snap.digital > 1.2 || nativeZoomMerge'));
-      // v11.9 coverage: Pro AI Zoom mode 2x … native max on cheap phones
-      final nz = h.substring(h.indexOf('final nativeZoomMerge ='));
-      expect(
-        nz.substring(0, 260),
-        allOf(
-          contains('snap.ai'),
-          contains('_zoomModeActive'),
-          contains('shouldMergeZoom('),
-        ),
-      );
-      expect(h, contains('BurstJob.start(\n        paths: paths,'));
-      expect(h, contains('final keep = paths[res.anchor];'));
-      expect(h, contains('_deletePaths(paths);'));
-      expect(h, contains('_burstJob?.cancel()'));
-      expect(h, isNot(contains('rgbs')));
+      expect(h, isNot(contains('_zoomBurst(')));
+      expect(h, isNot(contains('nativeZoomMerge')));
+      expect(h, isNot(contains('BurstJob.start(')));
+      expect(h, isNot(contains('_burstJob')));
     });
   });
 
