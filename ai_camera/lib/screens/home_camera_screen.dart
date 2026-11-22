@@ -1874,6 +1874,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     String? microSpot; // v11.47 Microscope detected spot
     String? captureNote;
     List<ContextSnapshot>? gateSteps; // v11.66 zoom-gate photos
+    GateDetect? gateDetect; // v11.67 5x / 10x detection at the shutter
     setState(() {
       _processingCapture = true;
       _holdSteady = hdr;
@@ -1926,6 +1927,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           final gm = await _fromGates(path, crop, level);
           lockName = gm.lock;
           lockPart = gm.part;
+          // v11.67: the gate detection (empty = none) → simple prompts.
+          gateDetect = gm.detect ?? const GateDetect();
           if (!mounted) return;
           final fail = gm.fail;
           if (fail != null || lockName == null || lockPart == null) {
@@ -2013,6 +2016,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       spotSource: macro ? _detector.lastSpotModel : null,
       macroLevel: level,
       gateSteps: gateSteps,
+      gateDetect: gateDetect,
       zoomFlow: flow,
       trackAtShutter: trackAtShutter,
       trackRot: trackRot,
@@ -2040,6 +2044,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     String? spotSource,
     MacroLevel? macroLevel,
     List<ContextSnapshot>? gateSteps,
+    GateDetect? gateDetect,
     CaptureMode? modeOverride,
     ZoomFlow zoomFlow = ZoomFlow.normal,
     Similarity? trackAtShutter,
@@ -2314,6 +2319,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           zoomLabel: zoomLabel,
           zoomClean: zoomFlow != ZoomFlow.normal,
           macroLevel: macroLevel,
+          gateDetect: gateDetect,
           captureNote: captureNote,
         ),
       ),

@@ -7,7 +7,10 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:ai_camera/services/gate_detect.dart';
+import 'package:ai_camera/config/ai_config.dart';
+import 'package:ai_camera/services/enhance_service.dart';
 import 'package:ai_camera/services/macro.dart';
+import 'package:ai_camera/services/mode_prompts.dart';
 import 'package:ai_camera/services/openrouter_client.dart';
 import 'package:ai_camera/services/server_api_client.dart';
 import 'package:ai_camera/services/subject_detector.dart';
@@ -261,6 +264,81 @@ void main() {
       // zooming back below a gate forgets it, debug too
       expect(home, contains('if (had) _boxDbg = _gateInfo.isEmpty ? null : _gateDebug();'));
       expect(home, isNot(contains('detectMicroNameTimed(')));
+    });
+  });
+
+  group('3: simple Macro / Close / Microscope prompts', () {
+    // same table as enhance-server/tests/test_v1167.py SIMPLE_CASES
+    const cases = [
+      ('macro', 'coin', '', '', 'This is a coin. Show it as a sharp macro-lens close-up.'),
+      ('macro', '', '', '', 'Show this object as a sharp macro-lens close-up.'),
+      ('macro', 'apple', '', '', 'This is an apple. Show it as a sharp macro-lens close-up.'),
+      ('close', 'coin', 'rim', '', 'This is a coin, rim. Show it as an extreme macro close-up with fine surface detail.'),
+      ('close', 'coin', '', '', 'This is a coin. Show it as an extreme macro close-up with fine surface detail.'),
+      ('close', '', '', '', 'Show this object as an extreme macro close-up with fine surface detail.'),
+      (
+        'microscope',
+        'coin',
+        'raised symbol',
+        'worn silver metal, fine scratches.',
+        'This is a coin, zoomed on raised symbol, showing worn silver metal, fine scratches. Show how it would look under a light microscope at 100x magnification.',
+      ),
+      ('microscope', 'coin', '', 'silver disc', 'This is a coin, showing silver disc. Show how it would look under a light microscope at 100x magnification.'),
+      ('microscope', 'close-up', '', '', 'Show how this object would look under a light microscope at 100x magnification.'),
+      ('microscope', '', 'rim', '', 'This is this object, zoomed on rim. Show how it would look under a light microscope at 100x magnification.'),
+    ];
+
+    test('templates + graceful fallback (server parity table)', () {
+      for (final (l, o, p, v, want) in cases) {
+        expect(simpleMacroPrompt(l, object: o, part: p, visible: v), want);
+      }
+      expect(simpleMacroPrompt('extreme', object: 'coin'), isNull);
+      expect(simpleMacroPrompt('ultra', object: 'coin'), isNull);
+      expect(kSimpleMacroPrompt, 'This is a {object}. Show it as a sharp macro-lens close-up.');
+      expect(kSimpleClosePrompt, 'This is a {object}, {part}. Show it as an extreme macro close-up with fine surface detail.');
+      expect(kSimpleMicroscopePrompt, 'This is a {object}, zoomed on {part}, showing {visible}. Show how it would look under a light microscope at 100x magnification.');
+    });
+
+    test('job: simple prompt for Macro / Close / Microscope only, photo sent', () {
+      final f = File('a.jpg');
+      const g = GateDetect(object: 'coin', part: 'rim', visible: 'worn edge');
+      EnhanceJob job(String level, {GateDetect? gate, List<File> steps = const []}) => EnhanceJob(
+        image: f,
+        mode: 'macro',
+        macroLevel: level,
+        subject: 'coin',
+        part: 'rim of a coin',
+        steps: steps,
+        gate: gate,
+      );
+      for (final l in ['macro', 'close', 'microscope']) {
+        expect(job(l, gate: g).simpleMacro, isTrue);
+        expect(job(l, gate: g).deepTextOnly, isFalse);
+        expect(job(l).simpleMacro, isFalse); // old flow
+      }
+      for (final l in ['extreme', 'ultra']) {
+        expect(job(l, gate: g).simpleMacro, isFalse);
+      }
+      if (AiConfig.kHasEmbeddedKey) {
+        expect(
+          job('microscope', gate: g, steps: [File('s5.jpg')]).prompt(hasContext: true),
+          '$kMicroStepsLine This is a coin, zoomed on rim, showing worn edge. Show how it would look under a light microscope at 100x magnification.',
+        );
+        expect(job('macro', gate: g).prompt(hasContext: false), 'This is a coin. Show it as a sharp macro-lens close-up.');
+        // Extreme untouched: its own prompt
+        expect(job('extreme', gate: g).prompt(hasContext: false), deepPrompt(kMacroExtremePrompt, 'coin', 'rim of a coin'));
+      }
+    });
+
+    test('wiring: home → preview → job → server fields', () {
+      expect(home, contains('gateDetect = gm.detect ?? const GateDetect();'));
+      final pv = File('lib/screens/preview_screen.dart').readAsStringSync();
+      expect(pv, contains("gate: widget.aiMode == 'macro' ? widget.gateDetect : null,"));
+      final es = File('lib/services/enhance_service.dart').readAsStringSync();
+      expect(es, contains('gate: job.simpleMacro ? job.gate : null,'));
+      final sc = File('lib/services/server_api_client.dart').readAsStringSync();
+      expect(sc, contains("if (gate != null) 'simple_macro': 'true',"));
+      expect(sc, contains("'gate_visible': gate.visible,"));
     });
   });
 }

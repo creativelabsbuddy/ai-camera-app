@@ -854,6 +854,10 @@ async def enhance_v1(
     zoom_clean: bool = Form(False),
     zoom_source: bool = Form(False),
     micro_steps: bool = Form(False),
+    simple_macro: bool = Form(False),
+    gate_object: Optional[str] = Form(None),
+    gate_part: Optional[str] = Form(None),
+    gate_visible: Optional[str] = Form(None),
 ):
     dev = _check_device(device_id)
     mode = (mode or "photo").strip().lower()
@@ -911,8 +915,15 @@ async def enhance_v1(
         # v11.1: the level comes from the zoom at shutter time (the app also
         # sends it; an unknown value falls back to the zoom mapping).
         level = macro_level if macro_level in P.MACRO_LEVELS else P.macro_level_for_zoom(zoom)
-        mode_text = P.macro_prompt(prompts_store.get(P.MACRO_LEVELS[level][0]), subject, level, zoom,
-                                       part=part)
+        _simple = (bool(simple_macro) and level in P.SIMPLE_MACRO_LEVELS
+                   and P.simple_macro_prompt(level, gate_object, gate_part, gate_visible))
+        if _simple:
+            # v11.67: simple Macro / Close / Microscope prompt from the 5x / 10x
+            # zoom-gate detections (older apps keep the level prompts below).
+            mode_text = _simple
+        else:
+            mode_text = P.macro_prompt(prompts_store.get(P.MACRO_LEVELS[level][0]), subject, level,
+                                       zoom, part=part)
         if level in ("microscope", "extreme", "ultra"):
             color_filter = None  # v11.9: no colour filter at Microscope / Extreme
     elif mode == "portrait":
@@ -946,7 +957,8 @@ async def enhance_v1(
             # the photos (never text-only).
             _micro_steps = (bool(micro_steps) and level in P.MACRO_TEXT_LEVELS
                             and bool(steps_raw))
-            _text_only = P.macro_text_only(level, subject, part) and not _micro_steps  # v11.47
+            _text_only = (P.macro_text_only(level, subject, part) and not _micro_steps  # v11.47
+                          and not (bool(simple_macro) and level in P.SIMPLE_MACRO_LEVELS))
             _max_steps, _crop_long = P.macro_input_plan(level) if level else (0, None)
             if ladder:
                 _crop_long = P.ZOOM_LADDER_MAIN_LONG  # v11.31: final photo 1536 px

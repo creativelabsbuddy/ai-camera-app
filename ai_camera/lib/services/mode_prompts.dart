@@ -337,6 +337,68 @@ String macroPrompt(
   return body;
 }
 
+/// v11.67 simple final prompts (Macro, Close, Microscope), filled from
+/// the 5x / 10x gate detections (= prompts.SIMPLE_MACRO_* on the server).
+/// Extreme / Ultra keep their own prompts.
+const Set<String> kSimpleMacroLevels = {'macro', 'close', 'microscope'};
+const String kSimpleMacroPrompt =
+    'This is a {object}. Show it as a sharp macro-lens close-up.';
+const String kSimpleClosePrompt =
+    'This is a {object}, {part}. Show it as an extreme macro close-up with fine surface detail.';
+const String kSimpleMicroscopePrompt =
+    'This is a {object}, zoomed on {part}, showing {visible}. Show how it would look under a light microscope at 100x magnification.';
+
+/// "a coin" / "an apple" / "the moon" (an article already there is kept).
+String withArticle(String noun) {
+  final n = noun.trim();
+  if (n.isEmpty) return n;
+  if (RegExp(r'^(a|an|the|some)\s', caseSensitive: false).hasMatch(n)) {
+    return n;
+  }
+  return '${'aeiou'.contains(n[0].toLowerCase()) ? 'an' : 'a'} $n';
+}
+
+/// v11.67 the simple prompt for [level] (null = not a simple level).
+/// Missing fields degrade gracefully: no object → "this object"; a missing
+/// part / visible clause is left out (never an empty "zoomed on ,").
+String? simpleMacroPrompt(
+  String? level, {
+  String? object,
+  String? part,
+  String? visible,
+}) {
+  if (!kSimpleMacroLevels.contains(level)) return null;
+  var o = sanitizeDetected(object);
+  if (o == 'the subject' || o == kMacroGeneralSubject || isVagueDetect(o)) {
+    o = '';
+  }
+  var pt = sanitizeDetected(part);
+  if (pt == o) pt = '';
+  final v = (visible ?? '')
+      .replaceAll(RegExp(r"[^A-Za-z0-9 ,.;:&'()/%+-]+"), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim()
+      .replaceAll(RegExp(r'[\s.,;:]+$'), '');
+  final thing = o.isEmpty ? 'this object' : withArticle(o);
+  final lead = 'This is $thing';
+  switch (level) {
+    case 'macro':
+      return o.isEmpty
+          ? 'Show this object as a sharp macro-lens close-up.'
+          : kSimpleMacroPrompt.replaceAll('a {object}', thing);
+    case 'close':
+      if (o.isEmpty && pt.isEmpty) {
+        return 'Show this object as an extreme macro close-up with fine surface detail.';
+      }
+      return '$lead${pt.isEmpty ? '' : ', $pt'}. Show it as an extreme macro close-up with fine surface detail.';
+    default: // microscope
+      if (o.isEmpty && pt.isEmpty && v.isEmpty) {
+        return 'Show how this object would look under a light microscope at 100x magnification.';
+      }
+      return '$lead${pt.isEmpty ? '' : ', zoomed on $pt'}${v.isEmpty ? '' : ', showing $v'}. Show how it would look under a light microscope at 100x magnification.';
+  }
+}
+
 /// v11.47 (same as prompts.macro_text_only): Extreme / Ultra with a spot or
 /// subject; Microscope only with a detected spot ([part]).
 bool macroTextOnly(String? level, String? subject, String? part) {

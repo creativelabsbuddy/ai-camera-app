@@ -1042,3 +1042,59 @@ def parse_gate_reply(text: Optional[str]) -> dict:
                part=sanitize_detected(s("part")), visible=sanitize_visible(s("visible")),
                same_object=so if isinstance(so, bool) else None)
     return out
+
+
+# ---------------------------------------------------------------------------
+# v11.67 simple final prompts (Macro, Close, Microscope) filled from the 5x /
+# 10x gate detections (= Dart simpleMacroPrompt). Extreme / Ultra unchanged.
+# ---------------------------------------------------------------------------
+
+SIMPLE_MACRO_LEVELS = ("macro", "close", "microscope")
+SIMPLE_MACRO_PROMPT = "This is a {object}. Show it as a sharp macro-lens close-up."
+SIMPLE_CLOSE_PROMPT = (
+    "This is a {object}, {part}. Show it as an extreme macro close-up with fine surface detail."
+)
+SIMPLE_MICROSCOPE_PROMPT = (
+    "This is a {object}, zoomed on {part}, showing {visible}. Show how it would look under a "
+    "light microscope at 100x magnification."
+)
+
+
+def with_article(noun: str) -> str:
+    n = (noun or "").strip()
+    if not n:
+        return n
+    if re.match(r"^(a|an|the|some)\s", n, re.I):
+        return n
+    return f"{'an' if n[0].lower() in 'aeiou' else 'a'} {n}"
+
+
+def simple_macro_prompt(level: Optional[str], obj: Optional[str] = None,
+                        part: Optional[str] = None, visible: Optional[str] = None) -> Optional[str]:
+    """v11.67 simple prompt for [level] (None = not a simple level). Missing
+    fields degrade gracefully: no object → "this object"; a missing part /
+    visible clause is left out."""
+    if level not in SIMPLE_MACRO_LEVELS:
+        return None
+    o = sanitize_detected(obj)
+    if o in ("the subject", "close-up") or is_vague_detect(o):
+        o = ""
+    pt = sanitize_detected(part)
+    if pt == o:
+        pt = ""
+    v = re.sub(r"\s+", " ", _VISIBLE_RE.sub(" ", visible or "")).strip()
+    v = re.sub(r"[\s.,;:]+$", "", v)
+    thing = with_article(o) if o else "this object"
+    lead = f"This is {thing}"
+    if level == "macro":
+        return ("Show this object as a sharp macro-lens close-up." if not o
+                else SIMPLE_MACRO_PROMPT.replace("a {object}", thing))
+    if level == "close":
+        if not o and not pt:
+            return "Show this object as an extreme macro close-up with fine surface detail."
+        return (f"{lead}{', ' + pt if pt else ''}. Show it as an extreme macro close-up "
+                "with fine surface detail.")
+    if not o and not pt and not v:
+        return "Show how this object would look under a light microscope at 100x magnification."
+    return (f"{lead}{', zoomed on ' + pt if pt else ''}{', showing ' + v if v else ''}. "
+            "Show how it would look under a light microscope at 100x magnification.")
