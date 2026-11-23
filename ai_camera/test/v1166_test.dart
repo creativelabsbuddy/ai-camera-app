@@ -1,4 +1,4 @@
-// v11.66 (1.11.67+80) tests: one group per agreed change.
+// v11.66 (1.11.68+81) tests: one group per agreed change.
 import 'dart:convert';
 import 'dart:io';
 
@@ -34,8 +34,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  test('version 1.11.67+80', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.67+80'));
+  test('version 1.11.68+81', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.68+81'));
   });
 
   group('2: blur note in the waves', () {

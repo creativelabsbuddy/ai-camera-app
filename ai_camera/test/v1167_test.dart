@@ -1,4 +1,4 @@
-// v11.67 (1.11.67+80) tests: one group per agreed change.
+// v11.67 (1.11.68+81) tests: one group per agreed change.
 import 'dart:convert';
 import 'dart:io';
 
@@ -48,8 +48,8 @@ http.Response _reply(String text) => http.Response(
 );
 
 void main() {
-  test('version 1.11.67+80', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.67+80'));
+  test('version 1.11.68+81', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.68+81'));
   });
 
   final home = File('lib/screens/home_camera_screen.dart').readAsStringSync();

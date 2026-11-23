@@ -11,8 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.67+80', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.67+80'));
+  test('version 1.11.68+81', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.68+81'));
   });
 
   group('video: Phosor MiniMax only', () {

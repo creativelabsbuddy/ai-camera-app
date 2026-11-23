@@ -16,6 +16,10 @@ const noInvent =
     'Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes.';
 
 void main() {
+  test('version 1.11.68+81', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.68+81'));
+  });
+
   group('1: Pro AI enhance restore prompt', () {
     test('exact string; HD / Full HD / Ultra HD / gallery use it', () {
       expect(kUniversalEnhancePrompt, restore);
