@@ -214,6 +214,7 @@ def test_night_flag_appends_exact_prompt_after_locked(env):
     assert r.status_code == 200 and r.headers["x-night"] == "1"
     p = up.calls[-1]["prompt"]
     assert p.startswith(P.UNIVERSAL_ENHANCE_PROMPT) and P.NIGHT_PROMPT not in p  # v11.58
+    assert P.NO_INVENT_LINE in p  # v11.68
     assert r.headers["x-credits-charged"] == "1"  # night costs nothing extra
     enhance(c)
     assert P.NIGHT_PROMPT not in up.calls[-1]["prompt"]

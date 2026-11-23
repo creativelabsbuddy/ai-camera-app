@@ -216,8 +216,9 @@ void main() {
 
   group('enhance prompt + upload', () {
     test('one simple enhance prompt; Portrait variant replaces it', () {
-      expect(kUniversalEnhancePrompt, 'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.');
-      expect(buildEnhancePrompt(zoom: 30, opticalLimit: 3, night: true), kUniversalEnhancePrompt);
+      expect(kUniversalEnhancePrompt, 'Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information.');
+      expect(buildEnhancePrompt(zoom: 30, opticalLimit: 3, night: true),
+          '$kUniversalEnhancePrompt $kNoInventLine');
       final p = buildEnhancePrompt(portrait: true);
       expect(p, kPortraitEnhancePrompt);
       expect(kPortraitEnhancePrompt, contains('natural bokeh'));

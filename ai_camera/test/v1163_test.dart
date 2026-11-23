@@ -52,28 +52,32 @@ void main() {
   });
 
   group('prompts', () {
-    const photo = 'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.';
+    const restore = 'Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information.';
+    const cleanup = 'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.';
     const portrait =
         'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Blur only the background with a natural bokeh, and keep the subject sharp. Do not change, add or remove anything else.';
 
-    test('exact Photo / zoom / Portrait strings; no maintain / invent / DSLR', () {
-      expect(kUniversalEnhancePrompt, photo);
-      expect(kZoomCleanPrompt, photo);
-      expect(kLockedEnhancePrompt, photo);
+    test('exact Photo / zoom / Portrait strings; no maintain / DSLR', () {
+      expect(kUniversalEnhancePrompt, restore);
+      expect(kPhotoCleanupPrompt, cleanup);
+      expect(kZoomCleanPrompt, '$kPhotoCleanupPrompt $kNoInventLine');
+      expect(kLockedEnhancePrompt, restore);
       expect(kPortraitEnhancePrompt, portrait);
       expect(kPortraitPrompt, portrait);
-      for (final p in [kUniversalEnhancePrompt, kZoomCleanPrompt, kPortraitEnhancePrompt]) {
+      expect(kPortraitEnhancePrompt.toLowerCase(), isNot(contains('maintain')));
+      expect(kPortraitEnhancePrompt.toLowerCase(), isNot(contains('do not invent')));
+      expect(kPortraitEnhancePrompt.toLowerCase(), isNot(contains('dslr')));
+      for (final p in [kUniversalEnhancePrompt, kZoomCleanPrompt]) {
         expect(p.toLowerCase(), isNot(contains('maintain')));
-        expect(p.toLowerCase(), isNot(contains('do not invent')));
         expect(p.toLowerCase(), isNot(contains('dslr')));
       }
     });
 
-    test('1x and zoomed Photo use the simple prompt; Portrait at 100x uses bokeh', () {
-      expect(buildEnhancePrompt(), photo);
-      expect(buildEnhancePrompt(zoom: 1), photo);
-      expect(buildEnhancePrompt(zoom: 80, opticalLimit: 2), photo);
-      expect(buildEnhancePrompt(zoom: 100, opticalLimit: 2), photo);
+    test('1x Photo uses the restore prompt; Portrait at 100x uses bokeh', () {
+      expect(buildEnhancePrompt(), restore);
+      expect(buildEnhancePrompt(zoom: 1), restore);
+      expect(buildEnhancePrompt(zoom: 80, opticalLimit: 2), restore);
+      expect(buildEnhancePrompt(zoom: 100, opticalLimit: 2), restore);
       expect(buildEnhancePrompt(portrait: true), portrait);
       expect(buildEnhancePrompt(portrait: true, zoom: 100, opticalLimit: 2), portrait);
     });

@@ -131,8 +131,10 @@ def test_runware_size():
 
 def test_universal_prompt_single_for_all():
     u = P.UNIVERSAL_ENHANCE_PROMPT
-    assert u == "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
-    assert P.build_prompt(zoom=20, optical_limit=2, night=True).startswith(u)
+    assert u == "Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information."
+    night_p = P.build_prompt(zoom=20, optical_limit=2, night=True)
+    assert night_p.startswith(u)
+    assert night_p.endswith(P.NO_INVENT_LINE)
     assert P.NIGHT_PROMPT not in P.build_prompt(night=True)
     port = P.build_prompt(portrait_prompt=P.PORTRAIT_ENHANCE_PROMPT)
     assert port.startswith(P.PORTRAIT_ENHANCE_PROMPT) and port != u

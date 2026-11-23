@@ -190,7 +190,7 @@ void main() {
     test('prompt and note text', () {
       expect(
         kZoomLadderPrompt,
-        startsWith(kZoomCleanPrompt), // v11.59
+        startsWith(kPhotoCleanupPrompt), // v11.68: no-invent appended
       );
       expect(kLadderNote, 'Small text may not be accurate at high zoom.');
     });

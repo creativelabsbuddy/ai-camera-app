@@ -5,10 +5,12 @@ from tests.test_v11 import env  # noqa: F401
 
 
 def test_prompt_text():
-    assert P.ZOOM_CLEAN_PROMPT == P.UNIVERSAL_ENHANCE_PROMPT
-    assert P.ZOOM_CLEAN_PROMPT == "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
+    assert P.ZOOM_CLEAN_PROMPT != P.UNIVERSAL_ENHANCE_PROMPT
+    assert P.ZOOM_CLEAN_PROMPT == P.PHOTO_CLEANUP_PROMPT + " " + P.NO_INVENT_LINE
+    assert P.PHOTO_CLEANUP_PROMPT == "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
     assert P.zoom_ladder_prompt(None, None, refs=False) == P.ZOOM_CLEAN_PROMPT
-    assert P.ZOOM_LADDER_PROMPT.startswith(P.ZOOM_CLEAN_PROMPT)
+    assert P.ZOOM_LADDER_PROMPT.startswith(P.PHOTO_CLEANUP_PROMPT)
+    assert P.ZOOM_LADDER_PROMPT.endswith(P.NO_INVENT_LINE)
 
 
 def test_flagship_zoom_clean_flag(env):
@@ -27,7 +29,8 @@ def test_app_prompt_matches_server():
     path = os.path.join(os.path.dirname(__file__), "..", "..", "ai_camera", "lib", "services",
                         "prompt_builder.dart")
     src = open(path, encoding="utf-8").read()
-    # v11.63: zoom prompt is the same simple line as the universal prompt.
-    assert "const String kZoomCleanPrompt = kUniversalEnhancePrompt;" in src
-    m = re.search(r"const String kUniversalEnhancePrompt =\s*((?:'[^']*'\s*)+);", src)
-    assert "".join(re.findall(r"'([^']*)'", m.group(1))) == P.ZOOM_CLEAN_PROMPT
+    # v11.68: zoom clean keeps the v11.63 cleanup line and appends NO_INVENT_LINE.
+    from test_server import _dart_string_const
+    assert _dart_string_const(src, "kZoomCleanPrompt") == P.ZOOM_CLEAN_PROMPT
+    assert _dart_string_const(src, "kPhotoCleanupPrompt") == P.PHOTO_CLEANUP_PROMPT
+    assert _dart_string_const(src, "kNoInventLine") == P.NO_INVENT_LINE

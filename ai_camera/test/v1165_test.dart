@@ -63,9 +63,9 @@ void main() {
     const face =
         'Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression.';
     test('face/detail-preserving zoom + portrait prompts', () {
-      expect(kUniversalEnhancePrompt,
-          'Clean up and sharpen this image, with a natural tone. $face Do not change, add or remove anything; keep all shapes, text and details as they are.');
-      expect(kZoomCleanPrompt, kUniversalEnhancePrompt);
+      expect(kUniversalEnhancePrompt, 'Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information.');
+      expect(kPhotoCleanupPrompt, 'Clean up and sharpen this image, with a natural tone. $face Do not change, add or remove anything; keep all shapes, text and details as they are.');
+      expect(kZoomCleanPrompt, '$kPhotoCleanupPrompt $kNoInventLine');
       expect(kPortraitEnhancePrompt,
           'Clean up and sharpen this image, with a natural tone. $face Blur only the background with a natural bokeh, and keep the subject sharp. Do not change, add or remove anything else.');
       expect(kPortraitPrompt, kPortraitEnhancePrompt);

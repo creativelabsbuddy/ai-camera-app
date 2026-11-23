@@ -76,6 +76,7 @@ def test_zoom_ladder_flag_ignored_without_steps_or_in_macro(env):
 
 
 def test_ladder_prompt_simple_and_version():
-    assert P.ZOOM_LADDER_PROMPT.startswith(P.ZOOM_CLEAN_PROMPT)  # v11.59
+    assert P.ZOOM_LADDER_PROMPT.startswith(P.PHOTO_CLEANUP_PROMPT)  # v11.68
+    assert P.ZOOM_LADDER_PROMPT.endswith(P.NO_INVENT_LINE)
     assert P.zoom_ladder_prompt(None, None) == P.ZOOM_LADDER_PROMPT
     assert tuple(map(int, main.app.version.split("."))) >= (11, 1, 25)

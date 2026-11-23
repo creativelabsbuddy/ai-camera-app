@@ -86,11 +86,13 @@ void main() {
     // v11.58: one universal prompt — Night adds no night sentence.
     final p = buildEnhancePrompt(night: true, hasContextImage: true);
     expect(p.startsWith(kUniversalEnhancePrompt), isTrue);
-    expect(p.contains(kNightPrompt), isFalse);
+    expect(p, contains(kNoInventLine));
+    expect(p.contains(kNightPrompt), isFalse); // night paragraph still not injected
     // v11 night prompt (mirrors the server's default; admin-editable).
-    // v11.48: general night prompt.
+    // v11.48: general night prompt. v11.68: no-invent line appended.
     expect(kNightPrompt, startsWith('A natural night photograph'));
     expect(kNightPrompt, contains('do not add anything new'));
+    expect(kNightPrompt, endsWith(kNoInventLine));
     expect(buildEnhancePrompt().contains(kNightPrompt), isFalse);
   });
 

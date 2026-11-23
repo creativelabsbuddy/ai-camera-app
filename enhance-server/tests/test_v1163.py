@@ -8,7 +8,10 @@ from tests.test_v11 import env, enc, scene  # noqa: F401
 from tests.test_v1130 import _post  # noqa: F401
 
 
-PHOTO = "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
+PHOTO = "Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information."
+CLEANUP = "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
+NO_INVENT = "Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes."
+ZOOM_CLEAN = CLEANUP + " " + NO_INVENT
 PORTRAIT = (
     "Clean up and sharpen this image, with a natural tone. "
     "Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. "
@@ -40,14 +43,15 @@ def test_no_8scale_api_in_providers():
 
 def test_prompt_strings_exact_and_parity():
     assert P.UNIVERSAL_ENHANCE_PROMPT == PHOTO
-    assert P.ZOOM_CLEAN_PROMPT == PHOTO
+    assert P.PHOTO_CLEANUP_PROMPT == CLEANUP
+    assert P.ZOOM_CLEAN_PROMPT == ZOOM_CLEAN
     assert P.PORTRAIT_ENHANCE_PROMPT == PORTRAIT
     assert P.PORTRAIT_PROMPT == PORTRAIT
     dart = open(os.path.join(os.path.dirname(__file__), "..", "..", "ai_camera",
                              "lib", "services", "prompt_builder.dart"), encoding="utf-8").read()
     m = re.search(r"const String kUniversalEnhancePrompt =\s*((?:'[^']*'\s*)+);", dart)
     assert "".join(re.findall(r"'([^']*)'", m.group(1))) == P.UNIVERSAL_ENHANCE_PROMPT
-    assert "const String kZoomCleanPrompt = kUniversalEnhancePrompt;" in dart
+    assert "kNoInventLine" in dart and P.NO_INVENT_LINE in dart
     mp = open(os.path.join(os.path.dirname(__file__), "..", "..", "ai_camera",
                            "lib", "services", "mode_prompts.dart"), encoding="utf-8").read()
     assert PORTRAIT in mp
@@ -59,7 +63,7 @@ def test_photo_zoom_uses_simple_prompt(env):
     r = _post(c, "dev_v1163a", {"zoom": "80", "optical_limit": "2", "zoom_clean": "true",
                                 "mode": "photo"}, 0)
     assert r.status_code == 200, r.text
-    assert up.calls[-1]["prompt"] == PHOTO
+    assert up.calls[-1]["prompt"] == ZOOM_CLEAN
 
 
 def test_portrait_at_high_zoom_uses_bokeh_prompt_not_photo(env):
