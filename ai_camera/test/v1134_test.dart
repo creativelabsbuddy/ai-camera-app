@@ -105,8 +105,10 @@ void main() {
 
   test('zoom prompt + wiring', () {
     // v11.63: zoom uses the same simple prompt as Pro Photo.
-    expect(kZoomCleanPrompt, kUniversalEnhancePrompt);
-    expect(kZoomLadderPrompt.startsWith(kZoomCleanPrompt), isTrue);
+    expect(kZoomCleanPrompt, startsWith(kPhotoCleanupPrompt));
+    expect(kZoomCleanPrompt, endsWith(kNoInventLine));
+    expect(kZoomLadderPrompt.startsWith(kPhotoCleanupPrompt), isTrue);
+    expect(kZoomLadderPrompt, endsWith(kNoInventLine));
     final h = File('lib/screens/home_camera_screen.dart').readAsStringSync();
     expect(h, contains('zoomClean: zoomFlow != ZoomFlow.normal'));
     expect(h, contains('_walkCheckpoints()'));

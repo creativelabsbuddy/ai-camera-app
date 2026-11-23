@@ -67,10 +67,10 @@ img.Image noisyDigitalFinal(img.Image area, int seed) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('version 1.11.67+80', () {
+  test('version 1.11.68+81', () {
     expect(
       File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.67+80'),
+      contains('version: 1.11.68+81'),
     );
   });
 

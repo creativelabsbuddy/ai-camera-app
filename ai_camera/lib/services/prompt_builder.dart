@@ -5,10 +5,19 @@ import 'entitlements.dart' show kMaxCustomPromptChars;
 import 'mode_prompts.dart' show kColorFilterTail;
 import 'zoom_range.dart' show formatZoom;
 
-/// v11.63 simple one-line enhance for every normal and zoom photo
-/// (1x–100x Pro Photo). Mirrored in enhance-server/prompts.py
-/// (UNIVERSAL_ENHANCE_PROMPT / ZOOM_CLEAN_PROMPT).
+/// v11.68 Pro AI enhance (HD / Full HD / Ultra HD and gallery).
+/// Mirrored in enhance-server/prompts.py (UNIVERSAL_ENHANCE_PROMPT).
 const String kUniversalEnhancePrompt =
+    'Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information.';
+
+/// v11.68: appended to the zoom "Beyond clear range" prompt and the Pro AI
+/// Night prompt. Mirrored in enhance-server/prompts.py (NO_INVENT_LINE).
+const String kNoInventLine =
+    'Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes.';
+
+/// v11.63 photo line, kept as the zoom-clean / night base so v11.68 can
+/// append [kNoInventLine] without rewriting those prompts.
+const String kPhotoCleanupPrompt =
     'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.';
 
 /// v11.63 Portrait variant (Pro AI Portrait, 1x–100x): same cleanup plus
@@ -34,19 +43,26 @@ const String kHighZoomClarity =
 /// first, the photo to enhance last. Mirrors the server's hidden prompt
 /// (key builds only).
 /// v11.34 high zoom (2x+, all phones): keep the photo, raise its detail.
-/// v11.63: zoom uses the same simple one-line prompt as Pro Photo.
+/// v11.68: the v11.63 cleanup line plus [kNoInventLine] (Beyond clear range).
 /// Mirrored in enhance-server/prompts.py (ZOOM_CLEAN_PROMPT).
-const String kZoomCleanPrompt = kUniversalEnhancePrompt;
+const String kZoomCleanPrompt =
+    'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are. '
+    'Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes.';
 
 /// v11.59 sharp-source zoom: image 1 = sharp lower-zoom photo aligned to
 /// the zoomed area (the content), image 2 = the blurry final zoom (framing
 /// only). = prompts.ZOOM_SOURCE_PROMPT.
 const String kZoomSourcePrompt =
-    'The first image is a sharp photo of exactly the area to show. The second image is a blurrier, more zoomed photo of the same area; use it only to match the framing. Show the first image\'s real content at that framing as a clear, natural camera photo. Keep every visible shape, colour, print, letter, pattern and design exactly as in the first image. Where detail is not visible in the first image, leave it soft; do not invent new texture, detail or objects.';
+    'The first image is a sharp photo of exactly the area to show. The second image is a blurrier, more zoomed photo of the same area; use it only to match the framing. Show the first image\'s real content at that framing as a clear, natural camera photo. Keep every visible shape, colour, print, letter, pattern and design exactly as in the first image. Where detail is not visible in the first image, leave it soft; do not invent new texture, detail or objects. '
+    'Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes.';
 const String kZoomLadderRefsLine =
     'The other images are clearer close-up views of the same area; use them '
     'for detail.';
-const String kZoomLadderPrompt = '$kZoomCleanPrompt $kZoomLadderRefsLine';
+const String kZoomLadderPrompt =
+    'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are. '
+    'The other images are clearer close-up views of the same area; use them '
+    'for detail. '
+    'Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes.';
 
 const String kContextImageSentence =
     'Use the second image only to understand the scene; enhance and upscale '
@@ -54,9 +70,10 @@ const String kContextImageSentence =
 
 /// Pro AI night mode: appended right after [kLockedEnhancePrompt] (exact
 /// wording approved by Ankush). Mirrored in enhance-server/prompts.py.
-// v11.48: general night prompt.
+// v11.48: general night prompt. v11.68: append [kNoInventLine].
 const String kNightPrompt =
-    'A natural night photograph of the last image: gently reduce noise, recover shadow detail and keep the real lighting and mood. Keep every object, light and colour as in the photo and do not add anything new. Photorealistic.';
+    'A natural night photograph of the last image: gently reduce noise, recover shadow detail and keep the real lighting and mood. Keep every object, light and colour as in the photo and do not add anything new. Photorealistic. '
+    'Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes.';
 
 /// AI style / custom "Prompt" wrapper (looks are NOT enhances: the
 /// locked enhance prompt forbids changing clothes/background, so looks use
@@ -150,13 +167,14 @@ String buildEnhancePrompt({
   bool contextBoxed = false,
   bool portrait = false,
 }) {
-  // v11.63: simple one-line prompt for normal / zoom / night photos;
-  // Portrait uses its bokeh variant instead of the base. [zoom],
-  // [opticalLimit] and [night] are kept for callers but no longer change
-  // the text. A [modePrompt] (Macro levels) is still appended.
+  // v11.68: Pro AI enhance uses the restore prompt; Portrait keeps its
+  // bokeh variant. Night keeps this same enhance base and appends
+  // [kNoInventLine]. [zoom] / [opticalLimit] no longer change the text.
+  // A [modePrompt] (Macro levels) is still appended.
   final parts = <String>[portrait ? kPortraitEnhancePrompt : kUniversalEnhancePrompt];
   final mp = modePrompt?.trim() ?? '';
   if (mp.isNotEmpty) parts.add(mp);
+  if (night) parts.add(kNoInventLine);
   if (hasContextImage) {
     parts.add(contextBoxed ? kContextBoxedSentence : kContextImageSentence);
   }

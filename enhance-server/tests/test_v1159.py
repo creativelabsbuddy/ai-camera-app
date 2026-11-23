@@ -29,14 +29,16 @@ def test_version():
 def test_prompts_safe_and_match_app():
     import os
     import re
-    assert P.ZOOM_CLEAN_PROMPT == P.UNIVERSAL_ENHANCE_PROMPT
+    assert P.ZOOM_CLEAN_PROMPT != P.UNIVERSAL_ENHANCE_PROMPT
+    assert P.ZOOM_CLEAN_PROMPT == P.PHOTO_CLEANUP_PROMPT + " " + P.NO_INVENT_LINE
     assert P.ZOOM_SOURCE_PROMPT.startswith("The first image is a sharp photo")
     assert "only to match the framing" in P.ZOOM_SOURCE_PROMPT
+    assert P.ZOOM_SOURCE_PROMPT.endswith(P.NO_INVENT_LINE)
     path = os.path.join(os.path.dirname(__file__), "..", "..", "ai_camera", "lib", "services",
                         "prompt_builder.dart")
     src = open(path, encoding="utf-8").read()
-    m = re.search(r"const String kZoomSourcePrompt =\s*\n\s*'((?:[^'\\]|\\.)*)';", src)
-    assert m.group(1).replace("\\'", "'") == P.ZOOM_SOURCE_PROMPT
+    from test_server import _dart_string_const
+    assert _dart_string_const(src, "kZoomSourcePrompt") == P.ZOOM_SOURCE_PROMPT
     assert P.zoom_source_prompt("oil", None) == P.ZOOM_SOURCE_PROMPT + " Style: oil"
 
 

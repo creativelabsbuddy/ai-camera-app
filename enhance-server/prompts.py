@@ -8,10 +8,20 @@ import json
 import re
 from typing import Optional
 
-# v11.63: simple one-line enhance for every normal and zoom photo
-# (1x–100x Pro Photo). Mirrors kUniversalEnhancePrompt / kZoomCleanPrompt.
+# v11.68 Pro AI enhance (HD / Full HD / Ultra HD and gallery).
+# Mirrors kUniversalEnhancePrompt.
 UNIVERSAL_ENHANCE_PROMPT = (
-    'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.'
+    "Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information."
+)
+# v11.68: appended to the zoom "Beyond clear range" prompt and the Pro AI
+# Night prompt. Mirrors kNoInventLine.
+NO_INVENT_LINE = (
+    "Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes."
+)
+# v11.63 photo line, kept as the zoom-clean / night base so v11.68 can
+# append NO_INVENT_LINE without rewriting those prompts.
+PHOTO_CLEANUP_PROMPT = (
+    "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."
 )
 # v11.63 Portrait variant (used INSTEAD of the universal prompt), 1x–100x.
 PORTRAIT_ENHANCE_PROMPT = (
@@ -64,8 +74,9 @@ FILTER_PROMPTS = {
 # Night (Pro AI): the phone already merged a burst and tone-mapped it to a
 # NATURAL night look; the AI must keep it night and never invent structure
 # (v10 test: a near-black shot came back with invented pillars / ground).
-NIGHT_PROMPT = (  # v11.48: general, no scene-specific words
-    "A natural night photograph of the last image: gently reduce noise, recover shadow detail and keep the real lighting and mood. Keep every object, light and colour as in the photo and do not add anything new. Photorealistic."
+NIGHT_PROMPT = (  # v11.48: general, no scene-specific words. v11.68: append NO_INVENT_LINE.
+    "A natural night photograph of the last image: gently reduce noise, recover shadow detail and keep the real lighting and mood. Keep every object, light and colour as in the photo and do not add anything new. Photorealistic. "
+    + NO_INVENT_LINE
 )
 
 PORTRAIT_PROMPT = PORTRAIT_ENHANCE_PROMPT  # v11.58: admin key 'portrait' = the variant
@@ -793,16 +804,18 @@ def build_prompt(
     context_boxed: bool = False,
     portrait_prompt: Optional[str] = None,
 ) -> str:
-    """v11.63: simple one-line prompt (or the Portrait bokeh variant given
-    as ``portrait_prompt``, used INSTEAD of the base) + optional mode
+    """v11.68: Pro AI enhance restore prompt (or the Portrait bokeh variant
+    given as ``portrait_prompt``, used INSTEAD of the base) + optional mode
     sentence (Macro levels) + context, quality, AI-filter style, colour
-    look, user request. ``zoom`` / ``optical_limit`` / ``night`` no longer
-    change the text."""
+    look, user request. ``zoom`` / ``optical_limit`` no longer change the
+    text. ``night`` appends NO_INVENT_LINE after the base / mode sentence."""
     pp = (portrait_prompt or "").strip()
     parts = [pp or UNIVERSAL_ENHANCE_PROMPT]
     mp = (mode_prompt or "").strip()
     if mp:
         parts.append(mp)
+    if night:
+        parts.append(NO_INVENT_LINE)
     if has_context:
         parts.append(CONTEXT_BOXED_SENTENCE if context_boxed else CONTEXT_IMAGE_SENTENCE)
     qs = QUALITY_SENTENCES.get(tier, "")
@@ -900,13 +913,15 @@ MACRO_CONTEXT_LINE = (
 # v11.30 100x zoom ladder (cheap phones): boxed lower-zoom reference photos
 # first, the final photo (to enhance) last. Hidden; the app sends only a flag.
 # v11.34 high zoom (2x+, all phones): keep the photo, raise its own detail.
-# v11.63: zoom uses the same simple one-line prompt as Pro Photo
-# (= kZoomCleanPrompt / UNIVERSAL_ENHANCE_PROMPT). Last photo only.
-ZOOM_CLEAN_PROMPT = UNIVERSAL_ENHANCE_PROMPT
+# v11.68: the v11.63 cleanup line plus NO_INVENT_LINE (Beyond clear range).
+# Last photo only. Mirrors kZoomCleanPrompt.
+ZOOM_CLEAN_PROMPT = PHOTO_CLEANUP_PROMPT + " " + NO_INVENT_LINE
 # v11.59 sharp-source zoom (= kZoomSourcePrompt): image 1 = the sharp lower-zoom
 # photo aligned to the zoomed area (content), image 2 = the final zoom (framing only).
+# v11.68: append NO_INVENT_LINE.
 ZOOM_SOURCE_PROMPT = (
-    "The first image is a sharp photo of exactly the area to show. The second image is a blurrier, more zoomed photo of the same area; use it only to match the framing. Show the first image's real content at that framing as a clear, natural camera photo. Keep every visible shape, colour, print, letter, pattern and design exactly as in the first image. Where detail is not visible in the first image, leave it soft; do not invent new texture, detail or objects."
+    "The first image is a sharp photo of exactly the area to show. The second image is a blurrier, more zoomed photo of the same area; use it only to match the framing. Show the first image's real content at that framing as a clear, natural camera photo. Keep every visible shape, colour, print, letter, pattern and design exactly as in the first image. Where detail is not visible in the first image, leave it soft; do not invent new texture, detail or objects. "
+    + NO_INVENT_LINE
 )
 ZOOM_SOURCE_MAIN_LONG = 1536
 ZOOM_FRAMING_LONG = 768
@@ -914,7 +929,7 @@ ZOOM_FRAMING_LONG = 768
 ZOOM_LADDER_REFS_LINE = (
     "The other images are clearer close-up views of the same area; use them for detail."
 )
-ZOOM_LADDER_PROMPT = ZOOM_CLEAN_PROMPT + " " + ZOOM_LADDER_REFS_LINE
+ZOOM_LADDER_PROMPT = PHOTO_CLEANUP_PROMPT + " " + ZOOM_LADDER_REFS_LINE + " " + NO_INVENT_LINE
 ZOOM_LADDER_MAX_REFS = 3
 ZOOM_LADDER_LONG = 768        # reference crops
 ZOOM_LADDER_MAIN_LONG = 1536  # v11.31: the final photo (or native if smaller)

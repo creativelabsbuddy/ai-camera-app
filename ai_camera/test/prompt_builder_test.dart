@@ -18,8 +18,8 @@ void main() {
   test('locked prompt unchanged and always first', () {
     expect(
       kLockedEnhancePrompt,
-      'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are.',
-    ); // v11.63 simple enhance prompt
+      'Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information.',
+    ); // v11.68 restore enhance prompt
     final v6Locked = kLockedEnhancePrompt;
     expect(buildEnhancePrompt(), v6Locked);
     expect(

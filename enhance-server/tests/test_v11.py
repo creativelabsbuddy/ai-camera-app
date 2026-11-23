@@ -226,7 +226,7 @@ def test_pose_media_rejects_traversal(env):
 
 # == hidden prompts ==========================================================
 def test_default_prompts_content():
-    assert P.LOCKED_ENHANCE_PROMPT == "Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Do not change, add or remove anything; keep all shapes, text and details as they are."  # v11.63
+    assert P.LOCKED_ENHANCE_PROMPT == "Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information."  # v11.68
     assert "cells" not in P.LOCKED_ENHANCE_PROMPT
     port = P.PORTRAIT_PROMPT.lower()
     for k in ["sharpen", "natural tone", "bokeh", "subject sharp"]:
@@ -377,6 +377,7 @@ def test_pro_night_good_result_is_charged(env):
     assert r.headers["x-credits-charged"] == "1" or r.headers["x-trials-used"]
     p = up.calls[-1]["prompt"]
     assert p.startswith(P.UNIVERSAL_ENHANCE_PROMPT) and P.NIGHT_PROMPT not in p  # v11.58
+    assert p.endswith(P.NO_INVENT_LINE) or P.NO_INVENT_LINE in p  # v11.68
 
 
 # == v11.1 Macro + AI Microscope ===========================================

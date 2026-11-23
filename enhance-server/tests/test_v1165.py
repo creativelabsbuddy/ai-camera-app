@@ -28,13 +28,14 @@ def _jpg(w, h):
 def test_face_preserving_prompts():
     face = ("Keep every face exactly the same person: same face shape, eyes, nose, lips, "
             "skin tone and expression.")
-    assert P.UNIVERSAL_ENHANCE_PROMPT == ("Clean up and sharpen this image, with a natural tone. " + face +
-                                          " Do not change, add or remove anything; keep all shapes, text "
-                                          "and details as they are.")
+    assert P.UNIVERSAL_ENHANCE_PROMPT == "Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information."
+    assert P.PHOTO_CLEANUP_PROMPT == ("Clean up and sharpen this image, with a natural tone. " + face +
+                                      " Do not change, add or remove anything; keep all shapes, text "
+                                      "and details as they are.")
     assert P.PORTRAIT_ENHANCE_PROMPT == ("Clean up and sharpen this image, with a natural tone. " + face +
                                          " Blur only the background with a natural bokeh, and keep the "
                                          "subject sharp. Do not change, add or remove anything else.")
-    assert P.ZOOM_CLEAN_PROMPT == P.UNIVERSAL_ENHANCE_PROMPT
+    assert P.ZOOM_CLEAN_PROMPT == P.PHOTO_CLEANUP_PROMPT + " " + P.NO_INVENT_LINE
 
 
 def test_macro_frame_fill_prompts():

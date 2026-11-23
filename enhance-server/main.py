@@ -1061,6 +1061,7 @@ async def enhance_v1(
                 has_context=with_ctx, zoom=zoom, optical_limit=optical_limit, tier=quality,
                 style_prompt=filt, mode_prompt=mode_text, color_prompt=color_text,
                 context_boxed=context_boxed, portrait_prompt=portrait_text,
+                night=is_night,
             )
             return build_payload(prompt, quality, aspect, data_url(main_jpg), ctx_url)
 
