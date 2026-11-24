@@ -1747,6 +1747,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   /// Shutter tap: self-timer countdown first when set (tap again to cancel).
   void _onShutter() {
+    if (_macroComingSoonView) return;
     if (_nightCountdown != null) {
       _cancelNightCountdown();
       return;
@@ -1789,6 +1790,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// Shutter ONLY (no background / zoom-time capture): full-res still at the
   /// camera's real (clamped) zoom, then crop exactly the on-screen region.
   Future<void> _capture() async {
+    if (_macroComingSoonView) return;
     final route = _route;
     if (route.blocked) {
       _showBlockedNote(route.block);
@@ -2745,7 +2747,14 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   // ---- Macro (PRO AI) v11.33: level chips + centre box -----------------------
 
-  bool get _macroActive => _shootMode == ShootMode.macro && _aiMode;
+  /// Live Macro camera flow (levels, box, AI, credits). Off while the
+  /// mode is on hold so none of that path can run.
+  bool get _macroActive =>
+      _shootMode == ShootMode.macro && _aiMode && !kMacroComingSoon;
+
+  /// Macro is selected but held: show "Coming soon", never capture or charge.
+  bool get _macroComingSoonView =>
+      kMacroComingSoon && _shootMode == ShootMode.macro;
 
   /// Max zoom for the macro levels: min(10x, device max) (v11.41).
   /// v11.66: Microscope / Extreme / Ultra 15x. v11.67: past the camera's
@@ -3947,6 +3956,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       !_processingCapture &&
       !_captureLock &&
       _countdown == null &&
+      !_macroComingSoonView &&
       (ModalRoute.of(context)?.isCurrent ?? true);
 
   Future<void> _setShootMode(ShootMode m) async {
@@ -3982,7 +3992,9 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     ShootMode.photo => 'Photo',
     ShootMode.portrait => _aiMode ? 'Portrait · AI bokeh' : 'Portrait',
     ShootMode.night => _aiMode ? 'Pro Night' : 'Night · hold still',
-    ShootMode.macro => _aiMode ? kMacroTip : kMacroNeedsProNote,
+    ShootMode.macro => kMacroComingSoon
+        ? kMacroComingSoonMessage
+        : (_aiMode ? kMacroTip : kMacroNeedsProNote),
     ShootMode.document => 'Document scan',
     ShootMode.hdr => 'Photo', // v11.49: HDR removed
     ShootMode.pose => 'Pose · pick a photo to copy',
@@ -4419,6 +4431,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                 child: Stack(
                   children: [
                     Positioned.fill(child: _buildViewfinderArea()),
+                    if (_macroComingSoonView)
+                      const Positioned.fill(child: _MacroComingSoon()),
                     // Blocked-mode notes (also when the camera is closed).
                     Positioned(
                       top: 48,
@@ -4499,7 +4513,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                   ),
                   _CaptureButton(
                     onTap: _onShutter,
-                    ai: _aiMode,
+                    ai: _aiMode && !_macroComingSoonView,
                     countingDown: _countdown != null,
                   ),
                   _CircleButton(
@@ -5520,6 +5534,42 @@ class _HoldStillCount extends StatelessWidget {
 }
 
 /// Small pill note on the viewfinder (optional one-tap action).
+/// v11.68: clean "Coming soon" state that replaces the Macro camera flow
+/// while [kMacroComingSoon] is on. No AI, no credits.
+class _MacroComingSoon extends StatelessWidget {
+  const _MacroComingSoon();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: Color(0x99000000),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.local_florist_outlined,
+              size: 36,
+              color: Colors.white70,
+            ),
+            SizedBox(height: 12),
+            Text(
+              kMacroComingSoonMessage,
+              key: ValueKey<String>('macro_coming_soon'),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ModeNote extends StatelessWidget {
   const _ModeNote({
     super.key,

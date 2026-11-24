@@ -8,6 +8,14 @@ import 'scene_suggest.dart';
 import 'zoom_info.dart';
 
 /// v11 Macro (Pro AI only): distance guide, zoom chips per device, burst.
+///
+/// v11.68 hold: [kMacroComingSoon]. Flip to false to reopen this pipeline
+/// unchanged (levels, box, detection, prompts, credits — all kept).
+const bool kMacroComingSoon = true;
+
+/// In-app text shown when [kMacroComingSoon] is on (English only).
+const String kMacroComingSoonMessage = 'Coming soon';
+
 enum MacroGuideState { closer, tooClose, ready }
 
 /// Guide thresholds (Laplacian variance on the ~640 px analysis frame).

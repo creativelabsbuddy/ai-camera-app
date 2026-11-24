@@ -416,8 +416,8 @@ void main() {
   });
 
   group('5: clear reference (behind kClearRefEnabled)', () {
-    test('switch on; limit S24 Ultra 10x, cheap phones ~2-3x', () {
-      expect(kClearRefEnabled, isTrue);
+    test('switch off in v11.68; limit S24 Ultra 10x, cheap phones ~2-3x', () {
+      expect(kClearRefEnabled, isFalse);
       // S24 Ultra: optical 5x tele, camera max 10x → 10x
       expect(
         clearRefLimit(lowEnd: false, opticalLimit: 5, hardwareMax: 10, pixelClear: 6),

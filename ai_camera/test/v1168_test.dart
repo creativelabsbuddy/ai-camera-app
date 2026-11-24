@@ -1,11 +1,14 @@
 // v11.68 (1.11.68+81) tests: restore enhance prompt; no-invent line on
-// zoom "Beyond clear range" and Pro AI Night.
+// zoom "Beyond clear range" and Pro AI Night; clear reference off;
+// Macro held behind kMacroComingSoon.
 import 'dart:io';
 
 import 'package:ai_camera/config/ai_config.dart';
 import 'package:ai_camera/models/quality_tier.dart';
+import 'package:ai_camera/models/shoot_mode.dart';
 import 'package:ai_camera/services/clear_ref.dart';
 import 'package:ai_camera/services/enhance_service.dart';
+import 'package:ai_camera/services/macro.dart';
 import 'package:ai_camera/services/prompt_builder.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -102,6 +105,67 @@ void main() {
       expect(p, isNot(contains('A natural night photograph')));
       expect(buildEnhancePrompt(), restore);
       expect(buildEnhancePrompt(), isNot(contains(noInvent)));
+    });
+  });
+
+  group('3: clear reference switched off', () {
+    test('kClearRefEnabled is false; wiring kept', () {
+      expect(kClearRefEnabled, isFalse);
+      final home = File(
+        'lib/screens/home_camera_screen.dart',
+      ).readAsStringSync();
+      // Path still exists, only the switch is off.
+      expect(
+        home,
+        contains(
+          '      kClearRefEnabled &&\n      _snapshotMode &&\n      !_macroActive &&',
+        ),
+      );
+      expect(
+        File('lib/services/clear_ref.dart').readAsStringSync(),
+        contains('const bool kClearRefEnabled = false;'),
+      );
+    });
+  });
+
+  group('4: Macro on hold (kMacroComingSoon)', () {
+    test('one flag, English Coming soon, existing pipeline intact', () {
+      expect(kMacroComingSoon, isTrue);
+      expect(kMacroComingSoonMessage, 'Coming soon');
+      // Credits / level tables are unchanged (hold is UI-only).
+      expect(kMacroLevelCredits['microscope'], 5);
+      expect(kMacroLevelCredits['extreme'], 2);
+      expect(kMacroLevelCredits['ultra'], 2);
+      final macro = File('lib/services/macro.dart').readAsStringSync();
+      expect(macro, contains('const bool kMacroComingSoon = true;'));
+      final home = File(
+        'lib/screens/home_camera_screen.dart',
+      ).readAsStringSync();
+      expect(
+        home,
+        contains(
+          '  bool get _macroActive =>\n'
+          '      _shootMode == ShootMode.macro && _aiMode && !kMacroComingSoon;',
+        ),
+      );
+      expect(home, contains('if (_macroComingSoonView) return;'));
+      expect(
+        home,
+        contains("const Positioned.fill(child: _MacroComingSoon())"),
+      );
+      expect(home, contains('kMacroComingSoonMessage'));
+      // Existing Macro camera flow is still in the source (reopen by flipping the flag).
+      expect(home, contains('CaptureKind.macroBurst'));
+      expect(home, contains('if (_macroActive) {'));
+      expect(home, contains('MacroLevelChips('));
+    });
+
+    test('mode strip still lists Macro in Pro AI, not in Normal', () {
+      expect(ShootMode.stripFor(aiMode: true), contains(ShootMode.macro));
+      expect(
+        ShootMode.stripFor(aiMode: false),
+        isNot(contains(ShootMode.macro)),
+      );
     });
   });
 }

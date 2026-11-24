@@ -15,9 +15,12 @@ import 'capture_crop.dart' show computeCaptureCrop;
 // detail source; the final frame goes second for the framing only. Missing
 // or stale reference (zoomed back below the limit, too old, subject
 // changed) → the final frame alone, as before. Pure helpers (tested).
+// v11.68: switched off. On a single-lens tablet the clear limit equals
+// the hardware max, so the reference added no detail and Flare could
+// erase sticker text. Flip to true to turn the path back on.
 
 /// Single on/off switch for the whole feature (no remote config).
-const bool kClearRefEnabled = true;
+const bool kClearRefEnabled = false;
 
 /// Prompt line added to the sharp-source zoom prompt (= server
 /// prompts.CLEAR_REF_LINE).
