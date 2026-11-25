@@ -36,8 +36,8 @@ class _SlowBackend implements VideoBackend {
 }
 
 void main() {
-  test('version (v11.65: 1.11.68+81)', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.68+81'));
+  test('version (v11.65: 1.11.69+82)', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.69+82'));
   });
 
   group('microscope: lock at 1.5x, part only, material-aware', () {

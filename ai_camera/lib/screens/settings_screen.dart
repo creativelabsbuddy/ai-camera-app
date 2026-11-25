@@ -102,7 +102,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: AppColors.accent,
                       ),
                       title: const Text('AI Enhance'),
-                      subtitle: Text('Model: ${AiConfig.model}\n$aiMode'),
+                      subtitle: Text(
+                        'Models: ${AiConfig.model} · '
+                        '${AiConfig.sunburstModel} (Zoom, Natural)\n$aiMode',
+                      ),
                       isThreeLine: true,
                     ),
                     const Divider(height: 1, color: AppColors.surface),

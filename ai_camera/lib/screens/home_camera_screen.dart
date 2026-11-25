@@ -17,6 +17,12 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../config/features_v1169.dart';
+import '../models/photo_look.dart';
+import '../services/burst_shot.dart';
+import '../services/tone.dart';
+import '../widgets/tone_bar.dart';
+import 'burst_review_screen.dart';
 import '../models/camera_options.dart';
 import '../models/capture_mode.dart';
 import '../models/pose_photo.dart';
@@ -249,6 +255,18 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       PremiumFilter.original; // v11.51: no colour filters
   final double _strength = 1.0;
 
+  // v11.69 Pro Photo look (Natural = Sunburst / Studio = Flare), remembered.
+  PhotoLook _photoLook = PhotoLook.defaultLook;
+  bool _lookTip = false; // first-time tip under the chip
+  Timer? _lookTipTimer;
+
+  // v11.69 free Tone preset (Normal Photo), live preview + after capture.
+  TonePreset _tonePreset = TonePreset.auto;
+
+  // v11.69 Normal burst: frames taken so far (null = no burst running).
+  int? _burstCount;
+  bool _burstTipSeen = true;
+
   // Quick menu (four-dot button) and the strip it opens above the shutter.
   bool _menuOpen = false;
   _Panel _panel = _Panel.none;
@@ -321,7 +339,6 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   MacroLevel? _macroLevel;
   final MacroBoxCheck _boxCheck = MacroBoxCheck();
   ContextSnapshot? _microHint;
-
 
   /// v11.66 stepwise macro zoom: gates done (a failed photo still opens
   /// the gate so the user is never stuck), the gate photos, their detection
@@ -433,6 +450,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       final fl = FlashChoice.fromName(prefs.getString(FlashChoice.prefsKey));
       final tm = TimerChoice.fromName(prefs.getString(TimerChoice.prefsKey));
       final nf = prefs.getString(_kNightFlashKey);
+      // v11.69
+      final look = PhotoLook.fromId(prefs.getString(PhotoLook.prefsKey));
+      final tipSeen = prefs.getBool(PhotoLook.tipSeenKey) ?? false;
+      final tone = TonePreset.fromName(prefs.getString(TonePreset.prefsKey));
+      final burstTip = prefs.getBool(kBurstTipSeenKey) ?? false;
       CameraFeatures feats = const CameraFeatures();
       final fj = prefs.getString(CameraFeatures.prefsKey);
       if (fj != null) {
@@ -450,6 +472,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           _flash = fl;
           _timer = tm;
           if (nf != null) _nightFlash = FlashChoice.fromName(nf);
+          _photoLook = look;
+          _lookTip = kProLookToggle && !tipSeen;
+          _tonePreset = tone;
+          _burstTipSeen = burstTip;
         });
         unawaited(_applyFlash());
         _syncLevel();
@@ -467,6 +493,169 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   }
 
   bool get _aiMode => _mode == CaptureMode.pro;
+
+  // ---- v11.69 Pro Photo look · Tone presets · Burst ------------------------
+
+  /// Natural | Studio chip: Pro AI Photo, outside Zoom mode.
+  bool get _showLookChip =>
+      kProLookToggle &&
+      _aiMode &&
+      _shootMode == ShootMode.photo &&
+      !_night &&
+      !_zoomModeActive &&
+      !_macroComingSoonView &&
+      _pendingLook == null &&
+      !_menuOpen &&
+      !_rulerOpen;
+
+  /// Free tone presets strip: Normal Photo.
+  bool get _toneStripOn =>
+      kTonePresets &&
+      !_aiMode &&
+      _shootMode == ShootMode.photo &&
+      !_night &&
+      _bokeh == null;
+
+  bool get _showToneStrip => _toneStripOn && !_menuOpen && !_rulerOpen;
+
+  void _setPhotoLook(PhotoLook l) {
+    if (l == _photoLook) return;
+    HapticFeedback.selectionClick();
+    setState(() => _photoLook = l);
+    unawaited(_savePref(PhotoLook.prefsKey, l.id));
+    _dismissLookTip();
+  }
+
+  void _dismissLookTip() {
+    _lookTipTimer?.cancel();
+    _lookTipTimer = null;
+    if (!_lookTip) return;
+    setState(() => _lookTip = false);
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(PhotoLook.tipSeenKey, true);
+      } catch (_) {}
+    }());
+  }
+
+  void _setTonePreset(TonePreset t) {
+    if (t == _tonePreset) return;
+    HapticFeedback.selectionClick();
+    setState(() => _tonePreset = t);
+    unawaited(_savePref(TonePreset.prefsKey, t.name));
+  }
+
+  /// Normal Photo + plain single capture → long-press = Burst.
+  bool get _burstAvailable =>
+      kBurstShot &&
+      !_aiMode &&
+      _shootMode == ShootMode.photo &&
+      !_night &&
+      _bokeh == null &&
+      _route.capture == CaptureKind.single &&
+      !_route.blocked;
+
+  void _onShutterLongPress() {
+    if (!_burstAvailable) {
+      _onShutter();
+      return;
+    }
+    if (_countdown != null || _nightCountdown != null) return;
+    unawaited(_captureBurst());
+  }
+
+  Future<void> _captureBurst() async {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized || c.value.isTakingPicture) return;
+    if (_processingCapture || _captureLock) return;
+    final snap = _snap();
+    _captureLock = true;
+    HapticFeedback.mediumImpact();
+    setState(() {
+      _processingCapture = true;
+      _burstCount = 0;
+    });
+    final paths = <String>[];
+    await _vision.pause(keepStream: true);
+    final flashWas = _flash;
+    try {
+      await _waitZoomSettled();
+      // No flash burst (8 flashes are slow and blinding).
+      if (flashWas != FlashChoice.off) {
+        try {
+          await c.setFlashMode(FlashMode.off);
+        } catch (_) {}
+      }
+      final ourAf = await _preCapture();
+      try {
+        for (var i = 0; i < kBurstFrames; i++) {
+          if (!identical(c, _controller) || !c.value.isInitialized) break;
+          try {
+            paths.add((await c.takePicture()).path);
+          } catch (e) {
+            debugPrint('Burst frame $i failed: $e');
+            if (paths.isEmpty) rethrow;
+            break;
+          }
+          if (mounted) setState(() => _burstCount = paths.length);
+        }
+      } finally {
+        unawaited(_focus.afterCapture(ourAf));
+      }
+    } catch (e) {
+      if (mounted && paths.isEmpty) _snack('Burst failed: $e');
+    } finally {
+      if (flashWas != FlashChoice.off) unawaited(_applyFlash());
+      _captureLock = false;
+      if (mounted) {
+        setState(() {
+          _processingCapture = false;
+          _burstCount = null;
+        });
+      }
+    }
+    if (!mounted || paths.isEmpty) {
+      unawaited(_vision.resume());
+      return;
+    }
+    try {
+      if (paths.length < kBurstMinFrames) {
+        await _openPreview(paths.first, snap);
+        return;
+      }
+      final r = await Navigator.of(context).push<BurstResult>(
+        MaterialPageRoute<BurstResult>(
+          builder: (_) => BurstReviewScreen(
+            frames: paths,
+            portraitRatio: snap.ratio.portrait,
+            digitalZoom: snap.digital,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      final saved = r?.saved ?? const <File>[];
+      if (saved.isNotEmpty) setState(() => _lastShot = saved.first);
+      if (_controller == null || !_controller!.value.isInitialized) {
+        unawaited(_setupCamera());
+      }
+    } finally {
+      if (mounted) unawaited(_vision.resume());
+    }
+  }
+
+  /// One-time "hold the shutter for Burst" hint after a Normal photo.
+  void _maybeBurstTip() {
+    if (_burstTipSeen || !_burstAvailable) return;
+    _burstTipSeen = true;
+    _showToast(kBurstTip);
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(kBurstTipSeenKey, true);
+      } catch (_) {}
+    }());
+  }
 
   void _showToast(String text) {
     setState(() {
@@ -657,7 +846,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// photo (or [photo] when already known) and opens the confirm sheet
   /// directly. No Take photo / gallery picker. No photo → toast and stop.
   Future<void> _startVideoStyle(AiStyle s, {File? photo}) async {
-    final f = photo ??
+    final f =
+        photo ??
         (_lastShot != null && _lastShot!.existsSync() ? _lastShot : null);
     if (f == null) {
       _showToast('Take a photo first');
@@ -775,6 +965,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   @override
   void dispose() {
+    _lookTipTimer?.cancel();
     _clearRefTimer?.cancel();
     _dropClearRef();
     _gyroSub?.cancel();
@@ -1269,9 +1460,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   }
 
   /// v11.36: no centre AF pass while the far-bright latch holds focus.
-  Future<bool> _preCapture({bool force = false}) => _brightApplied
-      ? Future.value(false)
-      : _focus.preCapture(force: force);
+  Future<bool> _preCapture({bool force = false}) =>
+      _brightApplied ? Future.value(false) : _focus.preCapture(force: force);
 
   /// v11.36: Zoom mode is on and usable (Pro AI photo, back camera).
   bool get _zoomModeActive =>
@@ -1337,13 +1527,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       final top = mp != null
           ? regionTop(g, kThumbW, kThumbH, mp)
           : (spot?.top ??
-                regionTop(
-                  g,
-                  kThumbW,
-                  kThumbH,
-                  const Offset(0.5, 0.5),
-                  r: 0.5,
-                ));
+                regionTop(g, kThumbW, kThumbH, const Offset(0.5, 0.5), r: 0.5));
       _latchTop = top;
       final next = nextLatchExposure(_latchNs, top);
       if (next != _latchNs) {
@@ -1969,7 +2153,8 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
             _snack(fail ?? kMicroNoLock);
             return;
           }
-          note = '$note · locked: '
+          note =
+              '$note · locked: '
               '${lockName == kMacroGeneralSubject ? '(vague)' : lockName}';
           if (_boxDbg != null && AiConfig.hasEmbeddedApiKey) {
             note = '$note · ${_boxDbg!.replaceAll('\n', ' | ')}';
@@ -1986,7 +2171,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         // cloud subject detection. Extreme / Ultra try ONE detection on the
         // box area; v11.40: unclear → no refusal, the zoomed view (+ context
         // photos) is sent instead of the spot text.
-        if (level != null && level.isMicroscopic && lockName != null && lockPart != null) {
+        if (level != null &&
+            level.isMicroscopic &&
+            lockName != null &&
+            lockPart != null) {
           // v11.58: locked object + its part → material-aware text prompt.
           microSpot = lockPart;
           subject = lockName;
@@ -2346,11 +2534,17 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
           macroLevel: macroLevel,
           gateDetect: gateDetect,
           captureNote: captureNote,
+          // v11.69: Pro Photo look (Zoom mode always Sunburst) / Tone preset.
+          photoLook: ai && aiModeId == 'photo' && kProLookToggle
+              ? _photoLook
+              : null,
+          tonePreset: !ai && _toneStripOn ? _tonePreset : TonePreset.auto,
         ),
       ),
     );
     _afterFrames = false;
     if (!mounted) return;
+    if (!ai) _maybeBurstTip(); // v11.69 one-time hint
     if (result == 'flash_on') _setNightFlashOn();
     // v11.27: X on the result → fully fresh Macro start at 1x.
     if (result == kPreviewClosed && _macroActive) unawaited(_freshMacroStart());
@@ -3044,12 +3238,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// object in the box + what else is in the frame + what is visible. 10x:
   /// the 5x answer goes along; the part of that object in the box + what is
   /// visible on it; a different object → the lock follows it.
-  Future<void> _detectAtGate(
-    double g,
-    String path,
-    double dig,
-    int gen,
-  ) async {
+  Future<void> _detectAtGate(double g, String path, double dig, int gen) async {
     final temps = <String>[];
     Future<String> tmp(Future<String> f) async {
       final out = await f;
@@ -3098,9 +3287,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// saw the object) and the final frame must not be fully blurry; both
   /// fail closed (no AI call, nothing charged). Macro / Close below 5x go
   /// on with the final frame only and the general subject.
-  Future<
-    ({String? lock, String? part, GateDetect? detect, String? fail})
-  >
+  Future<({String? lock, String? part, GateDetect? detect, String? fail})>
   _fromGates(String path, double crop, MacroLevel level) async {
     final micro = level.isMicroscopic;
     final gates = macroGateZooms(level, _macroLimitFor(level));
@@ -3244,7 +3431,11 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
         return;
       }
       _dropClearRef();
-      _clearRef = ClearRef(path: shot.path, cameraZoom: cam, at: DateTime.now());
+      _clearRef = ClearRef(
+        path: shot.path,
+        cameraZoom: cam,
+        at: DateTime.now(),
+      );
       ok = true;
       debugPrint('Clear ref @ ${cam.toStringAsFixed(2)}x');
     } catch (e) {
@@ -3289,10 +3480,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
       if (path == null) {
         return (null, clearRefDebug(reason: 'stale', match: score));
       }
-      return (
-        File(path),
-        clearRefDebug(refZoom: ref.cameraZoom, match: score),
-      );
+      return (File(path), clearRefDebug(refZoom: ref.cameraZoom, match: score));
     } catch (e) {
       debugPrint('Clear ref crop failed: $e');
       return (null, clearRefDebug(reason: 'failed'));
@@ -3992,9 +4180,10 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     ShootMode.photo => 'Photo',
     ShootMode.portrait => _aiMode ? 'Portrait · AI bokeh' : 'Portrait',
     ShootMode.night => _aiMode ? 'Pro Night' : 'Night · hold still',
-    ShootMode.macro => kMacroComingSoon
-        ? kMacroComingSoonMessage
-        : (_aiMode ? kMacroTip : kMacroNeedsProNote),
+    ShootMode.macro =>
+      kMacroComingSoon
+          ? kMacroComingSoonMessage
+          : (_aiMode ? kMacroTip : kMacroNeedsProNote),
     ShootMode.document => 'Document scan',
     ShootMode.hdr => 'Photo', // v11.49: HDR removed
     ShootMode.pose => 'Pose · pick a photo to copy',
@@ -4358,6 +4547,17 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
             initialAiFilter: ai && !gallery ? _aiFilter : null,
             initialFilter: _premium,
             initialStrength: _strength,
+            // v11.69
+            photoLook:
+                ai &&
+                    !gallery &&
+                    kProLookToggle &&
+                    _shootMode == ShootMode.photo
+                ? _photoLook
+                : null,
+            tonePreset: !ai && !gallery && _toneStripOn
+                ? _tonePreset
+                : TonePreset.auto,
           ),
         ),
       );
@@ -4513,8 +4713,13 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                   ),
                   _CaptureButton(
                     onTap: _onShutter,
+                    // v11.69: long-press = Burst (Normal Photo).
+                    onLongPress: _burstAvailable && !_processingCapture
+                        ? _onShutterLongPress
+                        : null,
                     ai: _aiMode && !_macroComingSoonView,
                     countingDown: _countdown != null,
+                    burstCount: _burstCount,
                   ),
                   _CircleButton(
                     key: const ValueKey('flip_camera'),
@@ -4816,6 +5021,25 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
             );
           },
         ),
+        // v11.69 Pro Photo look chip / free Tone presets, above the shutter.
+        if (_showLookChip && _cameraReady && !_processingCapture)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _PhotoLookChip(
+              look: _photoLook,
+              tip: _lookTip,
+              onSelected: _setPhotoLook,
+              onTipTap: _dismissLookTip,
+            ),
+          ),
+        if (_showToneStrip && _cameraReady && !_processingCapture)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: TonePresetStrip(
+              selected: _tonePreset,
+              onSelected: _setTonePreset,
+            ),
+          ),
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 180),
           child:
@@ -5033,7 +5257,12 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
     final previewPortrait = (sensorAspect.isFinite && sensorAspect > 0)
         ? 1 / sensorAspect
         : 3 / 4;
-    final local = premiumPreviewMatrix(_premium, _strength);
+    final premiumM = premiumPreviewMatrix(_premium, _strength);
+    // v11.69: free Tone preset live approximation (Normal Photo).
+    final toneM = _toneStripOn ? tonePreviewMatrix(_tonePreset) : null;
+    final local = premiumM == null
+        ? toneM
+        : (toneM == null ? premiumM : composeMatrices(toneM, premiumM));
     final look = _liveLook;
     final lookMatrix = look.matrix;
     // Premium filter (live LUT approximation) + AI-look colour grade.
@@ -5547,11 +5776,7 @@ class _MacroComingSoon extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.local_florist_outlined,
-              size: 36,
-              color: Colors.white70,
-            ),
+            Icon(Icons.local_florist_outlined, size: 36, color: Colors.white70),
             SizedBox(height: 12),
             Text(
               kMacroComingSoonMessage,
@@ -5978,16 +6203,120 @@ class _CircleButton extends StatelessWidget {
 
 /// Shutter: white like the stock camera in Normal, AI gradient in Pro AI.
 /// While the self-timer counts down it shows a stop square (tap = cancel).
+/// v11.69 Pro Photo "Natural | Studio" chip above the shutter, with the
+/// one-time tip under it (auto-hides after a few seconds; tap hides it).
+class _PhotoLookChip extends StatefulWidget {
+  const _PhotoLookChip({
+    required this.look,
+    required this.tip,
+    required this.onSelected,
+    required this.onTipTap,
+  });
+
+  final PhotoLook look;
+  final bool tip;
+  final ValueChanged<PhotoLook> onSelected;
+  final VoidCallback onTipTap;
+
+  @override
+  State<_PhotoLookChip> createState() => _PhotoLookChipState();
+}
+
+class _PhotoLookChipState extends State<_PhotoLookChip> {
+  Timer? _t;
+
+  @override
+  void initState() {
+    super.initState();
+    _arm();
+  }
+
+  @override
+  void didUpdateWidget(covariant _PhotoLookChip old) {
+    super.didUpdateWidget(old);
+    if (widget.tip && !old.tip) _arm();
+  }
+
+  void _arm() {
+    _t?.cancel();
+    if (!widget.tip) return;
+    _t = Timer(const Duration(seconds: 6), () {
+      if (mounted && widget.tip) widget.onTipTap();
+    });
+  }
+
+  @override
+  void dispose() {
+    _t?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      key: const ValueKey('photo_look_chip'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.45),
+            borderRadius: BorderRadius.circular(99),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final l in PhotoLook.values)
+                TonePill(
+                  key: ValueKey('photo_look_${l.id}'),
+                  label: l.label,
+                  selected: l == widget.look,
+                  dense: true,
+                  onTap: () => widget.onSelected(l),
+                ),
+            ],
+          ),
+        ),
+        if (widget.tip)
+          GestureDetector(
+            onTap: widget.onTipTap,
+            child: Container(
+              key: const ValueKey('photo_look_tip'),
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.65),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                kPhotoLookTip,
+                style: TextStyle(color: Colors.white, fontSize: 12),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _CaptureButton extends StatelessWidget {
   const _CaptureButton({
     required this.onTap,
     required this.ai,
     required this.countingDown,
+    this.onLongPress,
+    this.burstCount,
   });
 
   final VoidCallback onTap;
   final bool ai;
   final bool countingDown;
+
+  /// v11.69 Burst (Normal Photo).
+  final VoidCallback? onLongPress;
+
+  /// Burst frames taken so far (shown in the shutter).
+  final int? burstCount;
 
   @override
   Widget build(BuildContext context) {
@@ -5997,6 +6326,7 @@ class _CaptureButton extends StatelessWidget {
       child: GestureDetector(
         key: const ValueKey('shutter'),
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Container(
           width: 76,
           height: 76,
@@ -6015,7 +6345,19 @@ class _CaptureButton extends StatelessWidget {
                     )
                   : null,
             ),
-            child: countingDown
+            child: burstCount != null
+                ? Center(
+                    child: Text(
+                      '$burstCount',
+                      key: const ValueKey('burst_count'),
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  )
+                : countingDown
                 ? const Center(
                     child: Icon(Icons.stop_rounded, color: Colors.black87),
                   )

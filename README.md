@@ -315,6 +315,24 @@ in Pro AI). See enhance-server/README.md for the API.
 - Real before/after samples: `styles.sample_before_url` / `sample_after_url` (nullable; video uses after only). Public bucket `style-samples`; prompt-free anon view `public.style_samples_public` (app reads it with the publishable key). `/v1/styles` exposes both fields. Admin style editor: upload/replace/remove BEFORE + AFTER (video: AFTER); API `POST /admin/api/styles/{id}/images` fields `sample_before`, `sample_after`, `remove_samples`. Cards show the AFTER image; the apply sheet shows a draggable before/after slider above the photo selection. Uploaded for germany_street, paris_eiffel, santorini, rainy_mumbai, studio_headshot.
 - Admin redeployed (Vercel `ai-camera-admin`, bundle `deploy-v1156.zip`).
 
+## v11.69 (1.11.69+82) — Sunburst for Zoom, Natural | Studio, Burst, Auto Tone, Tone presets
+
+- **Zoom mode** AI enhance uses `openai/gpt-image-2.5-sunburst` (same payload as Flare: quality low,
+  1K, n 1, jpeg, input_references; same prompts; same credits). Server: `enhance_model_for()`.
+- **Pro Photo** chip above the shutter: **Natural** (Sunburst, default) | **Studio** (Flare). Remembered;
+  one-time tip "Natural: as it is · Studio: picture perfect". App sends `photo_look=natural|studio`
+  to `/v1/enhance`; unknown/missing → Flare. Portrait, Night, Macro, AI filters, styles stay on Flare.
+- **Normal Photo Burst**: long-press the shutter → 8 stills; best = Laplacian sharpness + eyes open
+  (ML Kit) when faces; review strip with "Best", "Keep best, delete rest" (confirm) / "Keep all".
+  Nothing reaches the gallery before the choice.
+- **Auto Tone** (free, single frame, on device) after a Normal capture: brightness / contrast /
+  highlights / shadows / warmth / saturation; hold the photo = original; Reset = original; Adjust =
+  manual sliders. Not auto-on for Night merges.
+- **Tone presets** (free): Auto, Vivid, Natural, Warm, Cool, Food, Portrait soft, B&W — strip above the
+  shutter (live preview approximation) and after capture. Separate from premium filters / Pro AI styles.
+- Undo switches: `ai_camera/lib/config/features_v1169.dart` (`kZoomSunburst`, `kProLookToggle`,
+  `kBurstShot`, `kAutoTone`, `kTonePresets`); server env `ZOOM_SUNBURST=0`, `PRO_LOOK=0`.
+
 ## v11.60 (1.11.60+73) — Calmer zoom preview, wide→close tracking, aligned zoom burst
 
 No hardware validation yet (no physical device in the build loop): every number below is a
