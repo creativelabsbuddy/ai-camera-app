@@ -1,4 +1,4 @@
-// v11.68 (1.11.68+81) tests: restore enhance prompt; no-invent line on
+// v11.68 (1.11.69+82) tests: restore enhance prompt; no-invent line on
 // zoom "Beyond clear range" and Pro AI Night; clear reference off;
 // Macro held behind kMacroComingSoon.
 import 'dart:io';
@@ -19,8 +19,8 @@ const noInvent =
     'Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes.';
 
 void main() {
-  test('version 1.11.68+81', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.68+81'));
+  test('version 1.11.69+82', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.69+82'));
   });
 
   group('1: Pro AI enhance restore prompt', () {

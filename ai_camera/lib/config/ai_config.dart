@@ -79,6 +79,11 @@ class AiConfig {
 
   static const String model = 'openai/gpt-image-2.5-flare';
 
+  /// v11.69: GPT Image 2.5 Sunburst — Zoom mode, and Pro Photo "Natural".
+  /// Same payload as Flare (quality / resolution / aspect / n / jpeg /
+  /// input_references). Switches: lib/config/features_v1169.dart.
+  static const String sunburstModel = 'openai/gpt-image-2.5-sunburst';
+
   /// v11.58 style models (per style, admin "Model"; fallback = Custom/Flare).
   /// FLUX Klein on OpenRouter: the user's photo only, no quality/resolution.
   static const String kleinModel = 'black-forest-labs/flux-3-image-klein';

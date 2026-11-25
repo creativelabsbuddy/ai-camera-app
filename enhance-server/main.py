@@ -110,6 +110,28 @@ SPOT_TIMEOUT = float(os.environ.get("SPOT_TIMEOUT", "6"))
 SPOT_RETRY_TIMEOUT = float(os.environ.get("SPOT_RETRY_TIMEOUT", "3.5"))
 DETECT_LONG = 768  # v11.49: was 512 (box check names the object)
 MODEL = "openai/gpt-image-2.5-flare"
+# v11.69: GPT Image 2.5 Sunburst for Zoom mode and Pro Photo "Natural" (same
+# payload as Flare). Undo switches (env): ZOOM_SUNBURST=0 → Zoom mode back on
+# Flare; PRO_LOOK=0 → photo_look ignored (Pro Photo always Flare).
+SUNBURST_MODEL = os.environ.get("SUNBURST_MODEL", "openai/gpt-image-2.5-sunburst")
+ZOOM_SUNBURST = os.environ.get("ZOOM_SUNBURST", "1").strip() not in ("0", "false", "no")
+PRO_LOOK = os.environ.get("PRO_LOOK", "1").strip() not in ("0", "false", "no")
+PHOTO_LOOKS = ("natural", "studio")
+
+
+def enhance_model_for(mode: str, zoom_job: bool, photo_look: Optional[str],
+                      has_filter: bool = False) -> str:
+    """v11.69 image model for an enhance (mirrors the app's enhanceModelFor).
+
+    Zoom mode (photo + zoom clean / ladder / source) → Sunburst; Pro Photo with
+    photo_look=natural (no AI filter) → Sunburst; everything else → Flare.
+    Unknown / missing look → Flare (safe default for older apps)."""
+    if mode == "photo" and zoom_job:
+        return SUNBURST_MODEL if ZOOM_SUNBURST else MODEL
+    if (mode == "photo" and PRO_LOOK and not has_filter
+            and (photo_look or "").strip().lower() == "natural"):
+        return SUNBURST_MODEL
+    return MODEL
 # v11.58 style models (per style, admin "Model" select; fallback = Custom/Flare).
 KLEIN_MODEL = os.environ.get("KLEIN_MODEL", "black-forest-labs/flux-3-image-klein")
 RUNWARE_URL = "https://api.runware.ai/v1"
@@ -374,7 +396,7 @@ async def extract_image(body: dict) -> bytes:
 
 def build_payload(prompt: str, tier: str, aspect: str, image_url: Optional[str], context_url: Optional[str],
                   extra_urls: Optional[list[str]] = None, n: int = 1,
-                  leading_urls: Optional[list[str]] = None) -> dict:
+                  leading_urls: Optional[list[str]] = None, model: Optional[str] = None) -> dict:
     _, _, quality, resolution, _ = L.TIERS[tier]
     refs = [{"type": "image_url", "image_url": {"url": u}} for u in leading_urls or []]
     if image_url:  # v11.30: None → text-only (Macro Extreme / Ultra)
@@ -384,7 +406,7 @@ def build_payload(prompt: str, tier: str, aspect: str, image_url: Optional[str],
     for u in extra_urls or []:
         refs.append({"type": "image_url", "image_url": {"url": u}})
     out = {
-        "model": MODEL,
+        "model": model or MODEL,
         "prompt": prompt,
         "quality": quality,
         "resolution": resolution,
@@ -859,6 +881,7 @@ async def enhance_v1(
     gate_part: Optional[str] = Form(None),
     gate_visible: Optional[str] = Form(None),
     clear_ref: bool = Form(False),
+    photo_look: Optional[str] = Form(None),
 ):
     dev = _check_device(device_id)
     mode = (mode or "photo").strip().lower()
@@ -894,6 +917,9 @@ async def enhance_v1(
                  and not ladder and not zsrc)
 
     filt = P.FILTER_PROMPTS.get(filter_id or "")
+    # v11.69: Zoom mode → Sunburst; Pro Photo Natural → Sunburst; else Flare.
+    enh_model = enhance_model_for(mode, bool(zsrc or ladder or zoom_only), photo_look,
+                                  has_filter=filt is not None)
     macro_credits = None
     if mode == "macro":
         if quality in P.MACRO_LOCKED_QUALITIES:
@@ -1035,7 +1061,7 @@ async def enhance_v1(
                 # v11.30: Extreme / Ultra send NO photo — text prompt from the
                 # detected spot only (aspect still follows the crop).
                 img = None if deep_text_only else data_url(main_jpg)
-                return build_payload(mt, quality, aspect, img, None, leading_urls=firsts)
+                return build_payload(mt, quality, aspect, img, None, leading_urls=firsts, model=enh_model)
             if zsrc and with_ctx:
                 # v11.59: the sharp source FIRST (content), the final zoom after it (framing).
                 zp = P.zoom_source_prompt(filt, color_text)
@@ -1043,27 +1069,27 @@ async def enhance_v1(
                     zp = zp.replace(P.ZOOM_SOURCE_PROMPT,
                                     f"{P.ZOOM_SOURCE_PROMPT} {P.CLEAR_REF_LINE}", 1)
                 return build_payload(zp, quality, aspect, data_url(main_jpg), None,
-                                     extra_urls=[data_url(framing_jpg)])
+                                     extra_urls=[data_url(framing_jpg)], model=enh_model)
             if zsrc:
                 # one-image fallback: the sharp source alone, the safe zoom prompt.
                 return build_payload(P.zoom_ladder_prompt(filt, color_text, refs=False), quality,
-                                     aspect, data_url(main_jpg), None)
+                                     aspect, data_url(main_jpg), None, model=enh_model)
             if ladder and with_ctx:
                 # v11.31: the final photo FIRST, reference crops after it.
                 return build_payload(P.zoom_ladder_prompt(filt, color_text), quality, aspect,
                                      data_url(main_jpg), None,
-                                     extra_urls=[data_url(j) for j in step_jpgs_ladder])
+                                     extra_urls=[data_url(j) for j in step_jpgs_ladder], model=enh_model)
             if zoom_only or ladder:
                 # v11.34: final photo only, the zoom clean-up prompt.
                 return build_payload(P.zoom_ladder_prompt(filt, color_text, refs=False), quality,
-                                     aspect, data_url(main_jpg), None)
+                                     aspect, data_url(main_jpg), None, model=enh_model)
             prompt = P.build_prompt(
                 has_context=with_ctx, zoom=zoom, optical_limit=optical_limit, tier=quality,
                 style_prompt=filt, mode_prompt=mode_text, color_prompt=color_text,
                 context_boxed=context_boxed, portrait_prompt=portrait_text,
                 night=is_night,
             )
-            return build_payload(prompt, quality, aspect, data_url(main_jpg), ctx_url)
+            return build_payload(prompt, quality, aspect, data_url(main_jpg), ctx_url, model=enh_model)
 
         with_ctx = (ctx_jpg is not None or bool(step_jpgs) or bool(step_jpgs_ladder)
                     or framing_jpg is not None)
@@ -1144,12 +1170,12 @@ async def enhance_v1(
         # Success → charge now (atomic re-decide inside the ledger).
         cost = (body.get("usage") or {}).get("cost")
         state, charged = led.commit(dev, spec, now_utc(),
-                                    note=f"{quality} z{zoom:g} {mode}"
+                                    note=f"{quality} z{zoom:g} {mode} {enh_model.split('/')[-1]}"
                                          f"{' ' + color_filter if color_filter else ''} cost={cost}")
 
     media = "image/png" if out[:4] == b"\x89PNG" else "image/jpeg"
     headers = {
-        "X-Enhance-Model": MODEL,
+        "X-Enhance-Model": enh_model,
         "X-Enhance-Aspect": aspect,
         "X-Credits-Charged": str(charged.credits),
         "X-Trials-Used": ",".join(charged.trials),

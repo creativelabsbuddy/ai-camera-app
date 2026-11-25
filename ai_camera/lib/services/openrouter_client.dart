@@ -98,6 +98,7 @@ Map<String, dynamic> buildImagesPayload({
   String? contextDataUrl,
   List<String> leadingDataUrls = const [],
   List<String> trailingDataUrls = const [],
+  String? model,
 }) {
   // v11.30: imageDataUrl null + no other refs → text-only (Macro Extreme /
   // Ultra); `input_references` is omitted.
@@ -126,7 +127,8 @@ Map<String, dynamic> buildImagesPayload({
       },
   ];
   return {
-    'model': AiConfig.model,
+    // v11.69: Sunburst for Zoom mode / Pro Photo Natural (same params).
+    'model': model ?? AiConfig.model,
     'prompt': prompt,
     'quality': tier.flareQuality,
     'resolution': tier.flareResolution,
@@ -564,6 +566,7 @@ class OpenRouterClient {
     int leadingLong = kMacroContextLongSide,
     bool textOnly = false,
     bool leadingAfterMain = false,
+    String? model,
   }) async {
     if (!isConfigured) {
       throw OpenRouterEnhanceException('OpenRouter API key not configured');
@@ -605,6 +608,7 @@ class OpenRouterClient {
           contextDataUrl: withContext ? ctx?.dataUrl : null,
           leadingDataUrls: withContext && !leadingAfterMain ? lead : const [],
           trailingDataUrls: withContext && leadingAfterMain ? lead : const [],
+          model: model,
         ),
       ),
       cancel,

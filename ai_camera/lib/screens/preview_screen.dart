@@ -4,6 +4,7 @@ import 'video_screen.dart';
 import '../widgets/ai_gate_overlay.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -12,7 +13,12 @@ import 'package:gal/gal.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../config/features_v1169.dart';
 import '../models/capture_mode.dart';
+import '../models/photo_look.dart';
+import '../services/tone.dart';
+import '../services/tone_proxy.dart';
+import '../widgets/tone_bar.dart';
 import '../models/ai_style.dart';
 import '../models/quality_tier.dart';
 import '../models/style_preset.dart';
@@ -80,7 +86,19 @@ class PreviewScreen extends StatefulWidget {
     this.source,
     this.captureNote,
     this.zoomLabel,
+    this.photoLook,
+    this.tonePreset = TonePreset.auto,
+    this.toneEnabled = true,
   });
+
+  /// v11.69 Pro Photo look (Natural = Sunburst, Studio = Flare).
+  final PhotoLook? photoLook;
+
+  /// v11.69 Tone preset picked on the camera (Normal captures).
+  final TonePreset tonePreset;
+
+  /// v11.69 free Auto Tone / presets after a Normal capture (flags too).
+  final bool toneEnabled;
 
   /// v11.61: e.g. "Beyond clear range, AI-enhanced" — the zoom went past the
   /// real detail this phone captured; shown on the result.
@@ -232,6 +250,246 @@ class _PreviewScreenState extends State<PreviewScreen> {
   /// Starter trials used on this screen → small Pro upsell chip.
   final Set<StarterTrial> _trialsUsed = {};
 
+  // ---- v11.69 free tone (Normal captures, single frame, on device) -------
+  ToneProxy? _toneProxy;
+  ToneParams _toneAuto = ToneParams.zero;
+  bool _toneAutoOn = false;
+  TonePreset _tonePreset = TonePreset.auto;
+  ToneParams _toneManual = ToneParams.zero;
+
+  /// Live preview of the current tone (small; the full-res file follows).
+  ui.Image? _toneImage;
+  bool _toneRendering = false;
+  bool _toneDirty = false;
+
+  /// Full-resolution toned file and the tone it was made with.
+  File? _toneFile;
+  String? _toneFileKey;
+  Future<void>? _toneCommitting;
+  String? _toneCommittingKey;
+  Timer? _toneIdle;
+
+  /// Press-and-hold on the photo → the original.
+  bool _holdOriginal = false;
+
+  /// After Edit the tone is baked in (bar hidden).
+  bool _toneLocked = false;
+
+  bool get _toneAllowed =>
+      (kAutoTone || kTonePresets) &&
+      widget.toneEnabled &&
+      _source == PhotoSource.normalCapture &&
+      !_toneLocked;
+
+  /// Tone bar visible (photo decoded).
+  bool get _toneReady => _toneAllowed && _toneProxy != null;
+
+  ToneParams get _toneTotal => composeTone(
+    auto: _toneAuto,
+    autoOn: _toneAutoOn,
+    preset: kTonePresets ? _tonePreset : TonePreset.auto,
+    manual: _toneManual,
+  );
+  bool get _toneMono => kTonePresets && _tonePreset.mono;
+  bool get _toneChanged =>
+      toneChangesPhoto(_toneTotal, _toneMono ? TonePreset.bw : TonePreset.auto);
+  String get _toneKey => '${_toneTotal.key}|$_toneMono';
+  bool get _toneCanReset =>
+      _toneAutoOn || _tonePreset != TonePreset.auto || !_toneManual.isNeutral;
+
+  /// The small live preview is shown until the full-res file is ready.
+  bool get _toneProxyVisible =>
+      _toneReady &&
+      _toneChanged &&
+      _toneImage != null &&
+      _toneFileKey != _toneKey &&
+      _filter.isOriginal;
+
+  String get _toneStatus {
+    final parts = [
+      if (_toneAutoOn) 'Auto Tone',
+      if (kTonePresets && _tonePreset != TonePreset.auto) _tonePreset.label,
+      if (!_toneManual.isNeutral) 'Adjusted',
+    ];
+    final note = _freeNote;
+    final t = parts.isEmpty ? 'Original' : parts.join(' · ');
+    return '${note == null ? '' : '$note · '}$t · free, no AI';
+  }
+
+  Future<void> _initTone() async {
+    final px = await ToneProxy.load(_original);
+    if (!mounted || px == null || !_toneAllowed) return;
+    setState(() {
+      _toneProxy = px;
+      _toneAuto = autoToneFor(px.stats);
+      _status = _toneStatus;
+    });
+    _onToneChanged();
+  }
+
+  void _onToneChanged() {
+    if (!_toneReady) return;
+    _toneIdle?.cancel();
+    if (!_toneChanged) {
+      final old = _toneImage;
+      setState(() {
+        _toneImage = null;
+        if (_aiBase != null && _aiBase == _toneFile) _aiBase = null;
+        if (_filter.isOriginal) _current = _aiBase ?? _original;
+        _status = _toneStatus;
+      });
+      old?.dispose();
+      if (!_filter.isOriginal) unawaited(_applyLocal(_filter));
+      return;
+    }
+    setState(() => _status = _toneStatus);
+    if (_toneFileKey == _toneKey && _toneFile != null) {
+      setState(() {
+        _aiBase = _toneFile;
+        if (_filter.isOriginal) _current = _toneFile!;
+      });
+      if (!_filter.isOriginal) unawaited(_applyLocal(_filter));
+      return;
+    }
+    unawaited(_renderToneProxy());
+    // Full resolution once the user pauses (Save waits for it anyway).
+    _toneIdle = Timer(const Duration(milliseconds: 1200), () {
+      unawaited(_commitTone());
+    });
+  }
+
+  Future<void> _renderToneProxy() async {
+    final px = _toneProxy;
+    if (px == null) return;
+    if (_toneRendering) {
+      _toneDirty = true;
+      return;
+    }
+    _toneRendering = true;
+    try {
+      do {
+        _toneDirty = false;
+        final t = _toneTotal;
+        final mono = _toneMono;
+        final im = await px.render(t, mono: mono);
+        if (!mounted) {
+          im.dispose();
+          return;
+        }
+        final old = _toneImage;
+        setState(() => _toneImage = im);
+        old?.dispose();
+      } while (_toneDirty && mounted);
+    } catch (e) {
+      debugPrint('Tone preview failed: $e');
+    } finally {
+      _toneRendering = false;
+    }
+  }
+
+  /// Renders the full-resolution toned file for the current tone.
+  Future<void> _commitTone() {
+    if (!_toneReady || !_toneChanged) return Future.value();
+    final key = _toneKey;
+    if (_toneFileKey == key && _toneFile != null) return Future.value();
+    if (_toneCommitting != null && _toneCommittingKey == key) {
+      return _toneCommitting!;
+    }
+    final t = _toneTotal;
+    final mono = _toneMono;
+    final f = () async {
+      try {
+        final file = await renderToneFile(
+          _original,
+          t,
+          mono: mono,
+          outDir: (await getTemporaryDirectory()).path,
+        );
+        if (!mounted) return;
+        if (key != _toneKey) {
+          unawaited(file.delete().then((_) {}, onError: (_) {}));
+          return;
+        }
+        final prev = _toneFile;
+        setState(() {
+          _toneFile = file;
+          _toneFileKey = key;
+          _aiBase = file;
+          if (_filter.isOriginal) _current = file;
+        });
+        if (prev != null && prev.path != file.path) {
+          unawaited(prev.delete().then((_) {}, onError: (_) {}));
+        }
+        if (!_filter.isOriginal) await _applyLocal(_filter);
+      } finally {
+        if (_toneCommittingKey == key) {
+          _toneCommitting = null;
+          _toneCommittingKey = null;
+        }
+      }
+    }();
+    _toneCommitting = f;
+    _toneCommittingKey = key;
+    return f;
+  }
+
+  /// Before Save / Edit / Styles: the full-res toned file must exist.
+  Future<void> _ensureTone() async {
+    if (!_toneReady || !_toneChanged || _toneFileKey == _toneKey) return;
+    _toneIdle?.cancel();
+    setState(() {
+      _busy = true;
+      _overlayLabel = 'Applying tone';
+      _overlayLight = true;
+    });
+    try {
+      for (var i = 0; i < 3 && mounted && _toneFileKey != _toneKey; i++) {
+        await _commitTone();
+      }
+    } catch (e) {
+      debugPrint('Tone render failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Tone could not be applied')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _setToneAuto(bool on) {
+    setState(() => _toneAutoOn = on);
+    _onToneChanged();
+  }
+
+  void _setTonePreset(TonePreset t) {
+    setState(() => _tonePreset = t);
+    _onToneChanged();
+  }
+
+  /// One tap: back to the photo exactly as captured.
+  void _resetTone() {
+    setState(() {
+      _toneAutoOn = false;
+      _tonePreset = TonePreset.auto;
+      _toneManual = ToneParams.zero;
+    });
+    _onToneChanged();
+  }
+
+  Future<void> _openToneSliders() async {
+    await showToneSliders(
+      context,
+      initial: _toneManual,
+      onChanged: (v) {
+        if (!mounted) return;
+        setState(() => _toneManual = v);
+        _onToneChanged();
+      },
+    );
+  }
+
   PhotoSource get _source =>
       widget.source ??
       (widget.mode == CaptureMode.pro
@@ -261,6 +519,13 @@ class _PreviewScreenState extends State<PreviewScreen> {
           : (note != null
                 ? '$note · no AI'
                 : 'Normal · photo as captured (filters are free)');
+      if (_toneAllowed) {
+        // v11.69: Auto Tone on (not on Night merges: they have their own
+        // tone mapping) + the camera's preset; rendered once decoded.
+        _toneAutoOn = kAutoTone && widget.nightNote == null;
+        _tonePreset = kTonePresets ? widget.tonePreset : TonePreset.auto;
+        unawaited(_initTone());
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted) return;
         if (!widget.initialFilter.isOriginal) {
@@ -364,17 +629,23 @@ class _PreviewScreenState extends State<PreviewScreen> {
     AiStyle? style,
     String? initialPrompt,
     QualityTier? tier,
-  }) => startLook(
-    context,
-    photo: _current,
-    style: style,
-    tier: tier ?? widget.tier,
-    initialPrompt: initialPrompt,
-  );
+  }) async {
+    await _ensureTone(); // v11.69
+    if (!mounted) return;
+    await startLook(
+      context,
+      photo: _current,
+      style: style,
+      tier: tier ?? widget.tier,
+      initialPrompt: initialPrompt,
+    );
+  }
 
   Future<void> _openLibrary() async {
     final pick = await showStyleLibrarySheet(context);
     if (pick == null || !mounted) return;
+    await _ensureTone(); // v11.69
+    if (!mounted) return;
     if (pick.custom) {
       // v11.56: Custom window (AI Photo | AI Video) with this photo.
       await Navigator.of(context).push(
@@ -394,7 +665,11 @@ class _PreviewScreenState extends State<PreviewScreen> {
       // v11.54: this photo → confirm sheet (presets) / Custom video.
       String? res;
       if (!pick.custom) {
-        res = await showVideoConfirmSheet(context, style: pick.style!, photo: _current);
+        res = await showVideoConfirmSheet(
+          context,
+          style: pick.style!,
+          photo: _current,
+        );
         if (res == null || !mounted) return;
       }
       await Navigator.of(context).push(
@@ -433,6 +708,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     contextBoxed: widget.contextBoxed,
     macroLevel: widget.macroLevel?.id,
     gate: widget.aiMode == 'macro' ? widget.gateDetect : null, // v11.67
+    photoLook: widget.photoLook, // v11.69
     // v11.9: colour filters are off at Microscope / Extreme.
     colorFilter:
         aiFilter == null &&
@@ -484,11 +760,14 @@ class _PreviewScreenState extends State<PreviewScreen> {
         _current = _original;
         _aiBase = null;
         _compare = false;
-        _status = 'Credits refunded ($kCreditGlyph${d.credits}). Photo kept as taken.';
+        _status =
+            'Credits refunded ($kCreditGlyph${d.credits}). Photo kept as taken.';
       });
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not refund. Please try again.')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not refund. Please try again.')),
+        );
       }
     } finally {
       if (mounted) setState(() => _refunding = false);
@@ -571,6 +850,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
 
   @override
   void dispose() {
+    _toneIdle?.cancel();
+    _toneImage?.dispose();
     _aiCancel?.cancel();
     super.dispose();
   }
@@ -769,15 +1050,19 @@ class _PreviewScreenState extends State<PreviewScreen> {
 
   /// Free editor (crop / rotate / adjust). Local filters re-apply on top.
   Future<void> _openEditor() async {
+    await _ensureTone(); // v11.69
+    if (!mounted) return;
     final out = await Navigator.of(context).push<File>(
       MaterialPageRoute(builder: (_) => EditorScreen(file: _current)),
     );
     if (out == null || !mounted) return;
+    _toneIdle?.cancel();
     setState(() {
       _current = out;
       _aiBase = out;
       _filter = PremiumFilter.original;
       _status = 'Edited · free';
+      _toneLocked = true; // v11.69: the tone is baked into the edit
     });
   }
 
@@ -806,6 +1091,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
   }
 
   Future<void> _save() async {
+    await _ensureTone(); // v11.69
+    if (!mounted) return;
     setState(() {
       _busy = true;
       _overlayLabel = 'Saving';
@@ -854,6 +1141,45 @@ class _PreviewScreenState extends State<PreviewScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Saved to app files:\n${dest.path}')),
+    );
+  }
+
+  /// v11.69: press and hold the photo → the original as captured; release →
+  /// back to the toned photo. Only after a Normal capture with a tone on.
+  Widget _holdToCompare(Widget child) {
+    if (!_toneReady) return child;
+    final can = !_busy && (_toneChanged || _current.path != _original.path);
+    return GestureDetector(
+      key: const ValueKey('hold_to_compare'),
+      behavior: HitTestBehavior.opaque,
+      onLongPressStart: can
+          ? (_) => setState(() => _holdOriginal = true)
+          : null,
+      onLongPressEnd: (_) => setState(() => _holdOriginal = false),
+      onLongPressCancel: () => setState(() => _holdOriginal = false),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          child,
+          if (_holdOriginal) ...[
+            ColoredBox(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              child: Image.file(
+                _original,
+                key: const ValueKey('hold_original'),
+                fit: BoxFit.contain,
+                gaplessPlayback: true,
+              ),
+            ),
+            const Positioned(
+              top: 10,
+              left: 0,
+              right: 0,
+              child: Center(child: _OriginalTag()),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -914,9 +1240,15 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 IconButton(
                   key: const ValueKey('compare_toggle'),
                   tooltip: 'Before / after',
-                  onPressed: _busy || _current.path == _original.path
+                  onPressed:
+                      _busy ||
+                          (_current.path == _original.path &&
+                              !_toneProxyVisible)
                       ? null
-                      : () => setState(() => _compare = !_compare),
+                      : () async {
+                          await _ensureTone(); // v11.69
+                          if (mounted) setState(() => _compare = !_compare);
+                        },
                   icon: Icon(
                     Icons.compare_rounded,
                     color: _compare ? AppColors.proGold : null,
@@ -970,26 +1302,35 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 onCancel: _overlayLight ? null : _cancelAi,
                 note: kAiBlurNote,
                 // Cross-fade original → enhanced result when it lands.
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 420),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  layoutBuilder: (current, previous) => Stack(
-                    fit: StackFit.expand,
-                    children: [...previous, if (current != null) current],
+                // v11.69: press and hold → the original (tone compare).
+                child: _holdToCompare(
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 420),
+                    switchInCurve: Curves.easeOut,
+                    switchOutCurve: Curves.easeIn,
+                    layoutBuilder: (current, previous) => Stack(
+                      fit: StackFit.expand,
+                      children: [...previous, if (current != null) current],
+                    ),
+                    child: _compare && _current.path != _original.path
+                        ? CompareSlider(
+                            key: const ValueKey('compare_slider'),
+                            before: _original,
+                            after: _current,
+                          )
+                        : _toneProxyVisible
+                        ? RawImage(
+                            key: const ValueKey('tone_proxy'),
+                            image: _toneImage,
+                            fit: BoxFit.contain,
+                          )
+                        : Image.file(
+                            _current,
+                            fit: BoxFit.contain,
+                            key: ValueKey(_current.path),
+                            gaplessPlayback: true,
+                          ),
                   ),
-                  child: _compare && _current.path != _original.path
-                      ? CompareSlider(
-                          key: const ValueKey('compare_slider'),
-                          before: _original,
-                          after: _current,
-                        )
-                      : Image.file(
-                          _current,
-                          fit: BoxFit.contain,
-                          key: ValueKey(_current.path),
-                          gaplessPlayback: true,
-                        ),
                 ),
               ),
             ),
@@ -1052,7 +1393,9 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 key: const ValueKey('micro_refund'),
                 onPressed: _refunding ? null : _refundBadResult,
                 icon: const Icon(Icons.undo_rounded, size: 18),
-                label: CreditText('Bad result? Refund $kCreditGlyph${_refundable!.credits}'),
+                label: CreditText(
+                  'Bad result? Refund $kCreditGlyph${_refundable!.credits}',
+                ),
               ),
             ),
           if (_macroDone && !_busy)
@@ -1142,6 +1485,22 @@ class _PreviewScreenState extends State<PreviewScreen> {
             const Padding(
               padding: EdgeInsets.only(top: 6),
               child: TrialUpsellChip(),
+            ),
+          if (_toneReady && !_showFilters)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: ToneBar(
+                autoOn: _toneAutoOn,
+                preset: _tonePreset,
+                enabled: !_busy,
+                canReset: _toneCanReset,
+                showAuto: kAutoTone,
+                showPresets: kTonePresets,
+                onAuto: _setToneAuto,
+                onPreset: _setTonePreset,
+                onAdjust: _openToneSliders,
+                onReset: _resetTone,
+              ),
             ),
           if (_initialEnhanceDone && !_showFilters)
             Padding(
@@ -1466,4 +1825,26 @@ class _ActionButton extends StatelessWidget {
       child: child,
     );
   }
+}
+
+/// v11.69 "Original" tag while the photo is held.
+class _OriginalTag extends StatelessWidget {
+  const _OriginalTag();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: 0.55),
+      borderRadius: BorderRadius.circular(99),
+    ),
+    child: const Text(
+      'Original',
+      style: TextStyle(
+        color: Colors.white,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+  );
 }

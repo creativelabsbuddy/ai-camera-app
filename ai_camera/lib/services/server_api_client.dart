@@ -257,6 +257,7 @@ class ServerApiClient {
     bool microSteps = false,
     GateDetect? gate,
     bool clearRef = false,
+    String? photoLook,
     String? macroLevel,
     String? part,
     AiCancelToken? cancel,
@@ -325,6 +326,9 @@ class ServerApiClient {
         'gate_visible': gate.visible,
       // v11.67: image = clear reference crop (detail), steps[0] = final.
       if (clearRef && zoomSource) 'clear_ref': 'true',
+      // v11.69 Pro Photo look: natural (Sunburst) | studio (Flare). An older
+      // server ignores it (Flare). Zoom mode is chosen server-side.
+      if (photoLook != null) 'photo_look': photoLook,
     });
     final resp = await _sendAi(req, aiTimeout, cancel);
     _throwIfNotOk(resp, 'Enhance');

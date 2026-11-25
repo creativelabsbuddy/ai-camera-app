@@ -5,6 +5,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../config/ai_config.dart';
+import '../config/features_v1169.dart';
+import '../models/photo_look.dart';
 import '../models/quality_tier.dart';
 import '../models/style_preset.dart';
 import 'account_service.dart';
@@ -55,7 +57,24 @@ class EnhanceJob {
     this.zoomSourceOnly = false,
     this.gate,
     this.clearRef = false,
+    this.photoLook,
   });
+
+  /// v11.69 Pro Photo look (Natural = Sunburst, Studio = Flare). Null =
+  /// Flare (older callers, Portrait / Night / Macro).
+  final PhotoLook? photoLook;
+
+  /// v11.69 image model for this job (Zoom mode → Sunburst; Pro Photo →
+  /// the chosen look; everything else Flare).
+  String get model =>
+      enhanceModelFor(aiMode: aiMode, zoomJob: isZoomJob, look: sentLook);
+
+  /// The look actually applied: Pro Photo outside Zoom mode, no AI filter
+  /// (AI filters / styles keep Flare, unchanged).
+  PhotoLook? get sentLook =>
+      kProLookToggle && aiMode == 'photo' && !isZoomJob && aiFilter == null
+      ? photoLook
+      : null;
 
   /// v11.67 [zoomSource] is the clear reference crop → kClearRefLine.
   final bool clearRef;
@@ -481,6 +500,7 @@ class EnhanceService {
             microSteps: job.microSteps && job.sentSteps.isNotEmpty,
             gate: job.simpleMacro ? job.gate : null, // v11.67
             clearRef: job.clearRef && job.isZoomSource, // v11.67
+            photoLook: job.sentLook?.id, // v11.69
             mainLong: job.mainLong,
             stepLong: job.stepLong,
             cancel: tok,
@@ -566,6 +586,7 @@ class EnhanceService {
             leadingAfterMain: job.isLadder || job.isZoomSource,
             tier: job.tier,
             promptFor: (hasContext) => job.prompt(hasContext: hasContext),
+            model: job.model, // v11.69
             cancel: tok,
           ),
           parent: cancel,
