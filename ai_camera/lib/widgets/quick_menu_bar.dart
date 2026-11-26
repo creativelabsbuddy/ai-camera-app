@@ -22,6 +22,7 @@ class QuickMenuBar extends StatelessWidget {
     required this.onTimer,
     required this.onRatio,
     required this.onQuality,
+    this.showQuality = true,
     required this.onStyles,
     required this.onClose,
     this.flashAvailable = true,
@@ -48,6 +49,9 @@ class QuickMenuBar extends StatelessWidget {
   final VoidCallback? onTimer;
   final VoidCallback? onRatio;
   final VoidCallback? onQuality;
+
+  /// v11.70: false → no quality item (one enhance tier).
+  final bool showQuality;
   final VoidCallback onStyles;
   final VoidCallback onClose;
 
@@ -112,12 +116,13 @@ class QuickMenuBar extends StatelessWidget {
                     onTap: onRatio,
                     child: _TextIcon(ratio.label),
                   ),
-                  _Item(
-                    key: const ValueKey('qm_quality'),
-                    tooltip: 'Quality ${tier.label}',
-                    onTap: onQuality,
-                    child: _TextIcon(tier.shortLabel),
-                  ),
+                  if (showQuality)
+                    _Item(
+                      key: const ValueKey('qm_quality'),
+                      tooltip: 'Quality ${tier.label}',
+                      onTap: onQuality,
+                      child: _TextIcon(tier.shortLabel),
+                    ),
                 ];
                 final fits = c.maxWidth >= items.length * 44;
                 return fits

@@ -15,6 +15,7 @@ import 'package:ai_camera/services/vision.dart';
 import 'package:ai_camera/widgets/look_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:ai_camera/config/features_v1170.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -187,10 +188,15 @@ void main() {
       expect(fake.jobs, isEmpty);
       expect(find.byKey(const ValueKey('pro_capture_tip')), findsOneWidget);
       expect(find.text(kProCaptureTip), findsOneWidget);
-      await t.tap(find.text('Filters'));
-      await t.pump();
-      expect(find.text('Free filters (no AI)'), findsOneWidget);
-      expect(find.textContaining('AI filters'), findsNothing);
+      if (kNoFiltersPanel) {
+        expect(find.text('Filters'), findsNothing); // v11.70
+        expect(find.byKey(const ValueKey('ai_studio')), findsNothing);
+      } else {
+        await t.tap(find.text('Filters'));
+        await t.pump();
+        expect(find.text('Free filters (no AI)'), findsOneWidget);
+        expect(find.textContaining('AI filters'), findsNothing);
+      }
     });
 
     testWidgets('Gallery photo in PRO mode: NO auto-enhance, no AI filters', (
@@ -206,11 +212,18 @@ void main() {
       expect(fake.jobs, isEmpty);
       expect(find.textContaining('Gallery photo'), findsOneWidget);
       expect(find.byKey(const ValueKey('pro_capture_tip')), findsNothing);
-      await t.tap(find.text('Filters'));
-      await t.pump();
-      expect(find.textContaining('AI filters'), findsNothing);
-      // Creative styles are still offered.
-      expect(find.textContaining('Styles'), findsWidgets);
+      if (kNoFiltersPanel) {
+        // v11.70: AI filters live in the Styles row, only for Pro captures.
+        expect(find.text('Filters'), findsNothing);
+        expect(find.byKey(const ValueKey('ai_studio')), findsNothing);
+        expect(find.byKey(const ValueKey('styles_see_all')), findsOneWidget);
+      } else {
+        await t.tap(find.text('Filters'));
+        await t.pump();
+        expect(find.textContaining('AI filters'), findsNothing);
+        // Creative styles are still offered.
+        expect(find.textContaining('Styles'), findsWidgets);
+      }
     });
 
     testWidgets('PRO capture still auto-enhances (unchanged)', (t) async {

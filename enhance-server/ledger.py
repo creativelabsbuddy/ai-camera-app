@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import sqlite3
 import threading
 from dataclasses import dataclass, field, replace
@@ -34,6 +35,23 @@ TIERS = {
     "4k": ("4K", 8, "high", "4K", 3840),
 }
 PREMIUM_TIERS = {"ultra_hd", "4k"}
+
+# v11.70: one Pro AI enhance tier (env SINGLE_TIER, default on; "0" → the
+# v11.69 tiers). Every enhance tier an app sends (old apps: full_hd /
+# ultra_hd / 4k) is charged and rendered as this one: Flare low, 1 credit,
+# no upscale. Macro keeps its own HD / Full HD qualities; looks keep TIERS.
+SINGLE_TIER = os.environ.get("SINGLE_TIER", "1").strip().lower() not in ("0", "false", "no")
+ENHANCE_TIER = "hd"
+
+
+def enhance_tier(quality: str, mode: str = "photo", single: Optional[bool] = None) -> str:
+    """The tier a Pro AI enhance really uses (v11.70)."""
+    on = SINGLE_TIER if single is None else single
+    if not on or mode == "macro":
+        return quality
+    if quality in TIERS:
+        return ENHANCE_TIER
+    return quality
 
 TRIALS = ("high_zoom", "ai_filter", "library_style", "uhd_4k")
 

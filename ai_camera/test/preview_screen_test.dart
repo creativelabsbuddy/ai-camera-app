@@ -7,6 +7,7 @@ import 'package:ai_camera/services/account_service.dart';
 import 'package:ai_camera/services/enhance_service.dart';
 import 'package:ai_camera/services/entitlements.dart';
 import 'package:flutter/material.dart';
+import 'package:ai_camera/config/features_v1170.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -61,9 +62,48 @@ void main() {
     await tester.pump();
     expect(fake.jobs, isEmpty);
     expect(find.textContaining('Normal'), findsOneWidget);
-    await tester.tap(find.text('Filters'));
+    if (kNoFiltersPanel) {
+      // v11.70: no Filters button / free filters panel; Edit is free.
+      expect(find.text('Filters'), findsNothing);
+      expect(find.byKey(const ValueKey('edit_photo')), findsOneWidget);
+    } else {
+      await tester.tap(find.text('Filters'));
+      await tester.pump();
+      expect(find.textContaining('Free filters'), findsOneWidget);
+    }
+  });
+
+  testWidgets('v11.70 preview: big photo, fullscreen, compact buttons', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PreviewScreen(
+          imageFile: photo,
+          enhanceService: FakeEnhance(const EnhanceResult()),
+        ),
+      ),
+    );
     await tester.pump();
-    expect(find.textContaining('Free filters'), findsOneWidget);
+    if (!kPreviewV1170) return;
+    expect(find.byKey(const ValueKey('preview_pinch_zoom')), findsOneWidget);
+    expect(find.byKey(const ValueKey('styles_see_all')), findsOneWidget);
+    for (final k in ['edit_photo', 'preview_save', 'preview_retake']) {
+      expect(find.byKey(ValueKey(k)), findsOneWidget);
+    }
+    await tester.tap(find.byKey(const ValueKey('preview_fullscreen')));
+    for (var i = 0; i < 5; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byKey(const ValueKey('fullscreen_photo')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('fullscreen_close')));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byKey(const ValueKey('fullscreen_photo')), findsNothing);
   });
 
   testWidgets('Pro mode, free user above optical (trial used): Pro-only', (

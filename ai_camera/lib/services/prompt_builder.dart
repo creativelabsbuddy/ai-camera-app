@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import '../config/features_v1170.dart';
 import '../models/quality_tier.dart';
 import 'entitlements.dart' show kMaxCustomPromptChars;
 import 'mode_prompts.dart' show kColorFilterTail;
@@ -129,10 +130,15 @@ String zoomSentence({required double zoom, required double opticalLimit}) {
   }
 }
 
+/// v11.70 the one enhance tier's detail line (= the old Ultra HD line).
+/// Mirrored in enhance-server/prompts.py (SINGLE_TIER_SENTENCE).
+const String kSingleTierSentence =
+    'Target a very detailed Ultra HD result with crisp fine texture.';
+
 String qualitySentence(QualityTier tier) {
   switch (tier) {
     case QualityTier.hd:
-      return '';
+      return kSingleEnhanceTier ? kSingleTierSentence : '';
     case QualityTier.fullHd:
       return 'Target a crisp Full HD result with clean fine detail.';
     case QualityTier.ultraHd:

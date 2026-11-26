@@ -71,7 +71,8 @@ def test_portrait_at_high_zoom_uses_bokeh_prompt_not_photo(env):
     r = _post(c, "dev_v1163b", {"zoom": "100", "optical_limit": "2", "zoom_clean": "true",
                                 "mode": "portrait"}, 0)
     assert r.status_code == 200, r.text
-    assert up.calls[-1]["prompt"] == PORTRAIT
+    # v11.70: the one enhance tier adds the Ultra HD detail line.
+    assert up.calls[-1]["prompt"] == PORTRAIT + " " + P.SINGLE_TIER_SENTENCE
     assert up.calls[-1]["prompt"] != PHOTO
 
 
@@ -79,4 +80,4 @@ def test_1x_photo_uses_simple_prompt(env):
     c, _, _, up = env
     r = _post(c, "dev_v1163c", {"zoom": "1", "optical_limit": "1", "mode": "photo"}, 0)
     assert r.status_code == 200, r.text
-    assert up.calls[-1]["prompt"] == PHOTO
+    assert up.calls[-1]["prompt"] == PHOTO + " " + P.SINGLE_TIER_SENTENCE  # v11.70

@@ -213,7 +213,7 @@ class _EditorScreenState extends State<EditorScreen> {
           fit: StackFit.expand,
           children: [
             RotatedBox(quarterTurns: _p.quarterTurns, child: image),
-            _CropOverlay(
+            CropOverlay(
               key: const ValueKey('crop_overlay'),
               size: size,
               crop: _p.crop,
@@ -336,8 +336,8 @@ class _EditorScreenState extends State<EditorScreen> {
 
 /// Crop box with corner handles; drag inside to move. [aspect] = locked
 /// normalised w/h ratio (null = free).
-class _CropOverlay extends StatefulWidget {
-  const _CropOverlay({
+class CropOverlay extends StatefulWidget {
+  const CropOverlay({
     super.key,
     required this.size,
     required this.crop,
@@ -353,10 +353,10 @@ class _CropOverlay extends StatefulWidget {
   final ValueChanged<Rect> onChanged;
 
   @override
-  State<_CropOverlay> createState() => _CropOverlayState();
+  State<CropOverlay> createState() => _CropOverlayState();
 }
 
-class _CropOverlayState extends State<_CropOverlay> {
+class _CropOverlayState extends State<CropOverlay> {
   int? _corner; // 0 tl, 1 tr, 2 br, 3 bl, null = move
   Rect _start = Rect.zero;
   Offset _origin = Offset.zero;

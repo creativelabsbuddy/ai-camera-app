@@ -1,6 +1,7 @@
 import 'package:ai_camera/main.dart';
 import 'package:ai_camera/services/account_service.dart';
 import 'package:flutter/material.dart';
+import 'package:ai_camera/config/features_v1170.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -19,8 +20,12 @@ void main() {
     expect(find.text('PRO'), findsOneWidget);
     expect(find.byKey(const ValueKey('credits_pill')), findsOneWidget);
     expect(find.text('2'), findsOneWidget); // coin + number only
-    expect(find.byKey(const ValueKey('quality_chip')), findsOneWidget);
-    expect(find.text('HD'), findsOneWidget);
+    // v11.70: one enhance tier → no quality chip.
+    expect(
+      find.byKey(const ValueKey('quality_chip')),
+      kSingleEnhanceTier ? findsNothing : findsOneWidget,
+    );
+    if (!kSingleEnhanceTier) expect(find.text('HD'), findsOneWidget);
     expect(find.byKey(const ValueKey('mode_normal')), findsOneWidget);
     expect(find.byKey(const ValueKey('mode_pro')), findsOneWidget);
     // Single gallery entry (bottom-left), no top gallery / settings icons.

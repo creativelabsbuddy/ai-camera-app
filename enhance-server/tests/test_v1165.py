@@ -62,6 +62,7 @@ def _fake_esrgan(sent):
     return f
 
 
+@pytest.mark.usefixtures("legacy_tiers")  # v11.70: v11.69 tiers
 @pytest.mark.parametrize("tier,long_side", [("full_hd", 1920), ("ultra_hd", 2560)])
 def test_tier_upscale_esrgan_then_lanczos(env, monkeypatch, tier, long_side):  # noqa: F811
     c, _, _ = env
@@ -84,6 +85,7 @@ def test_hd_never_upscaled(env, monkeypatch):  # noqa: F811
     r = enhance(c, quality="hd")
     assert r.status_code == 200 and sent == [] and r.headers["X-Upscale"] == "none"
 
+@pytest.mark.usefixtures("legacy_tiers")  # v11.70: v11.69 tiers
 
 def test_old_4k_maps_to_ultra_hd(env, monkeypatch):  # noqa: F811
     c, _, _ = env
@@ -94,6 +96,7 @@ def test_old_4k_maps_to_ultra_hd(env, monkeypatch):  # noqa: F811
     assert r.status_code == 200, r.text
     assert max(Image.open(io.BytesIO(r.content)).size) == 2560
 
+@pytest.mark.usefixtures("legacy_tiers")  # v11.70: v11.69 tiers
 
 def test_insufficient_credits_falls_back_charges_normally(env, monkeypatch):  # noqa: F811
     c, _, _ = env
@@ -114,7 +117,8 @@ def test_insufficient_credits_falls_back_charges_normally(env, monkeypatch):  # 
 def test_tiers_and_credits_unchanged():
     import ledger as L
     assert L.TIERS["hd"][1] == 1 and L.TIERS["full_hd"][1] == 2 and L.TIERS["ultra_hd"][1] == 4
-    assert main.UPSCALE_TIERS == {"full_hd": 1920, "ultra_hd": 2560}
+    # v11.70 single tier: no upscale at all (v11.69: {"full_hd": 1920, "ultra_hd": 2560}).
+    assert main.UPSCALE_TIERS == ({} if L.SINGLE_TIER else {"full_hd": 1920, "ultra_hd": 2560})
 
 
 # -- Fast ⚡ video (fal) ------------------------------------------------------------

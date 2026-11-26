@@ -14,6 +14,9 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../config/features_v1169.dart';
+import '../config/features_v1170.dart';
+import '../widgets/slim_style_row.dart';
+import 'photo_editor_screen.dart';
 import '../models/capture_mode.dart';
 import '../models/photo_look.dart';
 import '../services/tone.dart';
@@ -490,6 +493,15 @@ class _PreviewScreenState extends State<PreviewScreen> {
     );
   }
 
+  /// v11.70: the tier the Pro AI enhance really uses (single tier).
+  /// Macro keeps its own level tier (unchanged).
+  QualityTier get _enhanceTier =>
+      widget.aiMode == 'macro' ? widget.tier : enhanceTierFor(widget.tier);
+
+  /// v11.70: the edited copy already written to the gallery by the editor
+  /// (Save then doesn't add a duplicate).
+  String? _savedPath;
+
   PhotoSource get _source =>
       widget.source ??
       (widget.mode == CaptureMode.pro
@@ -696,7 +708,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     zoomSourceOnly: widget.zoomSourceOnly,
     clearRef: widget.clearRef && widget.zoomSourceFile != null,
     context: widget.contextFile,
-    tier: widget.tier,
+    tier: _enhanceTier, // v11.70 single tier
     zoom: widget.captureZoom,
     opticalLimit: widget.opticalLimit,
     aiFilter: aiFilter,
@@ -989,7 +1001,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
             ? ' · framing ${r.structure!.toStringAsFixed(2)}'
             : '';
         _status =
-            'AI Enhanced$mode$look$free · ${job.tier.label} · $cost$ctx$fr';
+            'AI Enhanced$mode$look$free${kSingleEnhanceTier ? '' : ' · ${job.tier.label}'} · $cost$ctx$fr';
       } else if (r.aiUnavailable) {
         _status = 'Local enhance · add a server URL in Settings for AI';
       } else if (r.fellBackFromAi) {
@@ -1052,6 +1064,26 @@ class _PreviewScreenState extends State<PreviewScreen> {
   Future<void> _openEditor() async {
     await _ensureTone(); // v11.69
     if (!mounted) return;
+    if (kEditorV1170) {
+      // v11.70: Crop · Adjust · Retouch · Skin Tone; saves a new copy.
+      final ed = await Navigator.of(context).push<EditedPhoto>(
+        MaterialPageRoute(builder: (_) => PhotoEditorScreen(file: _current)),
+      );
+      if (ed == null || !mounted) return;
+      _toneIdle?.cancel();
+      setState(() {
+        _current = ed.file;
+        _aiBase = ed.file;
+        _filter = PremiumFilter.original;
+        _compare = false;
+        _savedPath = ed.savedToGallery ? ed.file.path : null;
+        _status = ed.savedToGallery
+            ? 'Edited copy saved · original kept · free'
+            : 'Edited · free · tap Save to keep it';
+        _toneLocked = true;
+      });
+      return;
+    }
     final out = await Navigator.of(context).push<File>(
       MaterialPageRoute(builder: (_) => EditorScreen(file: _current)),
     );
@@ -1093,6 +1125,12 @@ class _PreviewScreenState extends State<PreviewScreen> {
   Future<void> _save() async {
     await _ensureTone(); // v11.69
     if (!mounted) return;
+    if (_savedPath != null && _savedPath == _current.path) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Already saved to gallery')));
+      return;
+    }
     setState(() {
       _busy = true;
       _overlayLabel = 'Saving';
@@ -1108,6 +1146,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
         }
       }
       await Gal.putImage(_current.path, album: 'AI Camera');
+      _savedPath = _current.path;
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Saved to gallery · AI Camera album')),
@@ -1194,7 +1233,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          _body(zoomTag, title),
+          kPreviewV1170 ? _bodyV1170(zoomTag, title) : _body(zoomTag, title),
           if (gate != null)
             Positioned.fill(
               child: AiGateOverlay(
@@ -1207,6 +1246,417 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 },
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  /// Macro / guard / refund / tip / trial widgets under the photo (both
+  /// layouts).
+  List<Widget> _resultExtras() => [
+    if (_macroDone && widget.macroLevel != null && !_busy)
+      Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text(
+          macroLevelSentLabel(
+            widget.macroLevel!,
+            spot: widget.part,
+            source: widget.spotSource,
+          ),
+          key: const ValueKey('macro_level_sent'),
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+        ),
+      ),
+    if (_macroDone && _isMicroscope && !_busy)
+      const Padding(
+        padding: EdgeInsets.only(top: 6),
+        child: Text(
+          kAiImaginedLabel,
+          key: ValueKey('ai_imagined_label'),
+          style: TextStyle(color: AppColors.proGold, fontSize: 12),
+        ),
+      ),
+    if (_macroDone && _refundable != null && !_busy)
+      Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: TextButton.icon(
+          key: const ValueKey('micro_refund'),
+          onPressed: _refunding ? null : _refundBadResult,
+          icon: const Icon(Icons.undo_rounded, size: 18),
+          label: CreditText(
+            'Bad result? Refund $kCreditGlyph${_refundable!.credits}',
+          ),
+        ),
+      ),
+    if (_macroDone && !_busy)
+      Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: OutlinedButton.icon(
+          key: const ValueKey('macro_try_again'),
+          onPressed: _retryMacro,
+          icon: const Icon(Icons.refresh_rounded, size: 18),
+          label: CreditText(
+            macroRetryLabel(
+              macroRetryCredits(
+                widget.macroLevel,
+                widget.tier.credits,
+                quality: widget.tier.id,
+              ),
+            ),
+          ),
+        ),
+      ),
+    if (_guard != null && !_busy)
+      Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Wrap(
+          key: const ValueKey('guard_actions'),
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          children: [
+            if (_guard == AiFailureKind.tooDark) ...[
+              FilledButton.tonal(
+                key: const ValueKey('guard_normal_night'),
+                onPressed: _useNormalNight,
+                child: const Text('Normal Night'),
+              ),
+              OutlinedButton(
+                key: const ValueKey('guard_flash_on'),
+                onPressed: () => Navigator.pop(context, 'flash_on'),
+                child: const Text('Flash on'),
+              ),
+            ] else ...[
+              if (_rejected != null)
+                TextButton(
+                  key: const ValueKey('guard_view_rejected'),
+                  onPressed: () => setState(() {
+                    _viewRejected = !_viewRejected;
+                    _current = _viewRejected ? _rejected! : _original;
+                  }),
+                  child: Text(
+                    _viewRejected
+                        ? 'Showing rejected result — tap for original'
+                        : rejectedViewLabel(_guard!, _guardScore),
+                  ),
+                ),
+              FilledButton.tonal(
+                key: const ValueKey('guard_retry'),
+                onPressed: _retryGuard,
+                child: Text(
+                  _guard == AiFailureKind.framingChanged
+                      ? 'Try again'
+                      : 'Retry',
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    if (_actions.captureTip && !_busy)
+      const Padding(
+        padding: EdgeInsets.only(top: 6),
+        child: Row(
+          key: ValueKey('pro_capture_tip'),
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.auto_awesome, size: 13, color: AppColors.proGold),
+            SizedBox(width: 5),
+            Text(
+              kProCaptureTip,
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    if (_trialsUsed.isNotEmpty && !_busy)
+      const Padding(padding: EdgeInsets.only(top: 6), child: TrialUpsellChip()),
+  ];
+
+  // ---- v11.70 layout ---------------------------------------------------------
+
+  Widget _photoView({required bool zoomable}) {
+    final Widget photo = AnimatedSwitcher(
+      duration: const Duration(milliseconds: 420),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      layoutBuilder: (current, previous) =>
+          Stack(fit: StackFit.expand, children: [...previous, ?current]),
+      child: _compare && _current.path != _original.path
+          ? CompareSlider(
+              key: const ValueKey('compare_slider'),
+              before: _original,
+              after: _current,
+            )
+          : _toneProxyVisible
+          ? RawImage(
+              key: const ValueKey('tone_proxy'),
+              image: _toneImage,
+              fit: BoxFit.contain,
+            )
+          : Image.file(
+              _current,
+              fit: BoxFit.contain,
+              key: ValueKey(_current.path),
+              gaplessPlayback: true,
+            ),
+    );
+    if (!zoomable || _compare) return photo;
+    return InteractiveViewer(
+      key: const ValueKey('preview_pinch_zoom'),
+      maxScale: 6,
+      child: GestureDetector(
+        key: const ValueKey('preview_photo_tap'),
+        behavior: HitTestBehavior.opaque,
+        onTap: _busy ? null : _openFullscreen,
+        child: photo,
+      ),
+    );
+  }
+
+  /// Tap the photo → fullscreen, pinch to zoom.
+  Future<void> _openFullscreen() async {
+    await _ensureTone();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: true,
+        transitionDuration: const Duration(milliseconds: 180),
+        pageBuilder: (_, _, _) => FullscreenPhoto(file: _current),
+        transitionsBuilder: (_, a, _, child) =>
+            FadeTransition(opacity: a, child: child),
+      ),
+    );
+  }
+
+  Widget _bodyV1170(String zoomTag, String title) {
+    final status = (_status != null && !_busy) ? _status : null;
+    final timing = (_timing != null && !_busy && AiConfig.hasEmbeddedApiKey)
+        ? _timing
+        : null;
+    final account = AccountService.instance;
+    return SafeArea(
+      child: Column(
+        children: [
+          SizedBox(
+            height: 46,
+            child: Row(
+              children: [
+                IconButton(
+                  onPressed: _busy
+                      ? null
+                      : () => Navigator.pop(context, kPreviewClosed),
+                  icon: const Icon(Icons.close),
+                ),
+                Expanded(
+                  child: Text(
+                    '$title$zoomTag',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  key: const ValueKey('compare_toggle'),
+                  tooltip: 'Before / after',
+                  visualDensity: VisualDensity.compact,
+                  onPressed:
+                      _busy ||
+                          (_current.path == _original.path &&
+                              !_toneProxyVisible)
+                      ? null
+                      : () async {
+                          await _ensureTone(); // v11.69
+                          if (mounted) setState(() => _compare = !_compare);
+                        },
+                  icon: Icon(
+                    Icons.compare_rounded,
+                    color: _compare ? AppColors.proGold : null,
+                  ),
+                ),
+                IconButton(
+                  key: const ValueKey('copy_text'),
+                  tooltip: 'Copy text',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: _busy ? null : _copyText,
+                  icon: const Icon(Icons.text_snippet_outlined),
+                ),
+                const LiveCreditsPill(),
+                const SizedBox(width: 8),
+              ],
+            ),
+          ),
+          // Big, edge to edge.
+          Expanded(
+            child: AiWorkingFrame(
+              active: _busy,
+              light: _overlayLight,
+              label: _overlayLabel,
+              showElapsed: !_overlayLight,
+              onCancel: _overlayLight ? null : _cancelAi,
+              note: kAiBlurNote,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  ColoredBox(
+                    color: Colors.black,
+                    child: _holdToCompare(_photoView(zoomable: true)),
+                  ),
+                  if (widget.zoomLabel case final zl?)
+                    Positioned(
+                      top: 8,
+                      left: 12,
+                      right: 12,
+                      child: Center(
+                        child: _OverlayPill(
+                          key: const ValueKey('zoom_clear_label'),
+                          icon: Icons.auto_awesome_rounded,
+                          text: zl,
+                          gold: true,
+                        ),
+                      ),
+                    ),
+                  if (!_busy)
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: _RoundIcon(
+                        key: const ValueKey('preview_fullscreen'),
+                        icon: Icons.fullscreen_rounded,
+                        onTap: _openFullscreen,
+                      ),
+                    ),
+                  if (status != null || timing != null)
+                    Positioned(
+                      left: 8,
+                      right: 8,
+                      bottom: 8,
+                      child: IgnorePointer(
+                        child: Center(
+                          child: Container(
+                            key: const ValueKey('preview_info_overlay'),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.5),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (status != null)
+                                  CreditText(
+                                    status,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                if (timing != null)
+                                  Text(
+                                    timing,
+                                    key: const ValueKey('ai_timing_line'),
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: Colors.white60,
+                                      fontSize: 10,
+                                      fontFeatures: [
+                                        FontFeature.tabularFigures(),
+                                      ],
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          ..._resultExtras(),
+          if (_toneReady)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: ToneBar(
+                autoOn: _toneAutoOn,
+                preset: _tonePreset,
+                enabled: !_busy,
+                canReset: _toneCanReset,
+                showAuto: kAutoTone,
+                showPresets: kTonePresets,
+                onAuto: _setToneAuto,
+                onPreset: _setTonePreset,
+                onAdjust: _openToneSliders,
+                onReset: _resetTone,
+              ),
+            ),
+          if (_initialEnhanceDone)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: ValueListenableBuilder<CreditState?>(
+                valueListenable: account.state,
+                builder: (context, st, _) {
+                  final pro = st?.isPro(account.now) ?? false;
+                  final trial =
+                      st?.trialAvailable(StarterTrial.aiFilter) ?? true;
+                  return _SlimStyles(
+                    enabled: !_busy,
+                    isPro: pro,
+                    aiFilters: _actions.aiFilters ? kStylePresets : const [],
+                    aiFilterCost: _enhanceTier.credits,
+                    aiFilterLocked: !pro && !trial,
+                    aiFilterTrial: !pro && trial,
+                    onAiFilter: _runAiFilter,
+                    onStyle: (s) => _openLook(style: s),
+                    onCustom: () => _openLook(),
+                    onSeeAll: _openLibrary,
+                  );
+                },
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _ActionButton(
+                    key: const ValueKey('edit_photo'),
+                    icon: Icons.tune_rounded,
+                    label: 'Edit',
+                    compact: true,
+                    onPressed: _busy ? null : _openEditor,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _ActionButton(
+                    key: const ValueKey('preview_save'),
+                    icon: Icons.save_alt_rounded,
+                    label: 'Save',
+                    filled: true,
+                    compact: true,
+                    onPressed: _busy ? null : _save,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _ActionButton(
+                    key: const ValueKey('preview_retake'),
+                    icon: Icons.replay_rounded,
+                    label: 'Retake',
+                    compact: true,
+                    onPressed: _busy ? null : () => Navigator.pop(context),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -1361,131 +1811,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
                 ),
               ),
             ),
-          if (_macroDone && widget.macroLevel != null && !_busy)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                macroLevelSentLabel(
-                  widget.macroLevel!,
-                  spot: widget.part,
-                  source: widget.spotSource,
-                ),
-                key: const ValueKey('macro_level_sent'),
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 12,
-                ),
-              ),
-            ),
-          if (_macroDone && _isMicroscope && !_busy)
-            const Padding(
-              padding: EdgeInsets.only(top: 6),
-              child: Text(
-                kAiImaginedLabel,
-                key: ValueKey('ai_imagined_label'),
-                style: TextStyle(color: AppColors.proGold, fontSize: 12),
-              ),
-            ),
-          if (_macroDone && _refundable != null && !_busy)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: TextButton.icon(
-                key: const ValueKey('micro_refund'),
-                onPressed: _refunding ? null : _refundBadResult,
-                icon: const Icon(Icons.undo_rounded, size: 18),
-                label: CreditText(
-                  'Bad result? Refund $kCreditGlyph${_refundable!.credits}',
-                ),
-              ),
-            ),
-          if (_macroDone && !_busy)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: OutlinedButton.icon(
-                key: const ValueKey('macro_try_again'),
-                onPressed: _retryMacro,
-                icon: const Icon(Icons.refresh_rounded, size: 18),
-                label: CreditText(
-                  macroRetryLabel(
-                    macroRetryCredits(
-                      widget.macroLevel,
-                      widget.tier.credits,
-                      quality: widget.tier.id,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          if (_guard != null && !_busy)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Wrap(
-                key: const ValueKey('guard_actions'),
-                alignment: WrapAlignment.center,
-                spacing: 8,
-                children: [
-                  if (_guard == AiFailureKind.tooDark) ...[
-                    FilledButton.tonal(
-                      key: const ValueKey('guard_normal_night'),
-                      onPressed: _useNormalNight,
-                      child: const Text('Normal Night'),
-                    ),
-                    OutlinedButton(
-                      key: const ValueKey('guard_flash_on'),
-                      onPressed: () => Navigator.pop(context, 'flash_on'),
-                      child: const Text('Flash on'),
-                    ),
-                  ] else ...[
-                    if (_rejected != null)
-                      TextButton(
-                        key: const ValueKey('guard_view_rejected'),
-                        onPressed: () => setState(() {
-                          _viewRejected = !_viewRejected;
-                          _current = _viewRejected ? _rejected! : _original;
-                        }),
-                        child: Text(
-                          _viewRejected
-                              ? 'Showing rejected result — tap for original'
-                              : rejectedViewLabel(_guard!, _guardScore),
-                        ),
-                      ),
-                    FilledButton.tonal(
-                      key: const ValueKey('guard_retry'),
-                      onPressed: _retryGuard,
-                      child: Text(
-                        _guard == AiFailureKind.framingChanged
-                            ? 'Try again'
-                            : 'Retry',
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          if (_actions.captureTip && !_busy)
-            const Padding(
-              padding: EdgeInsets.only(top: 6),
-              child: Row(
-                key: ValueKey('pro_capture_tip'),
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.auto_awesome, size: 13, color: AppColors.proGold),
-                  SizedBox(width: 5),
-                  Text(
-                    kProCaptureTip,
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (_trialsUsed.isNotEmpty && !_busy)
-            const Padding(
-              padding: EdgeInsets.only(top: 6),
-              child: TrialUpsellChip(),
-            ),
+          ..._resultExtras(),
           if (_toneReady && !_showFilters)
             Padding(
               padding: const EdgeInsets.only(top: 10),
@@ -1518,6 +1844,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
               child: _FiltersPanel(
                 enabled: !_busy,
+                showLocal: !kNoFiltersPanel,
                 showAi: _actions.aiFilters,
                 selected: _filter,
                 strength: _strength,
@@ -1538,19 +1865,24 @@ class _PreviewScreenState extends State<PreviewScreen> {
               children: [
                 Row(
                   children: [
-                    Expanded(
-                      flex: 3,
-                      child: _ActionButton(
-                        icon: Icons.palette_outlined,
-                        label: 'Filters',
-                        filled: true,
-                        onPressed: _busy
-                            ? null
-                            : () =>
-                                  setState(() => _showFilters = !_showFilters),
+                    // v11.70: without free filters, Filters stays only for
+                    // the AI filters (Pro AI captures).
+                    if (!kNoFiltersPanel || _actions.aiFilters) ...[
+                      Expanded(
+                        flex: 3,
+                        child: _ActionButton(
+                          icon: Icons.palette_outlined,
+                          label: 'Filters',
+                          filled: true,
+                          onPressed: _busy
+                              ? null
+                              : () => setState(
+                                  () => _showFilters = !_showFilters,
+                                ),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
+                      const SizedBox(width: 10),
+                    ],
                     Expanded(
                       flex: 2,
                       child: _ActionButton(
@@ -1641,6 +1973,7 @@ class _StylesStripState extends State<_StylesStrip> {
 class _FiltersPanel extends StatelessWidget {
   const _FiltersPanel({
     required this.enabled,
+    this.showLocal = true,
     required this.showAi,
     required this.selected,
     required this.strength,
@@ -1651,6 +1984,9 @@ class _FiltersPanel extends StatelessWidget {
   });
 
   final bool enabled;
+
+  /// v11.70: false → no free on-device filters ([kNoFiltersPanel]).
+  final bool showLocal;
 
   /// AI filters only on PRO AI captures (v10: no post-capture enhance).
   final bool showAi;
@@ -1672,26 +2008,27 @@ class _FiltersPanel extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const _PanelLabel('Free filters (no AI)'),
-            SizedBox(
-              height: 40,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  for (final f in PremiumFilter.values)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: ChoiceChip(
-                        key: ValueKey('local_${f.id}'),
-                        label: Text(f.label),
-                        selected: f == selected,
-                        onSelected: enabled ? (_) => onLocal(f) : null,
+            if (showLocal) const _PanelLabel('Free filters (no AI)'),
+            if (showLocal)
+              SizedBox(
+                height: 40,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  children: [
+                    for (final f in PremiumFilter.values)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: ChoiceChip(
+                          key: ValueKey('local_${f.id}'),
+                          label: Text(f.label),
+                          selected: f == selected,
+                          onSelected: enabled ? (_) => onLocal(f) : null,
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            if (!selected.isOriginal)
+            if (showLocal && !selected.isOriginal)
               Row(
                 children: [
                   Text(
@@ -1779,6 +2116,7 @@ class _ActionButton extends StatelessWidget {
     required this.label,
     required this.onPressed,
     this.filled = false,
+    this.compact = false,
   });
 
   final IconData icon;
@@ -1786,14 +2124,23 @@ class _ActionButton extends StatelessWidget {
   final VoidCallback? onPressed;
   final bool filled;
 
+  /// v11.70 smaller buttons (one row of three).
+  final bool compact;
+
   @override
   Widget build(BuildContext context) {
     final child = Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(icon, size: 20),
-        const SizedBox(width: 8),
-        Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+        Icon(icon, size: compact ? 18 : 20),
+        SizedBox(width: compact ? 6 : 8),
+        Text(
+          label,
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: compact ? 13 : null,
+          ),
+        ),
       ],
     );
 
@@ -1803,9 +2150,9 @@ class _ActionButton extends StatelessWidget {
         style: FilledButton.styleFrom(
           backgroundColor: AppColors.accent,
           foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(vertical: 14),
+          padding: EdgeInsets.symmetric(vertical: compact ? 10 : 14),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(compact ? 12 : 14),
           ),
         ),
         child: child,
@@ -1819,8 +2166,10 @@ class _ActionButton extends StatelessWidget {
         side: BorderSide(
           color: AppColors.textSecondary.withValues(alpha: 0.35),
         ),
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        padding: EdgeInsets.symmetric(vertical: compact ? 10 : 14),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(compact ? 12 : 14),
+        ),
       ),
       child: child,
     );
@@ -1847,4 +2196,195 @@ class _OriginalTag extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// v11.70 small pill over the photo.
+class _OverlayPill extends StatelessWidget {
+  const _OverlayPill({
+    super.key,
+    required this.icon,
+    required this.text,
+    this.gold = false,
+  });
+
+  final IconData icon;
+  final String text;
+  final bool gold;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: 0.55),
+      borderRadius: BorderRadius.circular(99),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: gold ? AppColors.proGold : Colors.white),
+        const SizedBox(width: 5),
+        Flexible(
+          child: Text(
+            text,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: gold ? AppColors.proGold : Colors.white,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _RoundIcon extends StatelessWidget {
+  const _RoundIcon({super.key, required this.icon, required this.onTap});
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.black.withValues(alpha: 0.45),
+    shape: const CircleBorder(),
+    child: InkWell(
+      customBorder: const CircleBorder(),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Icon(icon, size: 20, color: Colors.white),
+      ),
+    ),
+  );
+}
+
+/// v11.70 slim Styles row bound to the style catalog.
+class _SlimStyles extends StatefulWidget {
+  const _SlimStyles({
+    required this.enabled,
+    required this.isPro,
+    required this.aiFilters,
+    required this.aiFilterCost,
+    required this.aiFilterLocked,
+    required this.aiFilterTrial,
+    required this.onAiFilter,
+    required this.onStyle,
+    required this.onCustom,
+    required this.onSeeAll,
+  });
+
+  final bool enabled;
+  final bool isPro;
+  final List<StylePreset> aiFilters;
+  final int aiFilterCost;
+  final bool aiFilterLocked;
+  final bool aiFilterTrial;
+  final ValueChanged<StylePreset> onAiFilter;
+  final ValueChanged<AiStyle> onStyle;
+  final VoidCallback onCustom;
+  final VoidCallback onSeeAll;
+
+  @override
+  State<_SlimStyles> createState() => _SlimStylesState();
+}
+
+class _SlimStylesState extends State<_SlimStyles> {
+  @override
+  void initState() {
+    super.initState();
+    unawaited(StyleCatalog.instance.ensureLoaded());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<List<AiStyle>>(
+      valueListenable: StyleCatalog.instance.styles,
+      builder: (context, styles, _) => SlimStyleRow(
+        styles: styles,
+        enabled: widget.enabled,
+        isPro: widget.isPro,
+        aiFilters: widget.aiFilters,
+        aiFilterCost: widget.aiFilterCost,
+        aiFilterLocked: widget.aiFilterLocked,
+        aiFilterTrial: widget.aiFilterTrial,
+        onAiFilter: widget.onAiFilter,
+        onStyle: widget.onStyle,
+        onCustom: widget.onCustom,
+        onSeeAll: widget.onSeeAll,
+      ),
+    );
+  }
+}
+
+/// v11.70 fullscreen photo: pinch to zoom, double-tap to zoom, tap to close.
+class FullscreenPhoto extends StatefulWidget {
+  const FullscreenPhoto({super.key, required this.file});
+  final File file;
+
+  @override
+  State<FullscreenPhoto> createState() => _FullscreenPhotoState();
+}
+
+class _FullscreenPhotoState extends State<FullscreenPhoto> {
+  final _ctl = TransformationController();
+  TapDownDetails? _dbl;
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  void _toggleZoom() {
+    if (_ctl.value.getMaxScaleOnAxis() > 1.01) {
+      _ctl.value = Matrix4.identity();
+      return;
+    }
+    final p = _dbl?.localPosition ?? Offset.zero;
+    const s = 2.5;
+    _ctl.value = Matrix4.identity()
+      ..translateByDouble(-p.dx * (s - 1), -p.dy * (s - 1), 0, 1)
+      ..scaleByDouble(s, s, 1, 1);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      key: const ValueKey('fullscreen_photo'),
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          GestureDetector(
+            onTap: () => Navigator.pop(context),
+            onDoubleTapDown: (d) => _dbl = d,
+            onDoubleTap: _toggleZoom,
+            child: InteractiveViewer(
+              transformationController: _ctl,
+              maxScale: 8,
+              child: Center(
+                child: Image.file(
+                  widget.file,
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: IconButton(
+                key: const ValueKey('fullscreen_close'),
+                color: Colors.white,
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

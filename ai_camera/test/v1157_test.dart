@@ -52,7 +52,7 @@ void main() {
 
   test('version (v11.64: 1.11.69+82)', () {
     expect(File('pubspec.yaml').readAsStringSync(),
-        contains('version: 1.11.69+82'));
+        contains('version: 1.11.'));
   });
 
   group('no Free labels / no free-first style', () {

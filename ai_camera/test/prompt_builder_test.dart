@@ -1,5 +1,6 @@
 import 'package:ai_camera/models/quality_tier.dart';
 import 'package:ai_camera/services/prompt_builder.dart';
+import 'package:ai_camera/config/features_v1170.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Verbatim copy of the v6 locked prompt — must never change.
@@ -21,7 +22,7 @@ void main() {
       'Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information.',
     ); // v11.68 restore enhance prompt
     final v6Locked = kLockedEnhancePrompt;
-    expect(buildEnhancePrompt(), v6Locked);
+    expect(buildEnhancePrompt(), '$v6Locked$_hd');
     expect(
       buildEnhancePrompt(
         hasContextImage: true,
@@ -66,3 +67,6 @@ void main() {
     expect(sanitizeCustomPrompt(long).length, 200);
   });
 }
+
+/// v11.70: the single enhance tier appends the Ultra HD sentence.
+String get _hd => kSingleEnhanceTier ? ' $kSingleTierSentence' : '';

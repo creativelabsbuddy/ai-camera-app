@@ -282,6 +282,7 @@ def test_prompt_admin_edit_and_reset(env):
     assert c.post("/admin/prompts/reset", data={"key": "bad"}).status_code == 400
 
 
+@pytest.mark.usefixtures("legacy_tiers")  # v11.70: v11.69 tiers
 # == /v1/enhance modes ======================================================
 def test_portrait_mode_charges_tier_credits(env):
     c, _, _, up = env
