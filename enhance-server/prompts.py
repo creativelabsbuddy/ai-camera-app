@@ -723,6 +723,10 @@ QUALITY_SENTENCES = {
     "4k": "Target a maximum-detail 4K result with crisp fine texture throughout.",
 }
 
+# v11.70 the one enhance tier's detail line (= the old Ultra HD line).
+# Mirrored in the app's prompt_builder.dart (kSingleTierSentence).
+SINGLE_TIER_SENTENCE = QUALITY_SENTENCES["ultra_hd"]
+
 
 # Tiny safety list for custom "Describe a change…" prompts (v9.1). No
 # relevance checks — users may type anything; the model's own refusals cover
@@ -803,8 +807,10 @@ def build_prompt(
     color_prompt: Optional[str] = None,
     context_boxed: bool = False,
     portrait_prompt: Optional[str] = None,
+    single_tier: bool = False,
 ) -> str:
-    """v11.68: Pro AI enhance restore prompt (or the Portrait bokeh variant
+    """v11.70: ``single_tier`` → the one HD tier carries SINGLE_TIER_SENTENCE.
+    v11.68: Pro AI enhance restore prompt (or the Portrait bokeh variant
     given as ``portrait_prompt``, used INSTEAD of the base) + optional mode
     sentence (Macro levels) + context, quality, AI-filter style, colour
     look, user request. ``zoom`` / ``optical_limit`` no longer change the
@@ -819,6 +825,8 @@ def build_prompt(
     if has_context:
         parts.append(CONTEXT_BOXED_SENTENCE if context_boxed else CONTEXT_IMAGE_SENTENCE)
     qs = QUALITY_SENTENCES.get(tier, "")
+    if single_tier and tier == "hd":
+        qs = SINGLE_TIER_SENTENCE
     if qs:
         parts.append(qs)
     st = (style_prompt or "").strip()

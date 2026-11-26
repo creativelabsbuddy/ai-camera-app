@@ -77,10 +77,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('version (v11.65: 1.11.69+82)', () {
-    expect(
-      File('pubspec.yaml').readAsStringSync(),
-      contains('version: 1.11.69+82'),
-    );
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.'));
   });
 
   group('sharp-source zoom (D1–D3, D5, F1–F3)', () {

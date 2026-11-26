@@ -490,3 +490,30 @@ prompts, credits, prices, video routing and style previews are unchanged.
   ends in the base-photo hint / fail closed. Coasting assumes the phone is still (gyro) and only
   the zoom changed. Known open item (unchanged): a server-side completion/charge followed by a
   network drop has no automatic refund.
+
+## v11.70 (1.11.70+83) — Bigger preview, free photo editor, one enhance tier
+
+Every change has a kill switch in `ai_camera/lib/config/features_v1170.dart` (all `true`):
+`kPreviewV1170`, `kNoFiltersPanel`, `kNoToneChips`, `kEditorV1170`, `kRetouch`, `kSkinTone`,
+`kSingleEnhanceTier`. Server: env `SINGLE_TIER` (default on; `0` = old HD / Full HD / Ultra HD / 4K).
+
+- **Preview**: photo edge to edge; tap (or the corner icon) = fullscreen with pinch / double-tap
+  zoom; pinch zoom in place; info text is a small caption over the photo; slim Styles row
+  (Custom, AI filters on Pro AI captures, styles, "See all"); compact Edit · Save · Retake.
+- **Filters** button and the free filters panel are gone. AI filters (Pro AI captures) are tiles in
+  the Styles row: same prompts, same credits (= the enhance tier credits, now 1).
+- **Live camera**: the tone preset chip row is gone. Auto Tone after a Normal capture stays (and its
+  presets in the preview tone bar).
+- **Edit** (Normal and Pro AI) opens a free, on-device editor (`photo_editor_screen.dart`,
+  `services/edit_v1170.dart`): Crop (Free, Original, 1:1, 4:5, 3:4, 4:3, 9:16, 16:9; rotate) ·
+  Adjust (8 sliders; Clear / Bright / Punchy / Soft; "Save as preset", stored on the phone) ·
+  Retouch (smooth skin that keeps pores, tap-to-heal blemishes, brighten face, eyes, teeth,
+  under-eye, one-tap Auto; no reshaping) · Skin Tone (darker ↔ lighter, about 1–2 shades, auto skin
+  mask from ML Kit face contours + skin colour). Hold the photo = original. Save writes a NEW copy
+  (gallery album "AI Camera") and keeps the original. No credits.
+- **Front camera**: no Zoom mode chip (already back-lens only; verified).
+- **One enhance tier**: no quality chip / quick-menu quality item. Pro AI enhance = Flare low,
+  1 credit, no upscale; prompt = restore prompt + "Target a very detailed Ultra HD result with crisp
+  fine texture." (Dart `kSingleTierSentence` = Python `SINGLE_TIER_SENTENCE`). Old builds sending
+  full_hd / ultra_hd / 4k are charged 1 credit and get the same result. Zoom mode keeps Sunburst;
+  Macro keeps its level tiers. Zoom ≥30x is no longer bumped to Full HD.

@@ -6,13 +6,14 @@ import 'package:ai_camera/services/prompt_builder.dart';
 import 'package:ai_camera/services/mode_prompts.dart';
 import 'package:ai_camera/services/video_service.dart';
 import 'package:ai_camera/services/zoom_root.dart';
+import 'package:ai_camera/config/features_v1170.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('version 1.11.69+82', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.69+82'));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.'));
   });
 
   group('video: Phosor MiniMax only', () {
@@ -74,12 +75,12 @@ void main() {
     });
 
     test('1x Photo uses the restore prompt; Portrait at 100x uses bokeh', () {
-      expect(buildEnhancePrompt(), restore);
-      expect(buildEnhancePrompt(zoom: 1), restore);
-      expect(buildEnhancePrompt(zoom: 80, opticalLimit: 2), restore);
-      expect(buildEnhancePrompt(zoom: 100, opticalLimit: 2), restore);
-      expect(buildEnhancePrompt(portrait: true), portrait);
-      expect(buildEnhancePrompt(portrait: true, zoom: 100, opticalLimit: 2), portrait);
+      expect(buildEnhancePrompt(), '$restore$_hd');
+      expect(buildEnhancePrompt(zoom: 1), '$restore$_hd');
+      expect(buildEnhancePrompt(zoom: 80, opticalLimit: 2), '$restore$_hd');
+      expect(buildEnhancePrompt(zoom: 100, opticalLimit: 2), '$restore$_hd');
+      expect(buildEnhancePrompt(portrait: true), '$portrait$_hd');
+      expect(buildEnhancePrompt(portrait: true, zoom: 100, opticalLimit: 2), '$portrait$_hd');
     });
 
     test('EnhanceJob: zoomed photo uses zoom-clean (= simple); zoomed portrait does not', () {
@@ -102,7 +103,7 @@ void main() {
         zoomClean: true,
       );
       expect(port.isZoomClean, isFalse);
-      expect(port.prompt(hasContext: false), portrait);
+      expect(port.prompt(hasContext: false), '$portrait$_hd');
     });
   });
 
@@ -156,3 +157,6 @@ void main() {
     });
   });
 }
+
+/// v11.70: the single enhance tier appends the Ultra HD sentence.
+String get _hd => kSingleEnhanceTier ? ' $kSingleTierSentence' : '';

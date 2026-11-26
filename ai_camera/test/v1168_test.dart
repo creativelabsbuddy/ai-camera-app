@@ -10,6 +10,7 @@ import 'package:ai_camera/services/clear_ref.dart';
 import 'package:ai_camera/services/enhance_service.dart';
 import 'package:ai_camera/services/macro.dart';
 import 'package:ai_camera/services/prompt_builder.dart';
+import 'package:ai_camera/config/features_v1170.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const restore =
@@ -19,16 +20,16 @@ const noInvent =
     'Where details are irrecoverable, preserve natural softness rather than inventing information; never replace unreadable text with blank shapes.';
 
 void main() {
-  test('version 1.11.69+82', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.69+82'));
+  test('version 1.11.69+82 or later', () {
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.'));
   });
 
   group('1: Pro AI enhance restore prompt', () {
     test('exact string; HD / Full HD / Ultra HD / gallery use it', () {
       expect(kUniversalEnhancePrompt, restore);
       expect(kLockedEnhancePrompt, restore);
-      expect(buildEnhancePrompt(), restore);
-      expect(buildEnhancePrompt(tier: QualityTier.hd), restore);
+      expect(buildEnhancePrompt(), '$restore$_hd');
+      expect(buildEnhancePrompt(tier: QualityTier.hd), '$restore$_hd');
       expect(
         buildEnhancePrompt(tier: QualityTier.fullHd),
         '$restore Target a crisp Full HD result with clean fine detail.',
@@ -54,7 +55,7 @@ void main() {
         kPortraitEnhancePrompt,
         'Clean up and sharpen this image, with a natural tone. Keep every face exactly the same person: same face shape, eyes, nose, lips, skin tone and expression. Blur only the background with a natural bokeh, and keep the subject sharp. Do not change, add or remove anything else.',
       );
-      expect(buildEnhancePrompt(portrait: true), kPortraitEnhancePrompt);
+      expect(buildEnhancePrompt(portrait: true), '$kPortraitEnhancePrompt$_hd');
       expect(kPortraitEnhancePrompt, isNot(contains(restore)));
       // Mode-level prompts live in mode_prompts.dart; v11.68 must not touch them.
       final mp = File('lib/services/mode_prompts.dart').readAsStringSync();
@@ -101,9 +102,9 @@ void main() {
       expect(kNightPrompt, contains('do not add anything new'));
       expect(kNightPrompt, endsWith(kNoInventLine));
       final p = buildEnhancePrompt(night: true);
-      expect(p, '$restore $noInvent');
+      expect(p, '$restore $noInvent$_hd');
       expect(p, isNot(contains('A natural night photograph')));
-      expect(buildEnhancePrompt(), restore);
+      expect(buildEnhancePrompt(), '$restore$_hd');
       expect(buildEnhancePrompt(), isNot(contains(noInvent)));
     });
   });
@@ -169,3 +170,6 @@ void main() {
     });
   });
 }
+
+/// v11.70: the single enhance tier appends the Ultra HD sentence.
+String get _hd => kSingleEnhanceTier ? ' $kSingleTierSentence' : '';

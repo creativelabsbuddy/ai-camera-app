@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../config/ai_config.dart';
 import '../config/features_v1169.dart';
+import '../config/features_v1170.dart';
 import '../models/photo_look.dart';
 import '../models/quality_tier.dart';
 import '../models/style_preset.dart';
@@ -668,7 +669,21 @@ class EnhanceService {
         }
         // v11.65: Full HD / Ultra HD → Real-ESRGAN 2x + resize to the tier
         // (fallback: resize only, never fails the shot). HD as-is.
-        final up = await upscaleForTier(bytes, job.tier, runware: _runware, cancel: cancel);
+        // v11.70 single tier: delivered exactly as Flare returned it.
+        final up = kSingleEnhanceTier
+            ? (
+                bytes: bytes,
+                outcome: UpscaleOutcome.none,
+                cost: 0.0,
+                upscaleMs: null,
+                resizeMs: null,
+              )
+            : await upscaleForTier(
+                bytes,
+                job.tier,
+                runware: _runware,
+                cancel: cancel,
+              );
         bytes = up.bytes;
         debugPrint('Tier ${job.tier.id}: upscale ${up.outcome.name}');
         final file = await _writeBytes(bytes, 'flare');

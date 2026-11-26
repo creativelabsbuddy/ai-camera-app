@@ -149,6 +149,7 @@ def test_two_image_rejection_falls_back(env):
     assert P.CONTEXT_IMAGE_SENTENCE not in up.calls[-1]["prompt"]
     assert account(c)["state"]["free_daily"] == 1  # charged once
 
+@pytest.mark.usefixtures("legacy_tiers")  # v11.70: v11.69 tiers
 
 def test_trial_once_only_then_pro_only(env):
     c, _, up = env
@@ -171,6 +172,7 @@ def test_trial_once_only_then_pro_only(env):
     # Trials are per device.
     assert enhance(c, dev="other_device", zoom=30).headers["x-trials-used"] == "high_zoom"
 
+@pytest.mark.usefixtures("legacy_tiers")  # v11.70: v11.69 tiers
 
 def test_pro_purchase_zoom_and_expiry(env):
     c, clock, up = env
@@ -186,6 +188,7 @@ def test_pro_purchase_zoom_and_expiry(env):
     a = account(c)
     assert not a["is_pro"] and a["state"]["sub_credits"] == 0
 
+@pytest.mark.usefixtures("legacy_tiers")  # v11.70: v11.69 tiers
 
 def test_packs_pay_premium_tiers(env):
     c, _, _ = env
@@ -195,6 +198,7 @@ def test_packs_pay_premium_tiers(env):
     a = account(c)
     assert a["state"]["pack_credits"] == 23 and a["state"]["free_daily"] == 2
 
+@pytest.mark.usefixtures("legacy_tiers")  # v11.70: v11.69 tiers
 
 def test_output_not_upscaled_v1158(env):
     """v11.58: HD is delivered at its native size. v11.65: Full HD is sized to

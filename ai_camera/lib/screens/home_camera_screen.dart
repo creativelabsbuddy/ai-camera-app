@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/features_v1169.dart';
+import '../config/features_v1170.dart';
 import '../models/photo_look.dart';
 import '../services/burst_shot.dart';
 import '../services/tone.dart';
@@ -362,9 +363,13 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
 
   /// Macro quality: HD / Full HD (2K locked, "Coming soon"). Default Full HD.
   QualityTier _macroTier = QualityTier.hd; // v11.48: Macro default HD
+  /// v11.70: outside Macro every Pro AI enhance uses the one tier
+  /// ([kSingleEnhanceTier]: Flare low, 1 credit, no upscale).
   QualityTier get _effTier => _macroActive
       ? _macroTier
-      : (_aiMode ? tierForZoom(_tier, _zoom, picked: _tierPicked) : _tier);
+      : enhanceTierFor(
+          _aiMode ? tierForZoom(_tier, _zoom, picked: _tierPicked) : _tier,
+        );
 
   /// Shake (frame difference between analysis thumbnails, 0..1).
   double _motion = 0;
@@ -511,6 +516,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
   /// Free tone presets strip: Normal Photo.
   bool get _toneStripOn =>
       kTonePresets &&
+      !kNoToneChips && // v11.70: no tone chips on the camera
       !_aiMode &&
       _shootMode == ShootMode.photo &&
       !_night &&
@@ -4615,12 +4621,15 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                   ),
                   const Spacer(),
                   const LiveCreditsPill(),
-                  const SizedBox(width: 8),
-                  _QualityChip(
-                    tier: _effTier,
-                    aiMode: _aiMode,
-                    onTap: _processingCapture ? null : _pickQuality,
-                  ),
+                  // v11.70: one enhance tier → no HD / FHD / UHD chip.
+                  if (!kSingleEnhanceTier) ...[
+                    const SizedBox(width: 8),
+                    _QualityChip(
+                      tier: _effTier,
+                      aiMode: _aiMode,
+                      onTap: _processingCapture ? null : _pickQuality,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -5059,6 +5068,7 @@ class _HomeCameraScreenState extends State<HomeCameraScreen>
                   onTimer: _cycleTimer,
                   onRatio: _processingCapture ? null : _cycleRatio,
                   onQuality: _processingCapture ? null : _pickQuality,
+                  showQuality: !kSingleEnhanceTier, // v11.70
                   onStyles: () => _togglePanel(_Panel.filters),
                   onClose: () => _toggleMenu(false),
                 )

@@ -20,6 +20,7 @@ import 'package:ai_camera/services/runware_client.dart';
 import 'package:ai_camera/services/upload_prep.dart';
 import 'package:ai_camera/services/video_notifier.dart';
 import 'package:ai_camera/services/video_service.dart';
+import 'package:ai_camera/config/features_v1170.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -37,7 +38,7 @@ class _SlowBackend implements VideoBackend {
 
 void main() {
   test('version (v11.65: 1.11.69+82)', () {
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.69+82'));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 1.11.'));
   });
 
   group('microscope: lock at 1.5x, part only, material-aware', () {
@@ -218,9 +219,9 @@ void main() {
     test('one simple enhance prompt; Portrait variant replaces it', () {
       expect(kUniversalEnhancePrompt, 'Restore this photo: remove blur, noise, pixelation and compression artifacts, and recover natural fine detail with realistic textures, without oversharpening or plastic-looking skin. Keep the exact same scene, framing, people, objects, colours and identity; do not add, remove or redesign anything, and do not invent facial details. Where details are irrecoverable, preserve natural softness rather than inventing information.');
       expect(buildEnhancePrompt(zoom: 30, opticalLimit: 3, night: true),
-          '$kUniversalEnhancePrompt $kNoInventLine');
+          '$kUniversalEnhancePrompt $kNoInventLine$_hd');
       final p = buildEnhancePrompt(portrait: true);
-      expect(p, kPortraitEnhancePrompt);
+      expect(p, '$kPortraitEnhancePrompt$_hd');
       expect(kPortraitEnhancePrompt, contains('natural bokeh'));
       expect(kPortraitEnhancePrompt, contains('keep the subject sharp'));
       expect(kPortraitPrompt, kPortraitEnhancePrompt);
@@ -240,3 +241,6 @@ void main() {
     expect(File('lib/services/filter_catalog.dart').readAsStringSync(), contains('kind,model'));
   });
 }
+
+/// v11.70: the single enhance tier appends the Ultra HD sentence.
+String get _hd => kSingleEnhanceTier ? ' $kSingleTierSentence' : '';

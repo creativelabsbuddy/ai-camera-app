@@ -29,3 +29,14 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _blocked)
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocked)
     yield
+
+
+@pytest.fixture
+def legacy_tiers(monkeypatch):
+    """v11.70: run a test on the v11.69 tiers (SINGLE_TIER=0 undo path):
+    HD / Full HD / Ultra HD credits, Real-ESRGAN upscale, no tier line."""
+    import ledger as L
+    import main
+    monkeypatch.setattr(L, "SINGLE_TIER", False)
+    monkeypatch.setattr(main, "UPSCALE_TIERS", {"full_hd": 1920, "ultra_hd": 2560})
+    yield

@@ -142,7 +142,9 @@ RUNWARE_LONG = 1024  # FLUX.2 Klein 4B ~1 MP output
 RUNWARE_UPSCALE_MODEL = os.environ.get("RUNWARE_UPSCALE_MODEL", "runware:504@1")
 UPSCALE_FACTOR = 2
 UPSCALE_TIMEOUT = float(os.environ.get("UPSCALE_TIMEOUT", "45"))
-UPSCALE_TIERS = {"full_hd": 1920, "ultra_hd": 2560}
+# v11.70 one enhance tier (L.SINGLE_TIER, env SINGLE_TIER): no upscale at all
+# (no Real-ESRGAN, no Lanczos) — the Flare image as returned.
+UPSCALE_TIERS = {} if L.SINGLE_TIER else {"full_hd": 1920, "ultra_hd": 2560}
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 app = FastAPI(title="AI Camera Enhance Server", version="11.1.59")
@@ -532,7 +534,7 @@ async def tier_upscale(out: bytes, quality: str, dev: str = "") -> tuple[bytes, 
     long side. Any upscale failure (e.g. Runware insufficientCredits) falls
     back to a plain Lanczos resize of the Flare image — the shot never fails
     and is never refunded for it. Returns (bytes, "esrgan"|"resize"|"none", cost)."""
-    target = UPSCALE_TIERS.get(quality)
+    target = None if L.SINGLE_TIER else UPSCALE_TIERS.get(quality)
     if not target:
         return out, "none", 0.0
     try:
@@ -605,6 +607,8 @@ async def products():
         "test_mode": _flag("ALLOW_TEST_PURCHASES", "1"),
         "products": [{"id": k, **v} for k, v in L.PRODUCTS.items()],
         "tiers": [{"id": k, "label": v[0], "credits": v[1]} for k, v in L.TIERS.items()],
+        # v11.70: the one Pro AI enhance tier (null = v11.69 tiers).
+        "enhance_tier": L.ENHANCE_TIER if L.SINGLE_TIER else None,
         "free_daily": L.FREE_DAILY,
     }
 
@@ -889,6 +893,8 @@ async def enhance_v1(
         mode = "night"  # v10 clients
     if quality == "4k":
         quality = "ultra_hd"  # v11.39: 4K removed from the picker (2K "Coming soon")
+    # v11.70: every enhance tier → the one HD tier (Flare low, 1 credit).
+    quality = L.enhance_tier(quality, mode)
     if quality not in L.TIERS and not (mode == "macro" and quality in P.MACRO_QUALITIES):
         raise HTTPException(status_code=400, detail="unknown quality")
     if night:
@@ -1087,7 +1093,7 @@ async def enhance_v1(
                 has_context=with_ctx, zoom=zoom, optical_limit=optical_limit, tier=quality,
                 style_prompt=filt, mode_prompt=mode_text, color_prompt=color_text,
                 context_boxed=context_boxed, portrait_prompt=portrait_text,
-                night=is_night,
+                night=is_night, single_tier=L.SINGLE_TIER,
             )
             return build_payload(prompt, quality, aspect, data_url(main_jpg), ctx_url, model=enh_model)
 

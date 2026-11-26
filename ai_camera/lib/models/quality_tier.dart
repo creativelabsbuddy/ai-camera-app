@@ -1,3 +1,5 @@
+import '../config/features_v1170.dart';
+
 /// Output quality the user pre-selects (persistent top badge). Cost depends
 /// ONLY on the tier — zoom never forces a higher tier or extra credits.
 ///
@@ -74,3 +76,9 @@ enum QualityTier {
     orElse: () => QualityTier.hd,
   );
 }
+
+/// v11.70: the tier a Pro AI enhance really uses. With [kSingleEnhanceTier]
+/// every tier (old saved Full HD / Ultra HD / 4K too) is the one HD tier:
+/// Flare low, 1 credit, no upscale.
+QualityTier enhanceTierFor(QualityTier t) =>
+    kSingleEnhanceTier ? QualityTier.hd : t;
